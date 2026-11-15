@@ -191,6 +191,11 @@ impl YtDlp {
         max_duration_secs: u64,
         max_bytes: u64,
     ) -> Result<DownloadedAudio, DownloadError> {
+        // Aligned with the command line in the spec (§9 етап 3): prefer m4a,
+        // parallel fragments, socket timeouts, bounded retries, and `--` so a
+        // target that starts with `-` can never be parsed as an option.
+        // `--print after_move:filepath` prints the final (post-converted) path,
+        // which we use verbatim; a slow fallback re-detects it by extension.
         let output_template = dir.join("audio.%(ext)s");
         let target_arg = target.ytdlp_argument();
         let output = self
@@ -198,26 +203,38 @@ impl YtDlp {
                 &[
                     "--ignore-config",
                     "--no-playlist",
+                    "--no-warnings",
+                    "--no-progress",
+                    "--no-part",
+                    "-f",
+                    "bestaudio[ext=m4a]/bestaudio",
                     "--extract-audio",
                     "--audio-format",
                     "m4a",
                     "--audio-quality",
                     &format!("{}K", quality.clamp(64, 320)),
+                    "-N",
+                    "4",
+                    "--socket-timeout",
+                    "15",
+                    "--retries",
+                    "3",
                     "--max-filesize",
                     &max_bytes.to_string(),
                     "--write-info-json",
-                    "--no-warnings",
-                    "--no-progress",
-                    "--no-part",
                     "--ffmpeg-location",
                     &self.ffmpeg,
                     "--output",
                     &output_template.to_string_lossy(),
+                    "--print",
+                    "after_move:filepath",
+                    "--",
                     &target_arg,
                 ],
                 self.download_timeout,
             )
             .await?;
+        let printed_path = stdout_last_line(&output.stdout);
 
         if !output.status.success() {
             return Err(classify_failure(
@@ -226,7 +243,18 @@ impl YtDlp {
             ));
         }
 
-        let (audio_path, info_path) = find_output(dir).await?;
+        // Prefer the path yt-dlp printed via --print after_move:filepath; the
+        // directory scan is the fallback for unexpected yt-dlp versions.
+        let (audio_path, info_path) = match printed_path
+            .as_deref()
+            .filter(|path| Path::new(path).is_file())
+        {
+            Some(path) => {
+                let info_path = find_info_only(dir).await;
+                (PathBuf::from(path), info_path)
+            }
+            None => find_output(dir).await?,
+        };
         let info = read_info(&info_path).await?;
         let meta = info.as_ref().map(Info::clone_meta).unwrap_or_default();
 
@@ -441,6 +469,30 @@ fn album_track_from_entry(entry: Info, provider: Provider, album: &str) -> Optio
             target: DownloadTarget::Url(source_url),
         }),
     }
+}
+
+async fn find_info_only(dir: &Path) -> Option<PathBuf> {
+    // The audio path is known; we only need the .info.json sibling.
+    let mut entries = tokio::fs::read_dir(dir).await.ok()?;
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if name.ends_with(".info.json") {
+            return Some(entry.path());
+        }
+    }
+    None
+}
+
+fn stdout_last_line(stdout: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(stdout);
+    let mut last = None;
+    for line in text.lines() {
+        let line = line.trim();
+        if !line.is_empty() {
+            last = Some(line.to_owned());
+        }
+    }
+    last
 }
 
 async fn find_output(dir: &Path) -> Result<(PathBuf, Option<PathBuf>), DownloadError> {

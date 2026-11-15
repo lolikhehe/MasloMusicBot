@@ -284,16 +284,38 @@ impl DownloadManager {
             })?;
 
         info!(key = %request.key, target = ?request.target, "starting download");
-        let downloaded = self
-            .ytdlp
-            .download(
-                &request.target,
-                dir.path(),
-                quality,
-                self.config.max_duration_secs,
-                self.config.max_file_bytes(),
-            )
-            .await?;
+        let downloaded = {
+            // One retry for transient network/RateLimit failures with
+            // exponential backoff (spec §9 етап 3). Permanent failures
+            // (private/region/too large) are never retried.
+            match self
+                .ytdlp
+                .download(
+                    &request.target,
+                    dir.path(),
+                    quality,
+                    self.config.max_duration_secs,
+                    self.config.max_file_bytes(),
+                )
+                .await
+            {
+                Ok(downloaded) => downloaded,
+                Err(error) if is_transient(&error) => {
+                    warn!(key = %request.key, error = %error, "transient download failure; retrying once");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    self.ytdlp
+                        .download(
+                            &request.target,
+                            dir.path(),
+                            quality,
+                            self.config.max_duration_secs,
+                            self.config.max_file_bytes(),
+                        )
+                        .await?
+                }
+                Err(error) => return Err(error),
+            }
+        };
 
         let merged_meta = merge_meta(request.meta.as_ref(), &downloaded.meta);
         if let Some(duration) = merged_meta.duration_secs
@@ -323,6 +345,17 @@ impl DownloadManager {
             _dir: Arc::new(dir),
         })
     }
+}
+
+/// Transient failures worth one retry: timeouts, resets and rate limiting.
+fn is_transient(error: &DownloadError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("timed out")
+        || message.contains("timeout")
+        || message.contains("connection")
+        || message.contains("reset")
+        || message.contains("too many requests")
+        || message.contains("429")
 }
 
 fn merge_meta(requested: Option<&TrackMeta>, downloaded: &TrackMeta) -> TrackMeta {
