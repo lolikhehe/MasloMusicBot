@@ -1,21 +1,28 @@
 //! Inline mode (`@bot query`) and the `chosen_inline_result` follow-up.
 //!
-//! Telegram only lets a bot edit an inline message when `inline_message_id` is
-//! present, and it supplies that id when the chosen result carries a keyboard.
-//! We therefore attach a URL keyboard to every article.
+//! Cached tracks answer immediately with `CachedAudio` (Telegram streams the
+//! existing file_id, no bot involvement). Uncached results are articles whose
+//! inline keyboard forces `inline_message_id` to be present, so the bot can
+//! later swap the placeholder text for the audio via `editMessageMedia`.
+//! A freshly uploaded file only yields a file_id when the bot sends it to the
+//! `STORAGE_CHAT_ID` channel first; without a storage chat the audio is sent
+//! inline but stays uncached (§9, етап 7).
+//!
+//! `inline_query` fires on every keystroke, so results are per-user and the
+//! answer of a stale query is silently dropped (generation counter).
 
 use crate::bot::handlers::{deliver_track, truncate};
 use crate::bot::send;
 use crate::state::AppState;
-use common::domain::{Lang, TrackRequest};
+use common::domain::{CachedTrack, Lang, TrackRequest};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::{ParsedInput, parse_input};
 use teloxide::prelude::*;
 use teloxide::types::{
     ChosenInlineResult, FileId, InlineKeyboardButton, InlineKeyboardMarkup, InlineQuery,
-    InlineQueryResult, InlineQueryResultArticle, InputFile, InputMedia, InputMediaAudio,
-    InputMessageContent, InputMessageContentText,
+    InlineQueryResult, InlineQueryResultArticle, InlineQueryResultCachedAudio, InputFile,
+    InputMedia, InputMediaAudio, InputMessageContent, InputMessageContentText,
 };
 use tracing::{info, warn};
 
@@ -39,11 +46,13 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
     }
 
     let text = query.query.trim();
-    if text.is_empty() {
+    if text.chars().count() < 2 {
         bot.answer_inline_query(query.id.clone(), Vec::new())
             .await?;
         return Ok(());
     }
+
+    let generation = state.bump_inline_generation(user_id).await;
 
     let requests: Vec<TrackRequest> = match parse_input(text) {
         ParsedInput::Track(request) => match state.manager.describe(request).await {
@@ -70,7 +79,13 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
         }
     };
 
-    let mut articles = Vec::with_capacity(requests.len());
+    // The user typed more while we were searching; Telegram already knows.
+    if generation != state.inline_generation(user_id).await {
+        info!("stale inline query dropped");
+        return Ok(());
+    }
+
+    let mut results = Vec::with_capacity(requests.len());
     for request in requests {
         let selection_id = state.new_selection_id();
         let title = request
@@ -78,6 +93,18 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             .as_ref()
             .map(|meta| meta.display_title())
             .unwrap_or_else(|| "Audio".to_owned());
+
+        // Cached tracks answer instantly with the stored file_id.
+        if let Some(cached) = state.manager.get_cached(&request.key, user.quality).await? {
+            let audio = InlineQueryResultCachedAudio::new(
+                selection_id.clone(),
+                FileId(cached.file_id.clone()),
+            );
+            state.selections.insert(selection_id, request).await;
+            results.push(InlineQueryResult::CachedAudio(audio));
+            continue;
+        }
+
         let description = request
             .meta
             .as_ref()
@@ -96,8 +123,9 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             })
             .filter(|value| !value.is_empty());
 
-        let content =
-            InputMessageContent::Text(InputMessageContentText::new(i18n::preparing_inline(lang)));
+        let content = InputMessageContent::Text(InputMessageContentText::new(
+            i18n::downloading_track(lang, &title),
+        ));
         let mut article = InlineQueryResultArticle::new(selection_id.clone(), title, content);
         if let Some(description) = description {
             article = article.description(description);
@@ -119,12 +147,12 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
         }
         article = article.reply_markup(inline_keyboard(&state, lang));
         state.selections.insert(selection_id, request).await;
-        articles.push(InlineQueryResult::Article(article));
+        results.push(InlineQueryResult::Article(article));
     }
 
-    bot.answer_inline_query(query.id.clone(), articles)
-        .cache_time(0)
-        .is_personal(true)
+    bot.answer_inline_query(query.id.clone(), results)
+        .cache_time(30)
+        .is_personal(false)
         .await?;
     Ok(())
 }
@@ -149,43 +177,47 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         .ensure_user(user_id, state.config.default_lang)
         .await?;
     let lang = user.lang;
-    let Some(inline_message_id) = result.inline_message_id.clone() else {
-        fallback_private(&state, &bot, &result, user.quality).await;
-        return Ok(());
-    };
-
-    let Some(request) = state.selections.get(&result.result_id).await else {
-        let _ = bot
-            .edit_message_text_inline(inline_message_id, i18n::selection_expired(lang))
-            .await;
-        return Ok(());
-    };
 
     if user.banned && !state.config.is_admin(user_id) {
-        let _ = bot
-            .edit_message_text_inline(inline_message_id, i18n::banned(lang))
-            .await;
+        if let Some(inline_message_id) = result.inline_message_id.clone() {
+            let _ = bot
+                .edit_message_text_inline(inline_message_id, i18n::banned(lang))
+                .await;
+        }
         return Ok(());
     }
 
-    if let Some(cached) = state.manager.get_cached(&request.key).await? {
-        let media = cached_media(&cached);
+    let Some(request) = state.selections.get(&result.result_id).await else {
+        // Cached results never need a message edit (Telegram streams the file
+        // itself), and expired selections simply cannot be resolved anymore.
+        if let Some(inline_message_id) = result.inline_message_id.clone() {
+            let _ = bot
+                .edit_message_text_inline(inline_message_id, i18n::selection_expired(lang))
+                .await;
+        }
+        return Ok(());
+    };
+
+    // Cached path: the file_id already exists, so the audio is either already
+    // posted by Telegram (CachedAudio, no inline_message_id) or the placeholder
+    // message can be replaced with the audio right away.
+    if let Some(cached) = state.manager.get_cached(&request.key, user.quality).await? {
+        state.manager.touch_cached(&request.key, user.quality).await;
+        metrics::counter!("music_bot_cache_hits_total").increment(1);
+        let Some(inline_message_id) = result.inline_message_id.clone() else {
+            return Ok(());
+        };
         match bot
-            .edit_message_media_inline(inline_message_id.clone(), media)
+            .edit_message_media_inline(inline_message_id, cached_media(&cached))
             .await
         {
-            Ok(_) => {
-                state.manager.touch_cached(&request.key).await;
-                metrics::counter!("music_bot_cache_hits_total").increment(1);
-                return Ok(());
-            }
+            Ok(_) => return Ok(()),
             Err(error) if send::is_invalid_file_id(&error) => {
                 warn!(%error, "inline cached file id rejected; purging");
                 state.manager.purge(&request.key).await?;
             }
             Err(error) => {
                 warn!(%error, "could not edit inline message with cached audio");
-                fallback_private(&state, &bot, &result, user.quality).await;
                 return Ok(());
             }
         }
@@ -196,21 +228,66 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         Ok(prepared) => prepared,
         Err(error) => {
             metrics::counter!("music_bot_download_errors_total").increment(1);
-            let _ = bot
-                .edit_message_text_inline(inline_message_id, i18n::error(lang, &error))
-                .await;
+            if let Some(inline_message_id) = result.inline_message_id.clone() {
+                let _ = bot
+                    .edit_message_text_inline(inline_message_id, i18n::error(lang, &error))
+                    .await;
+            }
             return Ok(());
         }
     };
 
-    let media = prepared_media(&prepared);
+    let size_bytes = tokio::fs::metadata(&prepared.audio_path)
+        .await
+        .ok()
+        .map(|meta| meta.len() as i64);
+
+    // Give the inline message a file_id: upload the audio to the storage chat
+    // (if configured), then edit with that file_id and cache it.
+    if let Some(storage_chat_id) = state.config.storage_chat_id {
+        match send_prepared_storage(&bot, storage_chat_id, &prepared).await {
+            Ok((file_id, file_unique_id)) => {
+                // The storage message must NOT be deleted (spec §9, етап 7).
+                if let Err(error) = state
+                    .manager
+                    .record(
+                        &request,
+                        &prepared.meta,
+                        file_id.clone(),
+                        file_unique_id.clone(),
+                        user.quality,
+                        size_bytes,
+                    )
+                    .await
+                {
+                    warn!(%error, "could not record inline file_id in cache");
+                }
+                metrics::counter!("music_bot_uploads_total").increment(1);
+                if let Some(inline_message_id) = result.inline_message_id.clone() {
+                    let media = file_id_media(&prepared, &file_id);
+                    let _ = bot
+                        .edit_message_media_inline(inline_message_id, media)
+                        .await;
+                }
+                return Ok(());
+            }
+            Err(error) => {
+                warn!(%error, "storage chat upload failed; falling back to direct edit");
+            }
+        }
+    }
+
+    // No storage configured (or it failed): the file goes in as-is and no
+    // file_id comes back, so this inline result is not cached.
+    let Some(inline_message_id) = result.inline_message_id.clone() else {
+        fallback_private(&state, &bot, &result, user.quality).await;
+        return Ok(());
+    };
     match bot
-        .edit_message_media_inline(inline_message_id, media)
+        .edit_message_media_inline(inline_message_id, prepared_media(&prepared))
         .await
     {
         Ok(_) => {
-            // Telegram does not return a Message (and therefore no file_id)
-            // from editMessageMedia, so cold inline results are not cached.
             metrics::counter!("music_bot_uploads_total").increment(1);
         }
         Err(error) => {
@@ -221,7 +298,22 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     Ok(())
 }
 
-fn cached_media(cached: &common::domain::CachedTrack) -> InputMedia {
+async fn send_prepared_storage(
+    bot: &Bot,
+    storage_chat_id: i64,
+    prepared: &downloader::PreparedAudio,
+) -> Result<(String, String), teloxide::RequestError> {
+    let chat = teloxide::types::ChatId(storage_chat_id);
+    let message = send::send_prepared(bot, chat, prepared).await?;
+    match send::extract_file_id(&message) {
+        Some(pair) => Ok(pair),
+        None => Err(teloxide::RequestError::Io(std::sync::Arc::new(
+            std::io::Error::other("storage message had no audio file_id"),
+        ))),
+    }
+}
+
+fn cached_media(cached: &CachedTrack) -> InputMedia {
     let mut media = InputMediaAudio::new(InputFile::file_id(FileId(cached.file_id.clone())));
     media.title = Some(truncate(&cached.meta.title, 128));
     media.performer = cached
@@ -253,6 +345,21 @@ fn prepared_media(prepared: &downloader::PreparedAudio) -> InputMedia {
         .cover_path
         .as_ref()
         .map(|path| InputFile::file(path.clone()));
+    InputMedia::Audio(media)
+}
+
+fn file_id_media(prepared: &downloader::PreparedAudio, file_id: &str) -> InputMedia {
+    let mut media = InputMediaAudio::new(InputFile::file_id(FileId(file_id.to_owned())));
+    media.title = Some(truncate(&prepared.meta.title, 128));
+    media.performer = prepared
+        .meta
+        .performer
+        .as_deref()
+        .map(|value| truncate(value, 128));
+    media.duration = prepared
+        .meta
+        .duration_secs
+        .map(|value| value.min(u16::MAX as u32) as u16);
     InputMedia::Audio(media)
 }
 

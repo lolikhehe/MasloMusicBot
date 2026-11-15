@@ -1,5 +1,9 @@
 //! SQLite persistence. Only metadata and Telegram file identifiers are stored;
 //! audio bytes are never kept by the bot.
+//!
+//! Cache key: (`track_key`, `quality`) per ТЗ §8 — the same track is cached per
+//! bitrate. Search cache is two-tiered: moka (in-memory, L1) in the manager and
+//! this `search_cache` table (L2) which survives restarts.
 
 use common::domain::{CachedTrack, Lang, Provider, Stats, TrackKey, TrackMeta, UserRecord};
 use common::error::{AppError, AppResult};
@@ -30,6 +34,7 @@ impl Db {
             .map_err(|error| AppError::Config(format!("DATABASE_URL: {error}")))?
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(10))
             .foreign_keys(true);
 
@@ -42,16 +47,33 @@ impl Db {
 
         sqlx::raw_sql(SCHEMA).execute(&pool).await.map_err(db_err)?;
 
+        // Drop expired L2 search cache rows; they are cheap to recompute.
+        let now = unix_now();
+        let _ = sqlx::query("DELETE FROM search_cache WHERE expires_at < ?")
+            .bind(now)
+            .execute(&pool)
+            .await;
+
         Ok(Self { pool })
     }
 
-    pub async fn get_track(&self, key: &TrackKey) -> AppResult<Option<CachedTrack>> {
+    /// Lightweight liveness check used by /healthz.
+    pub async fn ping(&self) -> bool {
+        sqlx::query_scalar::<_, i64>("SELECT 1")
+            .fetch_one(&self.pool)
+            .await
+            .map(|value| value == 1)
+            .unwrap_or(false)
+    }
+
+    pub async fn get_track(&self, key: &TrackKey, quality: u32) -> AppResult<Option<CachedTrack>> {
         let row = sqlx::query(
-            "SELECT track_key, file_id, file_unique_id, source_url, provider, title,
-                    performer, album, duration_secs, thumbnail_url
-             FROM tracks WHERE track_key = ?",
+            "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,
+                    performer, album, duration_secs, size_bytes, thumbnail_url
+             FROM tracks WHERE track_key = ? AND quality = ?",
         )
         .bind(key.as_str())
+        .bind(i64::from(quality))
         .fetch_optional(&self.pool)
         .await
         .map_err(db_err)?;
@@ -81,14 +103,19 @@ impl Db {
         }))
     }
 
-    pub async fn put_track(&self, track: &CachedTrack) -> AppResult<()> {
+    pub async fn put_track(
+        &self,
+        track: &CachedTrack,
+        quality: u32,
+        size_bytes: Option<i64>,
+    ) -> AppResult<()> {
         let now = unix_now();
         sqlx::query(
             "INSERT INTO tracks
-                (track_key, file_id, file_unique_id, source_url, provider, title, performer,
-                 album, duration_secs, thumbnail_url, created_at, last_used_at, uses)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-             ON CONFLICT(track_key) DO UPDATE SET
+                (track_key, quality, file_id, file_unique_id, source_url, provider, title, performer,
+                 album, duration_secs, size_bytes, thumbnail_url, created_at, last_used_at, uses)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+             ON CONFLICT(track_key, quality) DO UPDATE SET
                 file_id = excluded.file_id,
                 file_unique_id = excluded.file_unique_id,
                 source_url = excluded.source_url,
@@ -97,11 +124,13 @@ impl Db {
                 performer = excluded.performer,
                 album = excluded.album,
                 duration_secs = excluded.duration_secs,
+                size_bytes = excluded.size_bytes,
                 thumbnail_url = excluded.thumbnail_url,
                 last_used_at = excluded.last_used_at,
                 uses = tracks.uses + 1",
         )
         .bind(track.key.as_str())
+        .bind(i64::from(quality))
         .bind(&track.file_id)
         .bind(&track.file_unique_id)
         .bind(&track.source_url)
@@ -110,6 +139,7 @@ impl Db {
         .bind(&track.meta.performer)
         .bind(&track.meta.album)
         .bind(track.meta.duration_secs.map(i64::from))
+        .bind(size_bytes)
         .bind(&track.meta.thumbnail_url)
         .bind(now)
         .bind(now)
@@ -119,13 +149,16 @@ impl Db {
         Ok(())
     }
 
-    pub async fn touch_track(&self, key: &TrackKey) -> AppResult<()> {
-        sqlx::query("UPDATE tracks SET last_used_at = ?, uses = uses + 1 WHERE track_key = ?")
-            .bind(unix_now())
-            .bind(key.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
+    pub async fn touch_track(&self, key: &TrackKey, quality: u32) -> AppResult<()> {
+        sqlx::query(
+            "UPDATE tracks SET last_used_at = ?, uses = uses + 1 WHERE track_key = ? AND quality = ?",
+        )
+        .bind(unix_now())
+        .bind(key.as_str())
+        .bind(i64::from(quality))
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
         Ok(())
     }
 
@@ -156,6 +189,46 @@ impl Db {
             users,
             sends,
         })
+    }
+
+    /// L2 search cache: fetch a cached payload if it has not expired.
+    pub async fn get_search_cache(&self, provider: &str, query: &str) -> AppResult<Option<String>> {
+        let row = sqlx::query(
+            "SELECT result FROM search_cache WHERE provider = ? AND query = ? AND expires_at >= ?",
+        )
+        .bind(provider)
+        .bind(query)
+        .bind(unix_now())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(row.map(|row| row.get::<String, _>("result")))
+    }
+
+    /// L2 search cache: store a payload with a TTL.
+    pub async fn put_search_cache(
+        &self,
+        provider: &str,
+        query: &str,
+        result_json: &str,
+        ttl: Duration,
+    ) -> AppResult<()> {
+        let expires_at = unix_now() + ttl.as_secs() as i64;
+        sqlx::query(
+            "INSERT INTO search_cache (provider, query, result, expires_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(provider, query) DO UPDATE SET
+                result = excluded.result,
+                expires_at = excluded.expires_at",
+        )
+        .bind(provider)
+        .bind(query)
+        .bind(result_json)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
     }
 
     pub async fn ensure_user(&self, id: i64, fallback: Lang) -> AppResult<UserRecord> {
@@ -238,8 +311,6 @@ mod tests {
     async fn test_db() -> Db {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test.db");
-        // Keep the directory alive for the lifetime of the database file only
-        // in this test helper; SQLite keeps the handle open.
         let db = Db::connect(&format!("sqlite://{}", path.display()))
             .await
             .expect("db");
@@ -264,8 +335,14 @@ mod tests {
                 ..Default::default()
             },
         };
-        db.put_track(&track).await.expect("put");
-        let cached = db.get_track(&key).await.expect("get").expect("some");
+        assert!(db.get_track(&key, 192).await.expect("miss").is_none());
+        db.put_track(&track, 192, Some(1_234_567))
+            .await
+            .expect("put");
+        db.put_track(&track, 320, Some(3_456_789))
+            .await
+            .expect("put 320");
+        let cached = db.get_track(&key, 192).await.expect("get").expect("some");
         assert_eq!(cached.file_id, "FILE");
         assert_eq!(cached.meta.performer.as_deref(), Some("Artist"));
 
@@ -278,6 +355,34 @@ mod tests {
         assert_eq!(user.lang, Lang::En);
 
         assert!(db.purge_track(&key).await.expect("purge"));
-        assert!(db.get_track(&key).await.expect("get").is_none());
+        assert!(db.get_track(&key, 192).await.expect("get").is_none());
+        assert!(db.get_track(&key, 320).await.expect("get").is_none());
+    }
+
+    #[tokio::test]
+    async fn search_cache_roundtrip() {
+        let db = test_db().await;
+        db.put_search_cache("youtube", "soft", "[\"x\"]", Duration::from_secs(60))
+            .await
+            .expect("put");
+        assert_eq!(
+            db.get_search_cache("youtube", "soft")
+                .await
+                .expect("get")
+                .as_deref(),
+            Some("[\"x\"]")
+        );
+        assert!(
+            db.get_search_cache("youtube", "absent")
+                .await
+                .expect("miss")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn ping_works() {
+        let db = test_db().await;
+        assert!(db.ping().await);
     }
 }

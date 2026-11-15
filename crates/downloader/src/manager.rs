@@ -44,7 +44,7 @@ pub struct DownloadManager {
     external: ExternalResolver,
     cover_client: reqwest::Client,
     semaphore: Arc<Semaphore>,
-    inflight: Mutex<HashMap<TrackKey, broadcast::Sender<InflightResult>>>,
+    inflight: Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>>,
     search_cache: Cache<String, Vec<SearchResult>>,
 }
 
@@ -71,12 +71,12 @@ impl DownloadManager {
         }
     }
 
-    pub async fn get_cached(&self, key: &TrackKey) -> AppResult<Option<CachedTrack>> {
-        self.db.get_track(key).await
+    pub async fn get_cached(&self, key: &TrackKey, quality: u32) -> AppResult<Option<CachedTrack>> {
+        self.db.get_track(key, quality).await
     }
 
-    pub async fn touch_cached(&self, key: &TrackKey) {
-        if let Err(error) = self.db.touch_track(key).await {
+    pub async fn touch_cached(&self, key: &TrackKey, quality: u32) {
+        if let Err(error) = self.db.touch_track(key, quality).await {
             warn!(%error, key = %key, "could not touch cache entry");
         }
     }
@@ -85,22 +85,29 @@ impl DownloadManager {
         self.db.purge_track(key).await
     }
 
+    /// Record a track in the cache. `size_bytes` is the actual audio size.
     pub async fn record(
         &self,
         request: &TrackRequest,
         meta: &TrackMeta,
         file_id: String,
         file_unique_id: String,
+        quality: u32,
+        size_bytes: Option<i64>,
     ) -> AppResult<()> {
         self.db
-            .put_track(&CachedTrack {
-                key: request.key.clone(),
-                file_id,
-                file_unique_id,
-                source_url: request.source_url.clone(),
-                provider: request.provider,
-                meta: meta.clone(),
-            })
+            .put_track(
+                &CachedTrack {
+                    key: request.key.clone(),
+                    file_id,
+                    file_unique_id,
+                    source_url: request.source_url.clone(),
+                    provider: request.provider,
+                    meta: meta.clone(),
+                },
+                quality,
+                size_bytes,
+            )
             .await
     }
 
@@ -119,8 +126,25 @@ impl DownloadManager {
         if let Some(cached) = self.search_cache.get(&normalized).await {
             return Ok(cached);
         }
+        // L2: SQLite-backed search cache survives restarts (10-30 min TTL).
+        if let Ok(Some(payload)) = self.db.get_search_cache("youtube", &normalized).await
+            && let Ok(parsed) = serde_json::from_str::<Vec<SearchResult>>(&payload)
+        {
+            self.search_cache
+                .insert(normalized.clone(), parsed.clone())
+                .await;
+            return Ok(parsed);
+        }
         let results = self.ytdlp.search(query, limit).await?;
-        self.search_cache.insert(normalized, results.clone()).await;
+        self.search_cache
+            .insert(normalized.clone(), results.clone())
+            .await;
+        if let Ok(payload) = serde_json::to_string(&results) {
+            let _ = self
+                .db
+                .put_search_cache("youtube", &normalized, &payload, Duration::from_secs(600))
+                .await;
+        }
         Ok(results)
     }
 
@@ -169,17 +193,17 @@ impl DownloadManager {
             return Err(DownloadError::ProviderDisabled(request.provider));
         }
 
-        let key = request.key.clone();
+        let cache_key = (request.key.clone(), quality);
         let mut receiver = None;
         let mut sender = None;
 
         {
             let mut inflight = self.inflight.lock().await;
-            if let Some(existing) = inflight.get(&key) {
+            if let Some(existing) = inflight.get(&cache_key) {
                 receiver = Some(existing.subscribe());
             } else {
                 let (tx, _rx) = broadcast::channel(4);
-                inflight.insert(key.clone(), tx.clone());
+                inflight.insert(cache_key.clone(), tx.clone());
                 sender = Some(tx);
             }
         }
@@ -202,7 +226,7 @@ impl DownloadManager {
         let result = self.prepare_leader(request, quality).await;
         let broadcast_result = result.clone().map_err(|error| Arc::new(error.clone()));
         let _ = sender.send(broadcast_result);
-        self.inflight.lock().await.remove(&key);
+        self.inflight.lock().await.remove(&cache_key);
         result
     }
 

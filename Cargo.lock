@@ -498,6 +498,7 @@ dependencies = [
  "moka",
  "providers",
  "reqwest",
+ "serde_json",
  "storage",
  "tempfile",
  "tokio",

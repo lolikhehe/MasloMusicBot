@@ -111,7 +111,7 @@ async fn handle_track(
     quality: u32,
     request: TrackRequest,
 ) -> HandlerResult {
-    if try_cache_send(state, bot, chat, &request.key).await? {
+    if try_cache_send(state, bot, chat, &request.key, quality).await? {
         return Ok(());
     }
 
@@ -257,13 +257,14 @@ async fn try_cache_send(
     bot: &Bot,
     chat: ChatId,
     key: &TrackKey,
+    quality: u32,
 ) -> Result<bool, BoxError> {
-    let Some(cached) = state.manager.get_cached(key).await? else {
+    let Some(cached) = state.manager.get_cached(key, quality).await? else {
         return Ok(false);
     };
     match send::send_cached(bot, chat, &cached).await {
         Ok(_) => {
-            state.manager.touch_cached(key).await;
+            state.manager.touch_cached(key, quality).await;
             metrics::counter!("music_bot_cache_hits_total").increment(1);
             Ok(true)
         }
@@ -284,7 +285,7 @@ pub async fn deliver_track(
     request: TrackRequest,
     quality: u32,
 ) -> Result<Delivery, BoxError> {
-    if try_cache_send(state, bot, chat, &request.key).await? {
+    if try_cache_send(state, bot, chat, &request.key, quality).await? {
         return Ok(Delivery::Cached);
     }
 
@@ -301,7 +302,7 @@ pub async fn deliver_track(
         .record(download_started.elapsed().as_secs_f64());
 
     // Another request may have finished while we downloaded.
-    if try_cache_send(state, bot, chat, &request.key).await? {
+    if try_cache_send(state, bot, chat, &request.key, quality).await? {
         return Ok(Delivery::Cached);
     }
 
@@ -313,9 +314,20 @@ pub async fn deliver_track(
     let Some((file_id, file_unique_id)) = send::extract_file_id(&message) else {
         return Err(AppError::Message("Telegram response has no audio file id".to_owned()).into());
     };
+    let size_bytes = tokio::fs::metadata(&prepared.audio_path)
+        .await
+        .ok()
+        .map(|meta| meta.len() as i64);
     if let Err(error) = state
         .manager
-        .record(&request, &prepared.meta, file_id, file_unique_id)
+        .record(
+            &request,
+            &prepared.meta,
+            file_id,
+            file_unique_id,
+            quality,
+            size_bytes,
+        )
         .await
     {
         warn!(%error, key = %request.key, "could not cache uploaded track");

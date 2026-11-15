@@ -162,7 +162,7 @@ impl TrackMeta {
 
 /// What yt-dlp should be pointed at. URLs are validated by the provider layer;
 /// `Search` is passed as a `ytsearch1:` pseudo-URL.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadTarget {
     Url(String),
     Search(String),
@@ -229,7 +229,7 @@ pub struct Stats {
 }
 
 /// One search result before the user picks it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
     pub key: TrackKey,
     pub provider: Provider,

@@ -301,6 +301,13 @@ pub fn preparing_inline(lang: Lang) -> &'static str {
     pick(lang, "⏳ Preparing the track…", "⏳ Готую трек…")
 }
 
+pub fn downloading_track(lang: Lang, track: &str) -> String {
+    match lang {
+        Lang::En => format!("⏳ Downloading: {track}"),
+        Lang::Uk => format!("⏳ Завантажую: {track}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

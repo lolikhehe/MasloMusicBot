@@ -5,9 +5,11 @@ use common::config::Config;
 use common::domain::TrackRequest;
 use downloader::DownloadManager;
 use moka::future::Cache;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use storage::Db;
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,6 +20,9 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     pub bot_username: String,
     pub started_at: Instant,
+    /// Per-user generation counter for inline queries; a new query cancels the
+    /// answer of a stale one (Telegram sends `inline_query` on every keystroke).
+    pub inline_generations: Arc<Mutex<HashMap<i64, u64>>>,
 }
 
 impl AppState {
@@ -40,11 +45,30 @@ impl AppState {
             limiter,
             bot_username,
             started_at: Instant::now(),
+            inline_generations: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn new_selection_id(&self) -> String {
         uuid::Uuid::new_v4().simple().to_string()[..16].to_owned()
+    }
+
+    /// Bump the per-user inline generation counter; returns the new value.
+    pub async fn bump_inline_generation(&self, user_id: i64) -> u64 {
+        let mut map = self.inline_generations.lock().await;
+        let entry = map.entry(user_id).or_insert(0);
+        *entry += 1;
+        *entry
+    }
+
+    /// Current generation for the user (0 if unknown).
+    pub async fn inline_generation(&self, user_id: i64) -> u64 {
+        self.inline_generations
+            .lock()
+            .await
+            .get(&user_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     pub fn uptime(&self) -> String {

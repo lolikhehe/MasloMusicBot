@@ -24,6 +24,7 @@ pub struct Config {
     pub max_concurrent_downloads: usize,
     pub admins: HashSet<i64>,
     pub default_lang: Lang,
+    pub storage_chat_id: Option<i64>,
     pub ytdlp_path: String,
     pub ffmpeg_path: String,
     pub log_level: String,
@@ -88,6 +89,15 @@ impl Config {
             .transpose()?
             .unwrap_or_default();
 
+        let storage_chat_id = env_optional("STORAGE_CHAT_ID")
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<i64>()
+                    .with_context(|| format!("STORAGE_CHAT_ID must be a numeric chat id: {value}"))
+            })
+            .transpose()?;
+
         let mut tmp_dir =
             PathBuf::from(env_optional("TMP_DIR").unwrap_or_else(|| "./data/tmp".to_owned()));
         if tmp_dir.as_os_str().is_empty() {
@@ -108,6 +118,7 @@ impl Config {
             rate_limit_per_min: env_parse("RATE_LIMIT_PER_MIN", 10u32)?,
             max_concurrent_downloads,
             admins,
+            storage_chat_id,
             default_lang: env_optional("DEFAULT_LANG")
                 .and_then(|value| Lang::from_code(&value))
                 .unwrap_or(Lang::En),
