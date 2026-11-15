@@ -9,7 +9,9 @@ use common::i18n;
 use providers::{ParsedInput, parse_input};
 use std::time::Instant;
 use teloxide::prelude::*;
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageId, ParseMode};
+use teloxide::types::{
+    InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntityKind, MessageId, ParseMode,
+};
 use tracing::{info, warn};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -18,6 +20,16 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub enum Delivery {
     Cached,
     Uploaded,
+}
+
+/// Extract the first hidden link attached to a message via a text_link entity.
+/// Visible URLs are found by the `url` crate inside `parse_input`.
+fn entity_url(msg: &Message) -> Option<String> {
+    let entities = msg.entities()?;
+    entities.iter().find_map(|entity| match &entity.kind {
+        MessageEntityKind::TextLink { url } => Some(url.to_string()),
+        _ => None,
+    })
 }
 
 pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerResult {
@@ -70,9 +82,12 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
 
     metrics::counter!("music_bot_requests_total").increment(1);
     let started = Instant::now();
-    info!(user_id, text = %text, "handling input");
+    // Spec §10: user texts must not be logged beyond debugging, so we log the
+    // routing decision rather than the text itself.
+    let input = entity_url(&msg).unwrap_or_else(|| text.to_owned());
+    info!(user_id, "handling input");
 
-    let result = match parse_input(text) {
+    let result = match parse_input(&input) {
         ParsedInput::Track(request) => {
             handle_track(
                 &state,

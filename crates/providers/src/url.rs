@@ -55,8 +55,35 @@ pub fn key_from_input(raw: &str) -> TrackKey {
 }
 
 fn http_url(raw: &str) -> Option<Url> {
-    let url = Url::parse(raw).ok()?;
-    matches!(url.scheme(), "http" | "https").then_some(url)
+    // Fast path: the whole (trimmed) input is a URL. A URL containing
+    // whitespace is not a URL, so treat it as prose and fall through to the
+    // embedded-URL scan (Url::parse accepts spaces in query strings).
+    if !raw.chars().any(char::is_whitespace)
+        && let Ok(url) = Url::parse(raw)
+        && matches!(url.scheme(), "http" | "https")
+    {
+        return Some(url);
+    }
+    // Otherwise scan for the first embedded http(s) URL — users paste links
+    // inside prose ("listen to https://youtu.be/xyz please").
+    for marker in ["https://", "http://"] {
+        let mut search_from = 0usize;
+        while let Some(found) = raw[search_from..].find(marker) {
+            let start = search_from + found;
+            let candidate = raw[start..]
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches([
+                    '.', ',', ';', ':', '!', '?', ')', ']', '}', '<', '>', '"', '\'', '»', '〉',
+                ]);
+            if let Ok(url) = Url::parse(candidate) {
+                return Some(url);
+            }
+            search_from = start + marker.len();
+        }
+    }
+    None
 }
 
 fn valid_id(value: &str) -> bool {
@@ -293,6 +320,20 @@ fn parse_deezer(url: &Url) -> ParsedInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_embedded_urls_from_prose() {
+        for raw in [
+            "listen to https://youtu.be/dQw4w9WgXcQ please",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ now)",
+            "beat: https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC (good)",
+        ] {
+            match parse_input(raw) {
+                ParsedInput::Track(_) => {}
+                other => panic!("expected track for {raw:?}, got {other:?}"),
+            }
+        }
+    }
 
     #[test]
     fn parses_youtube_variants_to_one_key() {
