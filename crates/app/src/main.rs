@@ -2,6 +2,7 @@
 //! shared state, then hand control to the Telegram dispatcher.
 
 mod health;
+mod janitor;
 
 use anyhow::Context;
 use common::config::Config;
@@ -26,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let metrics_handle = common::metrics::install()?;
 
     tokio::fs::create_dir_all(&config.tmp_dir).await?;
+    janitor::spawn(config.tmp_dir.clone());
 
     let db = Db::connect(&config.database_url).await?;
     if let Some(addr) = config.metrics_addr {
