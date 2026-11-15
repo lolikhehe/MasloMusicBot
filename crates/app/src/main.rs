@@ -1,6 +1,8 @@
 //! Entry point. Everything here is deliberately small: parse config, build the
 //! shared state, then hand control to the Telegram dispatcher.
 
+mod health;
+
 use anyhow::Context;
 use common::config::Config;
 use downloader::DownloadManager;
@@ -21,11 +23,16 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config::from_env()?);
     init_tracing(&config);
 
-    common::metrics::install(config.metrics_addr)?;
+    let metrics_handle = common::metrics::install()?;
 
     tokio::fs::create_dir_all(&config.tmp_dir).await?;
 
     let db = Db::connect(&config.database_url).await?;
+    if let Some(addr) = config.metrics_addr {
+        health::serve(addr, db.clone(), metrics_handle).await?;
+    } else {
+        drop(metrics_handle);
+    }
     let ytdlp = YtDlp::new(&config);
     let external = ExternalResolver::new(config.metadata_timeout)?;
     let manager = Arc::new(DownloadManager::new(

@@ -47,6 +47,7 @@ dependencies = [
  "dotenvy",
  "downloader",
  "futures",
+ "metrics-exporter-prometheus",
  "mimalloc",
  "providers",
  "reqwest",

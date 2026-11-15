@@ -1,30 +1,57 @@
 services:
+  # Default: bot against the CLOUD Telegram Bot API (TELOXIDE_TOKEN in .env,
+  # no api_id/api_hash needed). `docker compose up -d` is all you need.
+  bot:
+    build: .
+    image: maslomusicbot:latest
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite:///data/bot.db
+      TMP_DIR: /data/tmp
+      METRICS_ADDR: 0.0.0.0:9090
+      # TELEGRAM_API_URL is read from .env. Unset => cloud API.
+      # For local bot-api set TELEGRAM_API_URL=http://bot-api:8081/ in .env.
+    volumes:
+      - bot-data:/data
+    ports:
+      - "9090:9090"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9090/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # Local Bot API server (files >50MB, --local shared volume). Requires
+  # TELEGRAM_API_ID/TELEGRAM_API_HASH from https://my.telegram.org in .env.
+  # NOTE: one-time logOut from the cloud API is required (see README).
+  # Start with: docker compose --profile local up -d
   bot-api:
+    profiles: ["local"]
     image: tdlib/telegram-bot-api:latest
     environment:
       TELEGRAM_API_ID: ${TELEGRAM_API_ID}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH}
       TELEGRAM_LOCAL: 1
-    command: ["--api-id=${TELEGRAM_API_ID}", "--api-hash=${TELEGRAM_API_HASH}", "--local", "--http-port=8081", "--dir=/var/lib/telegram-bot-api"]
+    command:
+      - --api-id=${TELEGRAM_API_ID}
+      - --api-hash=${TELEGRAM_API_HASH}
+      - --local
+      - --http-port=8081
+      - --dir=/var/lib/telegram-bot-api
     volumes:
       - botapi:/var/lib/telegram-bot-api
-    restart: unless-stopped
-
-  bot:
-    build: .
-    env_file: .env
-    environment:
-      TELEGRAM_API_URL: http://bot-api:8081/
-      DATABASE_URL: sqlite:///data/bot.db
-      TMP_DIR: /data/tmp
-      METRICS_ADDR: 0.0.0.0:9090
-    volumes:
-      - bot-data:/data
-      - botapi:/var/lib/telegram-bot-api
-    depends_on:
-      - bot-api
-    ports:
-      - "9090:9090"
     restart: unless-stopped
 
 volumes:

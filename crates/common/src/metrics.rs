@@ -1,20 +1,12 @@
-//! Prometheus recorder setup. Metrics are cheap and always installed; the HTTP
-//! listener is optional so local development does not need a port.
+//! Prometheus recorder setup. The recorder is always installed so `metrics::counter!`
+//! never panics; when a metrics address is configured the app crate serves
+//! `/metrics` and `/healthz` over a minimal HTTP listener (see `app::health`).
 
 use anyhow::Result;
-use metrics_exporter_prometheus::PrometheusBuilder;
-use std::net::SocketAddr;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
-pub fn install(addr: Option<SocketAddr>) -> Result<()> {
-    if let Some(addr) = addr {
-        PrometheusBuilder::new()
-            .with_http_listener(addr)
-            .install()?;
-    } else {
-        // Install a recorder anyway so `metrics::counter!` never panics, but
-        // serve nothing; handy for local runs and tests.
-        PrometheusBuilder::new().install_recorder()?;
-    }
+pub fn install() -> Result<PrometheusHandle> {
+    let handle = PrometheusBuilder::new().install_recorder()?;
 
     metrics::describe_counter!("music_bot_requests_total", "Incoming user requests");
     metrics::describe_counter!("music_bot_cache_hits_total", "Served directly from cache");
@@ -36,5 +28,5 @@ pub fn install(addr: Option<SocketAddr>) -> Result<()> {
         "music_bot_upload_seconds",
         "Telegram upload latency in seconds"
     );
-    Ok(())
+    Ok(handle)
 }
