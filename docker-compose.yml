@@ -4,7 +4,9 @@ services:
   bot:
     build: .
     image: maslomusicbot:latest
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: sqlite:///data/bot.db
       TMP_DIR: /data/tmp
