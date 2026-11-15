@@ -17,7 +17,6 @@ services:
       - bot-data:/data
     ports:
       - "9090:9090"
-    init: true
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=512m
