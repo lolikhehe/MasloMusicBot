@@ -5,17 +5,14 @@ private chat and the bot replies with the track (title, performer, duration,
 cover art). Use `@your_bot <query>` inline to drop audio into any chat.
 
 > This is not a streaming service or library. It stores only metadata and Telegram
-> `file_id` identifiers — audio bytes stay in Telegram's servers. Providers
-> with DRM (Spotify, Apple Music, Tidal) are used solely as public metadata
-> lookups to find the same track on open sources; nothing is unlocked or bypassed.
+> `file_id` identifiers — audio bytes stay in Telegram's servers. Providers with
+> DRM (Spotify, Apple Music, Tidal) are used solely as public metadata lookups to
+> find the same track on open sources; nothing is unlocked or bypassed.
 
 ## Quick start
 
-1. Copy `.env.example` to `.env` and fill in:
-
-   - `TELOXIDE_TOKEN` — from [@BotFather](https://t.me/BotFather)
-   - `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` — from <https://my.telegram.org> (required by the bundled local Bot API server)
-   - `ADMINS` — your numeric Telegram user ID(s)
+1. Copy `.env.example` to `.env` and fill in `TELOXIDE_TOKEN` (from [@BotFather](https://t.me/BotFather))
+   and `ADMINS` (your numeric Telegram user ID(s)). Leave everything else at defaults.
 
 2. Run:
 
@@ -25,12 +22,18 @@ cover art). Use `@your_bot <query>` inline to drop audio into any chat.
 
 3. Message your bot privately. Done.
 
-`docker compose` starts two services: a local `tdlib/telegram-bot-api` server
-(which raises the upload limit to 2000 MB and keeps file uploads local) and the
-`music-bot` itself. SQLite data and temp files live in the `bot-data` volume.
+By default the bot talks to the public Telegram Bot API (uploads up to 50 MB). To lift that to
+2000 MB and serve files locally, enable the `local` profile (see **Local Bot API migration** below).
 
-To run against the public Telegram API instead of the local server, leave
-`TELEGRAM_API_URL` unset and run only the `bot` service (25 MB upload limit).
+### BotFather setup (inline mode)
+
+Inline results only work after two one-time commands in [@BotFather](https://t.me/BotFather):
+
+1. `/setinline` — select your bot, set a placeholder, e.g. `Search a track…`
+2. `/setinlinefeedback` — select your bot, set **100%**
+
+Without `/setinlinefeedback` the bot never receives `chosen_inline_result`, so inline picks would
+not be editable into messages.
 
 ## Commands
 
@@ -39,7 +42,7 @@ To run against the public Telegram API instead of the local server, leave
 | `/start` | everyone | Disclaimer and quick intro |
 | `/help` | everyone | How to use the bot |
 | `/settings` | everyone | Language (EN/UK) and audio quality (128–320 kbps) |
-| `/stats` | admins | Tracks cached, users seen, sends, uptime |
+| `/stats` | admins | Tracks cached, users seen, uptime |
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |
 
@@ -47,11 +50,13 @@ In a private chat:
 
 - Paste a link — YouTube, YouTube Music, SoundCloud, Bandcamp, Spotify, Apple Music, Deezer
 - Send `Artist — Title` — best match from YouTube
-- Send a playlist/album link — downloads up to `MAX_ALBUM_TRACKS` tracks
+- Send an album/playlist link — the bot first asks with an inline keyboard
+  ("Download all N tracks? ✅/✖", cap `MAX_COLLECTION_TRACKS`, default 25) and then downloads
+  with 2–3 parallel tasks, editing one progress message at most once per 2 s
 - Tap a search result to download
 
-In any chat, `@your_bot Artist — Title` offers candidates inline; picking one
-posts the audio in that chat.
+In any chat, `@your_bot Artist — Title` offers candidates inline; picking one posts the audio in that
+chat. Cached tracks post instantly; uncached tracks download and are edited into the message.
 
 ## Configuration
 
@@ -59,52 +64,99 @@ All settings come from environment variables (see `.env.example`). Highlights:
 
 - `ENABLED_PROVIDERS` — comma-separated, or `all` (`youtube,youtube_music,soundcloud,bandcamp,spotify,apple_music,deezer`)
 - `SEARCH_PROVIDERS` — `youtube` (only supported search provider)
-- `MAX_DURATION_SECS` (default 1200), `MAX_FILE_MB` (default 100, up to 2000), `MAX_ALBUM_TRACKS` (default 10)
+- `MAX_DURATION_SECS` (default 1200), `MAX_FILE_MB` (default 100, up to 2000)
+- `MAX_COLLECTION_TRACKS` (default 25), `MAX_ACTIVE_DOWNLOADS_PER_USER` (default 2)
 - `RATE_LIMIT_PER_MIN` (default 10), `MAX_CONCURRENT_DOWNLOADS` (default 4)
-- `METRICS_ADDR` — Prometheus `/metrics` listener; empty or `off` disables
-- `DATABASE_URL` — `sqlite:///path/to/bot.db` (default `sqlite://data/bot.db`)
+- `METRICS_ADDR` — serves `/metrics` and `/healthz` (Prometheus format; empty or `off` disables)
+- `STORAGE_CHAT_ID` — optional chat used to cache inline `file_id`s (see below)
+- `DEFAULT_LANG` — `en` (default) or `uk`; without it, new users inherit Telegram `language_code`
 - `LOG_FORMAT=json` for structured logs; `LOG_LEVEL` for verbosity
+- `DATABASE_URL` — `sqlite:///path/to/bot.db` (default `sqlite://data/bot.db`)
 
-## Legal & responsibility
+The Docker image caps `mem_limit: 2g`, `pids_limit: 512`, drops all capabilities, runs as uid 10001,
+and starts with a read-only rootfs + `tmpfs /tmp`.
 
-You are responsible for what you download and share. Only use the bot for
-content you own, or content that is Creative Commons / explicitly free to
-distribute. The bot stores no copyrighted audio itself; everything flows
-through the provider APIs and Telegram. DRM protections are never bypassed.
-Set `ENABLED_PROVIDERS` to the subset you have the right to use, and use
-`/purge <key>` to forget cached items on request.
+## Local Bot API migration (one-time, optional)
+
+The bundled local server raises the upload ceiling to 2000 MB and shares a filesystem with the bot.
+You need `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from <https://my.telegram.org>.
+
+1. **Migrate the bot off the cloud API first** — the cloud and local endpoints are mutually exclusive
+   for a given bot for a while. While the bot is stopped or scaled down, call
+   [`logOut`](https://core.telegram.org/bots/api#log-out):
+
+   ```sh
+   curl -s "https://api.telegram.org/bot${TELOXIDE_TOKEN}/logOut"
+   ```
+
+   Expect `{"ok":true,"result":true}`. The cloud API will not work for this bot for some minutes afterwards.
+
+2. Put the credentials in `.env`:
+
+   ```sh
+   TELEGRAM_API_ID=123456
+   TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef
+   TELEGRAM_API_URL=http://bot-api:8081/
+   ```
+
+3. Start both services:
+
+   ```sh
+   docker compose --profile local up -d
+   ```
+
+4. Health is visible via `/metrics` on port 9090 — the `/healthz` endpoint confirms the process and SQLite.
+
+If you skip all this, `docker compose up -d` runs the bot against the public API and everything works
+except uploads larger than 50 MB.
+
+## yt-dlp upgrades
+
+The yt-dlp binary is pinned and sha256-verified in `Dockerfile`:
+
+```dockerfile
+ARG YTDLP_VERSION=2026.10.26
+ARG YTDLP_SHA256=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795
+```
+
+To upgrade: pick the new tag on <https://github.com/yt-dlp/yt-dlp/releases/latest>, fetch its sha256
+(`curl -s https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest | jq -r '.assets[] | select(.name=="yt-dlp_linux").digest'`),
+update both args, then `docker compose build --no-cache bot`. Newer yt-dlp fixes the frequent
+"YouTube extraction failed" breakage; the bot needs no rebuild for anything else.
 
 ## How it works
 
-- **Fast path**: parse the URL offline → `track_key` → SQLite lookup → send by
-  Telegram `file_id`. Repeat requests take milliseconds, no network needed.
-- **Cold path**: `yt-dlp` metadata → in-flight dedup → bounded download to a
-  temp directory → tags + cover via `ffmpeg`/`lofty` → uploaded through the
-  local Bot API → `file_id` stored → temp files deleted.
+- **Fast path**: parse the URL offline → `track_key` → SQLite lookup → send by Telegram `file_id`.
+  Repeat requests take milliseconds, no network needed.
+- **Cold path**: `yt-dlp` metadata → in-flight dedup → bounded download to a temp directory →
+  tags + cover via `ffmpeg`/`lofty` → uploaded → `file_id` stored → temp files deleted by the janitor.
 - Audio is kept as m4a/AAC (no re-encode when possible) for speed.
-- Concurrent cold requests for the same track share one download.
-- Cold **inline** plays are not cached (Telegram's `editMessageMedia` does not
-  return a `file_id`); if the track was already cached, inline sends it from
-  the cache.
+- Concurrent cold requests for the same track share one download (one semaphore global permit + broadcast).
+- Cold **inline** plays are not cached without `STORAGE_CHAT_ID` (Telegram's `editMessageMedia` does
+  not return a `file_id`); with it, the cold file is sent to the storage chat to obtain a cached
+  `file_id`. Never delete messages in that chat — the cached ids die with them.
 
 ## Development
 
 ```sh
-cargo test          # 25 unit tests (URL parsing, i18n, DB, sanitizing, commands)
-cargo clippy --all-targets
-cargo fmt --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+cargo deny check
 ```
 
-The code is organized as: `config` / `domain` / `error` / `i18n` / `state` /
-`metrics` / `shutdown` — `cache::db` (SQLite) — `providers::{url, ytdlp, external}`
-— `audio::tags` — `download::manager` (in-flight dedup + semaphore) —
-`bot::{commands, handlers, callbacks, inline, send}` — `main`.
-
-See `docs/decisions.md` for the technical decisions made while building this.
+Layout: `crates/{common,storage,providers,downloader,audio,telegram,app}` — see `docs/decisions.md`.
+The crate split mirrors the spec's §7.1 dependency direction; `common` serves everything else.
 
 ### Troubleshooting
 
-- **Bot doesn't start**: check `TELOXIDE_TOKEN`; check logs (`docker compose logs -f bot`).
-- **"source unavailable"**: yt-dlp may be blocked/rate-limited from your region or IP. Try again later; YouTube may require a PO token — see yt-dlp's docs.
-- **Downloads fail for everything**: check network egress and that `YTDLP_PATH`/`FFMPEG_PATH` are executable (they are in the Docker image).
+- **Bot doesn't start**: check `TELOXIDE_TOKEN`; `docker compose logs -f bot`.
+- **"source unavailable"**: yt-dlp may be blocked or YouTube may rate-limit bots from your IP
+  (PO tokens). Try again later, or raise `MAX_DURATION_SECS`/refresh yt-dlp.
+- **Inline picker does nothing**: run `/setinline` and `/setinlinefeedback` in BotFather (see above).
+- **Downloads fail for everything**: verify network egress and that `YTDLP_PATH`/`FFMPEG_PATH` are executable.
 - **Slow first download, instant repeats**: that is the cache working as designed.
+- **`docker compose up` shows env warnings**: `.env` is optional; create it to silence them, but never commit it.
+
+See `docs/decisions.md`, `docs/ASSUMPTIONS.md`, `docs/perf.md` for the technical detail and the
+honest list of what is measured and what is not.

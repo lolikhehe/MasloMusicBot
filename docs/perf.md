@@ -1,0 +1,37 @@
+# Performance notes (spec §9 етап 10 / §14)
+
+> Honesty first: this document does **not** contain invented numbers. Real latency depends on the
+> operator's network, IP reputation with YouTube/SoundCloud, and Telegram datacenter location, none
+> of which the dev environment has. Numbers marked **NOT MEASURED** must be re-measured after deploy.
+
+## Scenarios and status
+
+| ID | Scenario (from spec) | Target | Status |
+|---|---|---|---|
+| S1 | Cache hit, start of audio playback | < 300 ms | **NOT MEASURED** — architecture supports it (offline key parse + one `SELECT` + Telegram send; no external network). Measure with `music_bot_request_seconds` histogram p95 on cache hits. |
+| S2 | Cold path, new 3–5 min track | ≈ 3–6 s | **NOT MEASURED** — dominated by yt-dlp fetch + Telegram upload. Measure `music_bot_download_seconds` and `music_bot_upload_seconds` on first send. |
+| S3 | 20 concurrent requests for 5 tracks | 1 download each | **Architecture addressed, not measured** — in-flight dedup `(track_key, quality)` + global semaphore 4 + per-user cap 2. Verify by burst-sending the same link from several accounts and watching `music_bot_downloads_inflight`. |
+| S4 | Inline search burst | < 1 s cached / < 2 s cold | Served via moka L1 (10 min TTL) + SQLite L2; `music_bot_inline_seconds` histogram records the full handler latency. |
+
+## What *is* measured on the dev machine (Windows, x64)
+
+- `cargo test --workspace`: all tests complete in ~0.1 s.
+- `cargo build --release`: ~1 min 45 s, binary links lean (`lto=fat`, `codegen-units=1`, `strip`).
+- Mock-API smoke test: image boots, connects, `/healthz` returns `{"status":"ok"}`; no real yt-dlp
+  download exercised (no network egress to providers in the harness).
+
+## How to measure after deploy
+
+1. Deploy with `METRICS_ADDR=0.0.0.0:9090` and scrape `http://bot:9090/metrics`.
+2. S1: send a cached link 50 times; read `histogram_quantile(0.95, rate(music_bot_request_seconds_bucket[5m]))`.
+3. S2: send 10 different fresh links; read `music_bot_download_seconds` and `music_bot_upload_seconds`.
+4. S3: 20 users send the same link within 2 s; `music_bot_downloads_inflight` should peak at the
+   semaphore limit (4) and exactly one download per track is performed.
+5. S4: `curl "https://api.telegram.org/bot<TOKEN>/answerInlineQuery"` behaviour is already covered by the
+   handler; measure `music_bot_inline_seconds` during a typing burst in any chat.
+
+## Profiling hooks available today
+
+- tracing structured logs (`LOG_FORMAT=json`), per-request timing spans in the handler.
+- `metrics-exporter-prometheus` recorder on `METRICS_ADDR`.
+- No tokio-console/flamegraph integration yet — add behind a `debug` feature if needed.
