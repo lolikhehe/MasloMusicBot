@@ -1,6 +1,6 @@
-# music-bot
+# MasloMusicBot
 
-A fast Telegram bot that delivers music. Send a link or `Artist — Title` in a
+A fast Telegram music bot in Rust. Send a link or `Artist — Title` in a
 private chat and the bot replies with the track (title, performer, duration,
 cover art). Use `@your_bot <query>` inline to drop audio into any chat.
 
