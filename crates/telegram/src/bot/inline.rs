@@ -27,6 +27,7 @@ use teloxide::types::{
 use tracing::{info, warn};
 
 pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> HandlerResult {
+    let started = std::time::Instant::now();
     let user_id = query.from.id.0 as i64;
     let preferred = common::domain::Lang::from_telegram_hint(
         query.from.language_code.as_deref(),
@@ -151,6 +152,7 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
         results.push(InlineQueryResult::Article(article));
     }
 
+    metrics::histogram!("music_bot_inline_seconds").record(started.elapsed().as_secs_f64());
     bot.answer_inline_query(query.id.clone(), results)
         .cache_time(30)
         .is_personal(false)

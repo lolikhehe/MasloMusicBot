@@ -28,5 +28,17 @@ pub fn install() -> Result<PrometheusHandle> {
         "music_bot_upload_seconds",
         "Telegram upload latency in seconds"
     );
+    metrics::describe_histogram!(
+        "music_bot_inline_seconds",
+        "Inline query answer latency in seconds"
+    );
+    metrics::describe_gauge!(
+        "music_bot_downloads_inflight",
+        "Downloads running concurrently right now"
+    );
+    metrics::describe_gauge!(
+        "music_bot_downloads_queued",
+        "Keys currently tracked by the in-flight deduplication map (queue length)"
+    );
     Ok(handle)
 }

@@ -10,6 +10,7 @@ license.workspace = true
 audio.workspace = true
 common.workspace = true
 moka.workspace = true
+metrics.workspace = true
 providers.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true

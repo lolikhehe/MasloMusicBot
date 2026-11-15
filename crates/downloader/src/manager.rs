@@ -224,6 +224,7 @@ impl DownloadManager {
                 inflight.insert(cache_key.clone(), tx.clone());
                 sender = Some(tx);
             }
+            metrics::gauge!("music_bot_downloads_queued").set(inflight.len() as f64);
         }
 
         if let Some(mut rx) = receiver {
@@ -244,11 +245,25 @@ impl DownloadManager {
         let result = self.prepare_leader(request, quality).await;
         let broadcast_result = result.clone().map_err(|error| Arc::new(error.clone()));
         let _ = sender.send(broadcast_result);
-        self.inflight.lock().await.remove(&cache_key);
+        let mut inflight = self.inflight.lock().await;
+        inflight.remove(&cache_key);
+        metrics::gauge!("music_bot_downloads_queued").set(inflight.len() as f64);
+        drop(inflight);
         result
     }
 
     async fn prepare_leader(
+        &self,
+        request: TrackRequest,
+        quality: u32,
+    ) -> Result<PreparedAudio, DownloadError> {
+        metrics::gauge!("music_bot_downloads_inflight").increment(1.0);
+        let result = self.prepare_leader_inner(request, quality).await;
+        metrics::gauge!("music_bot_downloads_inflight").decrement(1.0);
+        result
+    }
+
+    async fn prepare_leader_inner(
         &self,
         mut request: TrackRequest,
         quality: u32,
