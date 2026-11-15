@@ -1,0 +1,29 @@
+﻿[package]
+name = "app"
+description = "music-bot binary: config, tracing, wiring, graceful shutdown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[package.metadata]
+# keep binary name stable
+[[bin]]
+name = "music-bot"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+common.workspace = true
+dotenvy.workspace = true
+futures.workspace = true
+downloader.workspace = true
+mimalloc.workspace = true
+providers.workspace = true
+reqwest.workspace = true
+teloxide.workspace = true
+storage.workspace = true
+telegram.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

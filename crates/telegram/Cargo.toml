@@ -1,0 +1,24 @@
+﻿[package]
+name = "telegram"
+description = "Telegram bot layer: dispatcher, handlers, callbacks, inline mode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+common.workspace = true
+downloader.workspace = true
+html-escape.workspace = true
+metrics.workspace = true
+moka.workspace = true
+providers.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+storage.workspace = true
+teloxide.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+url.workspace = true

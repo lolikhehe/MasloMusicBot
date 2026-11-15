@@ -1,0 +1,23 @@
+﻿[package]
+name = "downloader"
+description = "Download pipeline: yt-dlp orchestration, in-flight dedup, temp janitor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+audio.workspace = true
+common.workspace = true
+moka.workspace = true
+providers.workspace = true
+reqwest.workspace = true
+storage.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
