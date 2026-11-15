@@ -1,7 +1,7 @@
 //! Inline keyboard callbacks: search choices and per-user settings.
 
 use crate::bot::commands::settings_keyboard;
-use crate::bot::handlers::{deliver_track, edit_html, error_text, escape_html};
+use crate::bot::handlers::{deliver_album, deliver_track, edit_html, error_text, escape_html};
 use crate::state::AppState;
 use common::error::HandlerResult;
 use common::i18n;
@@ -31,6 +31,10 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
 
     if let Some(id) = data.strip_prefix("q:") {
         handle_selection(&state, &bot, &query, id, user.lang, user.quality).await?;
+    } else if let Some(id) = data.strip_prefix("alc:") {
+        handle_album_confirm(&state, &bot, &query, id, user.lang, user.quality).await?;
+    } else if let Some(id) = data.strip_prefix("alx:") {
+        handle_album_cancel(&state, &bot, &query, id, user.lang).await?;
     } else if let Some(value) = data.strip_prefix("s:q:") {
         if let Ok(quality) = value.parse::<u32>() {
             state.db.set_quality(user_id, quality).await?;
@@ -73,8 +77,9 @@ async fn handle_selection(
     };
     let chat = message.chat.id;
     let message_id = message.id;
+    let user_id = query.from.id.0 as i64;
 
-    if !state.limiter.allow(query.from.id.0 as i64).await {
+    if !state.limiter.allow(user_id).await {
         let _ = edit_html(
             bot,
             chat,
@@ -92,7 +97,7 @@ async fn handle_selection(
 
     let _ = edit_html(bot, chat, message_id, i18n::downloading(lang)).await;
     info!(selection_id, "delivering selected search result");
-    match deliver_track(state, bot, chat, request.clone(), quality).await {
+    match deliver_track(state, bot, chat, request.clone(), quality, user_id).await {
         Ok(_) => {
             let title = request
                 .meta
@@ -113,6 +118,59 @@ async fn handle_selection(
             let _ = edit_html(bot, chat, message_id, text).await;
         }
     }
+    Ok(())
+}
+
+/// User confirmed a collection: start downloading it with limited parallelism.
+async fn handle_album_confirm(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    selection_id: &str,
+    lang: common::domain::Lang,
+    quality: u32,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    let chat = message.chat.id;
+    let message_id = message.id;
+    let user_id = query.from.id.0 as i64;
+
+    let Some(album) = state.album_selections.get(selection_id).await else {
+        let _ = edit_html(bot, chat, message_id, i18n::selection_expired(lang)).await;
+        return Ok(());
+    };
+    state.album_selections.invalidate(selection_id).await;
+    info!(
+        selection_id,
+        tracks = album.tracks.len(),
+        "album confirmed; starting downloads"
+    );
+    deliver_album(state, bot, chat, message_id, lang, quality, user_id, album).await
+}
+
+/// User declined a collection: discard the pending expansion.
+async fn handle_album_cancel(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    selection_id: &str,
+    lang: common::domain::Lang,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    if let Some(message) = query.regular_message() {
+        let _ = edit_html(
+            bot,
+            message.chat.id,
+            message.id,
+            i18n::album_cancelled(lang),
+        )
+        .await;
+    }
+    state.album_selections.invalidate(selection_id).await;
+    info!(selection_id, "album download cancelled");
     Ok(())
 }
 

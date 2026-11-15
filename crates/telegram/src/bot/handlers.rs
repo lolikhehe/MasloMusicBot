@@ -74,7 +74,16 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
 
     let result = match parse_input(text) {
         ParsedInput::Track(request) => {
-            handle_track(&state, &bot, msg.chat.id, lang, user.quality, request).await
+            handle_track(
+                &state,
+                &bot,
+                msg.chat.id,
+                lang,
+                user.quality,
+                user_id,
+                request,
+            )
+            .await
         }
         ParsedInput::Album(album) => {
             handle_album(&state, &bot, msg.chat.id, lang, user.quality, album).await
@@ -109,6 +118,7 @@ async fn handle_track(
     chat: ChatId,
     lang: Lang,
     quality: u32,
+    user_id: i64,
     request: TrackRequest,
 ) -> HandlerResult {
     if try_cache_send(state, bot, chat, &request.key, quality).await? {
@@ -116,7 +126,7 @@ async fn handle_track(
     }
 
     let placeholder = send::send_html(bot, chat, i18n::downloading(lang)).await?;
-    match deliver_track(state, bot, chat, request, quality).await {
+    match deliver_track(state, bot, chat, request, quality, user_id).await {
         Ok(_) => {
             if let Err(error) = bot.delete_message(chat, placeholder.id).await {
                 warn!(%error, "could not delete progress message");
@@ -185,12 +195,14 @@ async fn handle_search(
     Ok(())
 }
 
+/// Collections are never downloaded silently: the user confirms the size and
+/// the tracklist first (spec §9 stage 6).
 async fn handle_album(
     state: &AppState,
     bot: &Bot,
     chat: ChatId,
     lang: Lang,
-    quality: u32,
+    _quality: u32,
     album_ref: common::domain::AlbumRef,
 ) -> HandlerResult {
     let progress = send::send_html(bot, chat, i18n::album_loading(lang)).await?;
@@ -209,44 +221,89 @@ async fn handle_album(
     tracing::info!(
         provider = %album.provider,
         source_url = album.source_url.as_deref().unwrap_or("<none>"),
-        "resolved album"
+        tracks = album.tracks.len(),
+        "resolved album; awaiting user confirmation"
     );
 
+    let selection_id = state.new_selection_id();
+    let count = album.tracks.len();
+    state
+        .album_selections
+        .insert(selection_id.clone(), album.clone())
+        .await;
+    let title = escape_html(&album.title);
+    let keyboard = InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback(
+            i18n::album_download_all(lang).to_owned(),
+            format!("alc:{selection_id}"),
+        ),
+        InlineKeyboardButton::callback(
+            i18n::album_cancel(lang).to_owned(),
+            format!("alx:{selection_id}"),
+        ),
+    ]]);
+    bot.edit_message_text(chat, progress.id, i18n::album_confirm(lang, &title, count))
+        .parse_mode(ParseMode::Html)
+        .reply_markup(keyboard)
+        .await?;
+    Ok(())
+}
+
+/// Confirmed collection download. Tracks are delivered with limited parallelism
+/// and the progress message is edited at most once every 2 seconds.
+#[allow(clippy::too_many_arguments)]
+pub async fn deliver_album(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    progress: MessageId,
+    lang: Lang,
+    quality: u32,
+    user_id: i64,
+    album: common::domain::Album,
+) -> HandlerResult {
     let total = album.tracks.len();
+    let title = escape_html(&album.title);
     let _ = edit_html(
         bot,
         chat,
-        progress.id,
-        i18n::album_started(lang, &escape_html(&album.title), total),
+        progress,
+        i18n::album_started(lang, &title, total),
     )
     .await;
 
+    let mut set = tokio::task::JoinSet::new();
+    for track in album.tracks {
+        let state = state.clone();
+        let bot_clone = bot.clone();
+        set.spawn(
+            async move { deliver_track(&state, &bot_clone, chat, track, quality, user_id).await },
+        );
+    }
+
     let mut ok = 0usize;
     let mut failed = 0usize;
-    for (index, track) in album.tracks.into_iter().enumerate() {
-        let track_title = track
-            .meta
-            .as_ref()
-            .map(|meta| meta.display_title())
-            .unwrap_or_else(|| format!("Track {}", index + 1));
-        let _ = edit_html(
-            bot,
-            chat,
-            progress.id,
-            i18n::album_progress(lang, index + 1, total, &escape_html(&track_title)),
-        )
-        .await;
-
-        match deliver_track(state, bot, chat, track, quality).await {
-            Ok(_) => ok += 1,
-            Err(error) => {
-                failed += 1;
-                warn!(%error, index, "album track failed");
-            }
+    let mut done = 0usize;
+    let mut last_edit = Instant::now();
+    while let Some(result) = set.join_next().await {
+        match result {
+            Ok(Ok(_)) => ok += 1,
+            _ => failed += 1,
+        }
+        done += 1;
+        if last_edit.elapsed() >= std::time::Duration::from_secs(2) || done == total {
+            let _ = edit_html(
+                bot,
+                chat,
+                progress,
+                i18n::album_progress(lang, done, total, &title),
+            )
+            .await;
+            last_edit = Instant::now();
         }
     }
 
-    let _ = edit_html(bot, chat, progress.id, i18n::album_done(lang, ok, failed)).await;
+    let _ = edit_html(bot, chat, progress, i18n::album_done(lang, ok, failed)).await;
     Ok(())
 }
 
@@ -284,6 +341,7 @@ pub async fn deliver_track(
     chat: ChatId,
     request: TrackRequest,
     quality: u32,
+    user_id: i64,
 ) -> Result<Delivery, BoxError> {
     if try_cache_send(state, bot, chat, &request.key, quality).await? {
         return Ok(Delivery::Cached);
@@ -291,7 +349,11 @@ pub async fn deliver_track(
 
     metrics::counter!("music_bot_downloads_total").increment(1);
     let download_started = Instant::now();
-    let prepared = match state.manager.prepare(request.clone(), quality).await {
+    let prepared = match state
+        .manager
+        .prepare(request.clone(), quality, user_id)
+        .await
+    {
         Ok(prepared) => prepared,
         Err(error) => {
             metrics::counter!("music_bot_download_errors_total").increment(1);

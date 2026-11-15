@@ -185,6 +185,25 @@ pub fn error(lang: Lang, error: &DownloadError) -> String {
     text.to_owned()
 }
 
+pub fn album_confirm(lang: Lang, title: &str, count: usize) -> String {
+    match lang {
+        Lang::En => format!("💿 <b>{title}</b>\n{count} track(s). Download the whole collection?"),
+        Lang::Uk => format!("💿 <b>{title}</b>\n{count} треків. Завантажити весь збірник?"),
+    }
+}
+
+pub fn album_download_all(lang: Lang) -> &'static str {
+    pick(lang, "⬇ Download all", "⬇ Завантажити всі")
+}
+
+pub fn album_cancel(lang: Lang) -> &'static str {
+    pick(lang, "Cancel", "Скасувати")
+}
+
+pub fn album_cancelled(lang: Lang) -> &'static str {
+    pick(lang, "Cancelled.", "Скасовано.")
+}
+
 pub fn album_loading(lang: Lang) -> &'static str {
     pick(lang, "💿 Loading the album…", "💿 Завантажую альбом…")
 }

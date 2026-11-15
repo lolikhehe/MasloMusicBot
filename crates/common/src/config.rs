@@ -19,7 +19,10 @@ pub struct Config {
     pub search_providers: HashSet<Provider>,
     pub max_duration_secs: u64,
     pub max_file_mb: u64,
-    pub max_album_tracks: usize,
+    /// Cap on tracks per collection (album/playlist) per the spec (default 25).
+    pub max_collection_tracks: usize,
+    /// Per-user cap on concurrently active downloads (spec: e.g. 2).
+    pub max_active_downloads_per_user: usize,
     pub rate_limit_per_min: u32,
     pub max_concurrent_downloads: usize,
     pub admins: HashSet<i64>,
@@ -59,10 +62,20 @@ impl Config {
             &[Provider::YouTube],
         )?;
 
-        let max_album_tracks = env_parse("MAX_ALBUM_TRACKS", 10usize)?;
+        // MAX_COLLECTION_TRACKS is the spec name (§9 stage 6), default 25;
+        // MAX_ALBUM_TRACKS is the legacy alias kept for compatibility.
+        let collection_default = env_optional("MAX_ALBUM_TRACKS")
+            .map(|v| v.parse::<usize>().context("MAX_ALBUM_TRACKS"))
+            .transpose()?
+            .unwrap_or(25);
+        let max_collection_tracks = env_parse("MAX_COLLECTION_TRACKS", collection_default)?;
+        let max_active_downloads_per_user = env_parse("MAX_ACTIVE_DOWNLOADS_PER_USER", 2usize)?;
         let max_concurrent_downloads = env_parse("MAX_CONCURRENT_DOWNLOADS", 4usize)?;
-        if max_album_tracks == 0 || max_album_tracks > 50 {
-            bail!("MAX_ALBUM_TRACKS must be between 1 and 50");
+        if max_collection_tracks == 0 || max_collection_tracks > 50 {
+            bail!("MAX_COLLECTION_TRACKS must be between 1 and 50");
+        }
+        if max_active_downloads_per_user == 0 || max_active_downloads_per_user > 16 {
+            bail!("MAX_ACTIVE_DOWNLOADS_PER_USER must be between 1 and 16");
         }
         if max_concurrent_downloads == 0 || max_concurrent_downloads > 64 {
             bail!("MAX_CONCURRENT_DOWNLOADS must be between 1 and 64");
@@ -114,7 +127,8 @@ impl Config {
             search_providers,
             max_duration_secs: env_parse("MAX_DURATION_SECS", 1200u64)?,
             max_file_mb: env_parse("MAX_FILE_MB", 100u64)?.clamp(1, 2000),
-            max_album_tracks,
+            max_collection_tracks,
+            max_active_downloads_per_user,
             rate_limit_per_min: env_parse("RATE_LIMIT_PER_MIN", 10u32)?,
             max_concurrent_downloads,
             admins,

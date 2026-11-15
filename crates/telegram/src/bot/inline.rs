@@ -224,7 +224,11 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     }
 
     metrics::counter!("music_bot_downloads_total").increment(1);
-    let prepared = match state.manager.prepare(request.clone(), user.quality).await {
+    let prepared = match state
+        .manager
+        .prepare(request.clone(), user.quality, user_id)
+        .await
+    {
         Ok(prepared) => prepared,
         Err(error) => {
             metrics::counter!("music_bot_download_errors_total").increment(1);
@@ -368,8 +372,9 @@ async fn fallback_private(state: &AppState, bot: &Bot, result: &ChosenInlineResu
         return;
     };
     let chat = ChatId(result.from.id.0 as i64);
+    let user_id = result.from.id.0 as i64;
     info!("falling back to private delivery for inline result");
-    let _ = deliver_track(state, bot, chat, request, quality).await;
+    let _ = deliver_track(state, bot, chat, request, quality, user_id).await;
 }
 
 fn format_duration(seconds: u32) -> String {

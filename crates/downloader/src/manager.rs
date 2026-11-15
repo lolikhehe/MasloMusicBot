@@ -45,6 +45,7 @@ pub struct DownloadManager {
     cover_client: reqwest::Client,
     semaphore: Arc<Semaphore>,
     inflight: Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>>,
+    user_semaphores: Mutex<HashMap<i64, Arc<Semaphore>>>,
     search_cache: Cache<String, Vec<SearchResult>>,
 }
 
@@ -67,6 +68,7 @@ impl DownloadManager {
             external,
             cover_client,
             inflight: Mutex::new(HashMap::new()),
+            user_semaphores: Mutex::new(HashMap::new()),
             search_cache,
         }
     }
@@ -174,24 +176,40 @@ impl DownloadManager {
         }
         if album.provider.is_external() {
             self.external
-                .resolve_album(album, self.config.max_album_tracks)
+                .resolve_album(album, self.config.max_collection_tracks)
                 .await
         } else {
             self.ytdlp
-                .playlist(album, self.config.max_album_tracks)
+                .playlist(album, self.config.max_collection_tracks)
                 .await
         }
     }
 
     /// Download once per key, even when several requests arrive together.
+    /// `user_id` enforces the per-user cap on concurrently active downloads;
+    /// cached sends never reach here and are not throttled by it.
     pub async fn prepare(
         &self,
         request: TrackRequest,
         quality: u32,
+        user_id: i64,
     ) -> Result<PreparedAudio, DownloadError> {
         if !self.config.provider_enabled(request.provider) {
             return Err(DownloadError::ProviderDisabled(request.provider));
         }
+
+        let user_sem = {
+            let mut map = self.user_semaphores.lock().await;
+            map.entry(user_id)
+                .or_insert_with(|| {
+                    Arc::new(Semaphore::new(self.config.max_active_downloads_per_user))
+                })
+                .clone()
+        };
+        let _user_permit = user_sem
+            .acquire_owned()
+            .await
+            .map_err(|_| DownloadError::Internal("user download semaphore closed".to_owned()))?;
 
         let cache_key = (request.key.clone(), quality);
         let mut receiver = None;
@@ -215,7 +233,7 @@ impl DownloadManager {
                     Ok(Err(error)) => return Err((*error).clone()),
                     Err(broadcast::error::RecvError::Closed) => {
                         // The leader disappeared without publishing. Try again.
-                        return Box::pin(self.prepare(request, quality)).await;
+                        return Box::pin(self.prepare(request, quality, user_id)).await;
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 }

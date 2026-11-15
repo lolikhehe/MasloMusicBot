@@ -2,7 +2,7 @@
 
 use crate::rate_limit::RateLimiter;
 use common::config::Config;
-use common::domain::TrackRequest;
+use common::domain::{Album, TrackRequest};
 use downloader::DownloadManager;
 use moka::future::Cache;
 use std::collections::HashMap;
@@ -17,6 +17,9 @@ pub struct AppState {
     pub db: Db,
     pub manager: Arc<DownloadManager>,
     pub selections: Cache<String, TrackRequest>,
+    /// Album/playlist selections awaiting the user's confirmation
+    /// (spec: collections require a confirmation step before downloading).
+    pub album_selections: Cache<String, Album>,
     pub limiter: Arc<RateLimiter>,
     pub bot_username: String,
     pub started_at: Instant,
@@ -36,12 +39,17 @@ impl AppState {
             .max_capacity(10_000)
             .time_to_live(Duration::from_secs(30 * 60))
             .build();
+        let album_selections = Cache::builder()
+            .max_capacity(1_000)
+            .time_to_live(Duration::from_secs(30 * 60))
+            .build();
         let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
         Self {
             config,
             db,
             manager,
             selections,
+            album_selections,
             limiter,
             bot_username,
             started_at: Instant::now(),

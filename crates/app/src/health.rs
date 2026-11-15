@@ -49,9 +49,17 @@ async fn respond(
     let (status, content_type, body) = match path {
         "/healthz" => {
             if db.ping().await {
-                ("200 OK", "application/json", "{\"status\":\"ok\"}".to_owned())
+                (
+                    "200 OK",
+                    "application/json",
+                    "{\"status\":\"ok\"}".to_owned(),
+                )
             } else {
-                ("503 Service Unavailable", "application/json", "{\"status\":\"degraded\"}".to_owned())
+                (
+                    "503 Service Unavailable",
+                    "application/json",
+                    "{\"status\":\"degraded\"}".to_owned(),
+                )
             }
         }
         "/metrics" => (
