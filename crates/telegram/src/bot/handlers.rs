@@ -50,7 +50,10 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     }
 
     if !msg.chat.is_private() {
-        let lang = state.config.default_lang;
+        let lang = common::domain::Lang::from_telegram_hint(
+            msg.from.as_ref().and_then(|u| u.language_code.as_deref()),
+            state.config.default_lang,
+        );
         send::send_html(&bot, msg.chat.id, i18n::private_only(lang)).await?;
         return Ok(());
     }
@@ -59,10 +62,11 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
         return Ok(());
     };
     let user_id = from.id.0 as i64;
-    let user = state
-        .db
-        .ensure_user(user_id, state.config.default_lang)
-        .await?;
+    let preferred = common::domain::Lang::from_telegram_hint(
+        from.language_code.as_deref(),
+        state.config.default_lang,
+    );
+    let user = state.db.ensure_user(user_id, preferred).await?;
     let lang = user.lang;
 
     if user.banned && !state.config.is_admin(user_id) {

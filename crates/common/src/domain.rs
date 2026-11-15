@@ -29,6 +29,25 @@ impl Lang {
             _ => None,
         }
     }
+
+    /// Map a Telegram `language_code` to a supported UI language, falling
+    /// back to `fallback` when unknown (spec §9 етап 6: мова з налаштувань,
+    /// за відсутності — з language_code Telegram).
+    pub fn from_telegram_hint(code: Option<&str>, fallback: Self) -> Self {
+        match code {
+            Some(value) => {
+                let value = value.trim().to_ascii_lowercase();
+                if value.starts_with("uk") || value.starts_with("ru") || value.starts_with("be") {
+                    Self::Uk
+                } else if value.starts_with("en") {
+                    Self::En
+                } else {
+                    fallback
+                }
+            }
+            None => fallback,
+        }
+    }
 }
 
 /// A supported music source.

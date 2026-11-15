@@ -93,10 +93,9 @@ pub async fn handle_command(
         return Ok(());
     };
     let user_id = user.id.0 as i64;
-    let user_record = state
-        .db
-        .ensure_user(user_id, state.config.default_lang)
-        .await?;
+    let preferred =
+        Lang::from_telegram_hint(user.language_code.as_deref(), state.config.default_lang);
+    let user_record = state.db.ensure_user(user_id, preferred).await?;
     let lang = user_record.lang;
     let is_admin = state.config.is_admin(user_id);
 

@@ -28,10 +28,11 @@ use tracing::{info, warn};
 
 pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> HandlerResult {
     let user_id = query.from.id.0 as i64;
-    let user = state
-        .db
-        .ensure_user(user_id, state.config.default_lang)
-        .await?;
+    let preferred = common::domain::Lang::from_telegram_hint(
+        query.from.language_code.as_deref(),
+        state.config.default_lang,
+    );
+    let user = state.db.ensure_user(user_id, preferred).await?;
     let lang = user.lang;
 
     if user.banned && !state.config.is_admin(user_id) {
@@ -172,10 +173,11 @@ fn inline_keyboard(state: &AppState, lang: Lang) -> InlineKeyboardMarkup {
 
 pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult) -> HandlerResult {
     let user_id = result.from.id.0 as i64;
-    let user = state
-        .db
-        .ensure_user(user_id, state.config.default_lang)
-        .await?;
+    let preferred = common::domain::Lang::from_telegram_hint(
+        result.from.language_code.as_deref(),
+        state.config.default_lang,
+    );
+    let user = state.db.ensure_user(user_id, preferred).await?;
     let lang = user.lang;
 
     if user.banned && !state.config.is_admin(user_id) {

@@ -11,10 +11,11 @@ use tracing::{info, warn};
 
 pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) -> HandlerResult {
     let user_id = query.from.id.0 as i64;
-    let user = state
-        .db
-        .ensure_user(user_id, state.config.default_lang)
-        .await?;
+    let preferred = common::domain::Lang::from_telegram_hint(
+        query.from.language_code.as_deref(),
+        state.config.default_lang,
+    );
+    let user = state.db.ensure_user(user_id, preferred).await?;
     let is_admin = state.config.is_admin(user_id);
     if user.banned && !is_admin {
         let _ = bot
@@ -47,10 +48,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
     } else if let Some(code) = data.strip_prefix("s:lang:") {
         if let Some(lang) = common::domain::Lang::from_code(code) {
             state.db.set_language(user_id, lang).await?;
-            let user = state
-                .db
-                .ensure_user(user_id, state.config.default_lang)
-                .await?;
+            let user = state.db.ensure_user(user_id, preferred).await?;
             refresh_settings(&state, &bot, &query, lang, user.quality).await?;
             let _ = bot
                 .answer_callback_query(query.id.clone())
