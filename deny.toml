@@ -4,7 +4,18 @@
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # paste (via lofty → unmaintained) — no safe upgrade available.
+    "RUSTSEC-2024-0436",
+    # proc-macro-error2 (via teloxide → aquamarine) — unmaintained; no safe upgrade available.
+    "RUSTSEC-2026-0173",
+    # libsqlite3-sys (via sqlx-sqlite 0.9, pinned <0.38) — SQLite older than 3.54.0.
+    # Attack vector is a maliciously crafted -wal database file; our database is
+    # app-owned and single-tenant, never attacker-controlled. Fix requires sqlx
+    # to widen its libsqlite3-sys range (0.40 bundles SQLite 3.54.1). Re-check on
+    # every sqlx upgrade.
+    "RUSTSEC-2026-0459",
+]
 
 [licenses]
 version = 2
@@ -16,11 +27,13 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "CC0-1.0",
+    "CDLA-Permissive-2.0",
     "ISC",
     "MIT",
     "MPL-2.0",
     "Unicode-3.0",
     "Unicode-DFS-2016",
+    "WTFPL",
     "Zlib",
 ]
 confidence-threshold = 0.8
