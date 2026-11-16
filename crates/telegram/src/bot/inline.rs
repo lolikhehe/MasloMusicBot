@@ -5,12 +5,12 @@
 //! inline keyboard forces `inline_message_id` to be present, so the bot can
 //! later swap the placeholder for the audio via `editMessageMedia`.
 //! Bot API forbids uploading a fresh file into an inline message: the new
-//! media must reference a previously uploaded `file_id`, so a cold track only
-//! lands in the inline message when it is first sent to the `STORAGE_CHAT_ID`
-//! channel, the resulting `file_id` is cached, and the placeholder is edited
-//! with it. Without a storage chat the audio cannot be placed inline; the
-//! track is delivered to the user's private chat and the placeholder is
-//! edited to point there (§9, етап 7).
+//! media must reference a previously uploaded `file_id`, so a cold track is
+//! first uploaded to the `STORAGE_CHAT_ID` channel — or, when no storage
+//! channel is configured, to the user's own private chat — and the resulting
+//! `file_id` is cached and used to edit the placeholder in place. No group
+//! membership is required for `editMessageMedia` on an inline message (§9,
+//! етап 7).
 //!
 //! `inline_query` fires on every keystroke, so results are per-user and the
 //! answer of a stale query is silently dropped (generation counter).
@@ -254,67 +254,66 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         .ok()
         .map(|meta| meta.len() as i64);
 
-    // Give the inline message a file_id: upload the audio to the storage chat
-    // (if configured), then edit with that file_id and cache it.
-    if let Some(storage_chat_id) = state.config.storage_chat_id {
-        match send_prepared_storage(&bot, storage_chat_id, &prepared).await {
-            Ok((file_id, file_unique_id)) => {
-                // The storage message must NOT be deleted (spec §9, етап 7).
-                if let Err(error) = state
-                    .manager
-                    .record(
-                        &request,
-                        &prepared.meta,
-                        file_id.clone(),
-                        file_unique_id.clone(),
-                        user.quality,
-                        size_bytes,
-                    )
-                    .await
-                {
-                    warn!(%error, "could not record inline file_id in cache");
+    // An inline message may only carry a previously uploaded `file_id` — fresh
+    // uploads are forbidden ("a new file can't be uploaded; use a previously
+    // uploaded file via its file_id or specify a URL"). Mint a `file_id` in the
+    // first chat we know we can reach: the storage channel if configured,
+    // otherwise the user's own private chat with the bot (they started the bot
+    // to use inline mode, so the send always lands there). The placeholder in
+    // the group is then edited to the audio — no group membership needed — and
+    // the `file_id` is cached so the next pick answers instantly via
+    // `CachedAudio`. The PM copy is the only durable holder of that `file_id`;
+    // keep it (deleting the storage message may invalidate the cached id).
+    let upload_targets = [state.config.storage_chat_id.map(ChatId), Some(ChatId(user_id))]
+        .into_iter()
+        .flatten();
+    let mut minted: Option<(String, String)> = None;
+    for chat in upload_targets {
+        match send::send_prepared(&bot, chat, &prepared).await {
+            Ok(message) => match send::extract_file_id(&message) {
+                Some(pair) => {
+                    minted = Some(pair);
+                    break;
                 }
-                metrics::counter!("music_bot_uploads_total").increment(1);
-                if let Some(inline_message_id) = result.inline_message_id.clone() {
-                    let media = file_id_media(&prepared, &file_id);
-                    if let Err(error) = bot
-                        .edit_message_media_inline(inline_message_id, media)
-                        .await
-                    {
-                        warn!(%error, "could not edit inline message with storage file_id");
-                    }
-                }
-                return Ok(());
-            }
-            Err(error) => {
-                warn!(%error, "storage chat upload failed; falling back to private delivery");
-            }
+                None => warn!(chat = chat.0, "inline file_id upload yielded no audio file_id"),
+            },
+            Err(error) => warn!(%error, chat = chat.0, "inline file_id upload failed"),
         }
     }
 
-    // Bot API forbids uploading a fresh file into an inline message
-    // ("a new file can't be uploaded; use a previously uploaded file via
-    // its file_id or specify a URL"), so without a storage chat there is no
-    // way to place this audio into the inline message. Deliver it to the
-    // user's private chat instead and fix the placeholder so the group
-    // doesn't keep a stale "Downloading…" forever.
-    fallback_private(&state, &bot, &result, user.quality, lang).await;
-    Ok(())
-}
+    // The storage/PM message must NOT be deleted (the cached `file_id` may die
+    // with it — spec §9, етап 7).
+    let Some((file_id, file_unique_id)) = minted else {
+        warn!("could not mint file_id for inline result; falling back to private delivery");
+        fallback_private(&state, &bot, &result, user.quality, lang).await;
+        return Ok(());
+    };
 
-async fn send_prepared_storage(
-    bot: &Bot,
-    storage_chat_id: i64,
-    prepared: &downloader::PreparedAudio,
-) -> Result<(String, String), teloxide::RequestError> {
-    let chat = teloxide::types::ChatId(storage_chat_id);
-    let message = send::send_prepared(bot, chat, prepared).await?;
-    match send::extract_file_id(&message) {
-        Some(pair) => Ok(pair),
-        None => Err(teloxide::RequestError::Io(std::sync::Arc::new(
-            std::io::Error::other("storage message had no audio file_id"),
-        ))),
+    if let Err(error) = state
+        .manager
+        .record(
+            &request,
+            &prepared.meta,
+            file_id.clone(),
+            file_unique_id.clone(),
+            user.quality,
+            size_bytes,
+        )
+        .await
+    {
+        warn!(%error, "could not record inline file_id in cache");
     }
+    metrics::counter!("music_bot_uploads_total").increment(1);
+    if let Some(inline_message_id) = result.inline_message_id.clone() {
+        let media = file_id_media(&prepared, &file_id);
+        if let Err(error) = bot
+            .edit_message_media_inline(inline_message_id, media)
+            .await
+        {
+            warn!(%error, "could not edit inline message with minted file_id");
+        }
+    }
+    Ok(())
 }
 
 fn cached_media(cached: &CachedTrack) -> InputMedia {

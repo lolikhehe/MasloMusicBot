@@ -164,6 +164,19 @@ inline picks are uploaded to the storage channel, the placeholder is swapped to 
 the group, and the `file_id` is cached for instant inline replay. Verify the storage channel
 receives the audio and `/metrics` shows the upload.
 
+## Follow-up (2026-11-16): inline audio works without a storage channel
+
+Inline music bots can usually drop audio into any chat because they mint a `file_id` somewhere
+first (upload to a storage channel) and then `editMessageMedia` the inline message — membership
+in the target chat is never required for inline edits. This bot now does the same thing even
+without `STORAGE_CHAT_ID`: the cold upload target falls back to the user's own private chat
+with the bot (guaranteed reachable once they started it), the resulting `file_id` is cached,
+and the group's placeholder is edited to the audio. The user's PM then holds a copy of the
+track (it is the only durable holder of that `file_id`; do not delete it). Side effect: the
+PM copy stays until the user deletes it — set `STORAGE_CHAT_ID` to a storage channel to avoid
+the duplicate in DM. No public HTTP URL is needed (an `audio_url`-based inline result was
+rejected: the bot host has no public address Telegram clients can fetch).
+
 ## Ops (2026-11-16): deno pinned as yt-dlp JS runtime (EJS)
 
 Symptom: yt-dlp 2026.10.26 warns `No supported JavaScript runtime could be found`; YouTube
