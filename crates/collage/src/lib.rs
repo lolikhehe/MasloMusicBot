@@ -51,10 +51,28 @@ fn draw(
         let mut glyph = scaled.scaled_glyph(ch);
         glyph.position = point(cursor, baseline);
         if let Some(outline) = font.outline_glyph(glyph) {
-            outline.draw(|gx, gy, _coverage| {
-                let (gx, gy) = (gx as u32, gy as u32);
-                if gx < canvas.width() && gy < canvas.height() {
-                    canvas.put_pixel(gx, gy, color);
+            // draw() yields coordinates relative to the glyph's pixel bounds,
+            // not absolute canvas coordinates.
+            let origin = outline.px_bounds().min;
+            outline.draw(|gx, gy, coverage| {
+                let px = origin.x as i32 + gx as i32;
+                let py = origin.y as i32 + gy as i32;
+                if px >= 0
+                    && py >= 0
+                    && (px as u32) < canvas.width()
+                    && (py as u32) < canvas.height()
+                {
+                    // Blend onto the opaque canvas: writing a low alpha would
+                    // punch transparent holes that viewers render as white.
+                    let alpha = (coverage * f32::from(color.0[3]) / 255.0).clamp(0.0, 1.0);
+                    let background = canvas.get_pixel(px as u32, py as u32);
+                    let mut blended = Rgba([0, 0, 0, 255]);
+                    for channel in 0..3 {
+                        blended.0[channel] = (f32::from(color.0[channel]) * alpha
+                            + f32::from(background.0[channel]) * (1.0 - alpha))
+                            .round() as u8;
+                    }
+                    canvas.put_pixel(px as u32, py as u32, blended);
                 }
             });
         }
