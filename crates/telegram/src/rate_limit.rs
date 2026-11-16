@@ -4,6 +4,11 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
+/// Deques belonging to users who hit the limiter again are reused; dropping
+/// stale users happens only when the map grows past this watermark so the
+/// hot path stays O(1).
+const SWEEP_WATERMARK: usize = 4096;
+
 pub struct RateLimiter {
     per_minute: u32,
     inner: Mutex<HashMap<i64, VecDeque<Instant>>>,
@@ -23,15 +28,23 @@ impl RateLimiter {
             return true;
         }
         let now = Instant::now();
-        let cutoff = now - Duration::from_secs(60);
+        let window = Duration::from_secs(60);
+        let cutoff = now.checked_sub(window).unwrap_or(now);
         let mut users = self.inner.lock().await;
-        users.retain(|_, entries| {
-            while entries.front().is_some_and(|instant| *instant < cutoff) {
-                entries.pop_front();
-            }
-            !entries.is_empty()
-        });
+        // Only sweep the whole map when it balloons; the per-user path below
+        // is otherwise O(1).
+        if users.len() > SWEEP_WATERMARK {
+            users.retain(|_, entries| {
+                while entries.front().is_some_and(|instant| *instant < cutoff) {
+                    entries.pop_front();
+                }
+                !entries.is_empty()
+            });
+        }
         let entries = users.entry(user_id).or_default();
+        while entries.front().is_some_and(|instant| *instant < cutoff) {
+            entries.pop_front();
+        }
         if entries.len() >= self.per_minute as usize {
             return false;
         }

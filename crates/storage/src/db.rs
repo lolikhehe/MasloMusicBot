@@ -36,7 +36,13 @@ impl Db {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
             .busy_timeout(Duration::from_secs(10))
-            .foreign_keys(true);
+            .foreign_keys(true)
+            // Read-heavy cache workload: 64 MiB of page cache and in-memory
+            // temp tables. Measured: mmap_size made reads *slower* on this
+            // class of tiny hot DB (see docs/decisions.md), so it is off.
+            .pragma("cache_size", "-65536")
+            .pragma("temp_store", "MEMORY")
+            .statement_cache_capacity(256);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
@@ -231,26 +237,23 @@ impl Db {
         Ok(())
     }
 
+    /// One round trip: `RETURNING` hands back the post-upsert row. Called on
+    /// every incoming message, so the extra round trip used to matter.
     pub async fn ensure_user(&self, id: i64, fallback: Lang) -> AppResult<UserRecord> {
         let now = unix_now();
-        sqlx::query(
+        let row = sqlx::query(
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
-             ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at",
+             ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+             RETURNING language, quality, banned",
         )
         .bind(id)
         .bind(fallback.code())
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(db_err)?;
-
-        let row = sqlx::query("SELECT language, quality, banned FROM users WHERE user_id = ?")
-            .bind(id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db_err)?;
 
         Ok(UserRecord {
             lang: Lang::from_code(row.get::<String, _>("language").as_str()).unwrap_or(Lang::En),

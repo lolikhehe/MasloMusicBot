@@ -64,3 +64,26 @@ Cold-path yt-dlp download verified inside the container after the deno fix (same
 downloader: `-f bestaudio[ext=m4a]/bestaudio -N 4 --no-playlist --ignore-config`): fetched a
 19 s YouTube test clip as a valid M4A with no EJS warning. End-to-end via Telegram still
 awaits operator traffic; S2 remains NOT MEASURED until then.
+
+## Optimization pass (2026-11-16, Rust micro-opts, no behavior change)
+
+Changes: single-roundtrip `ensure_user` (`INSERT … ON CONFLICT … RETURNING`), SQLite page
+cache 64 MiB + `temp_store=MEMORY` + statement cache 256, per-user rate limiter now O(1)
+(no full-map sweep per keystroke), inline-generation counters and per-user download
+semaphores moved to bounded `moka` caches (were unbounded `Mutex<HashMap>` = memory leak),
+single call sites for command parsing, `truncate`/`escape_html` single pass / fast path,
+dropped redundant host-lowercase allocation in `parse_input`.
+
+Measured (`cargo run --release -p storage --example cache_bench`, Windows x64 dev machine,
+a 100-row temp-file DB, 1000 iterations, noisy shared desktop — treat as indicative):
+
+| Run | get_track avg | get_track p50 | get_track p95 | touch_track avg |
+|---|---|---|---|---|
+| before (docs baseline) | ~34 µs | ~31 µs | ~47 µs | ~98 µs |
+| with `mmap_size=256MB` | ~51–52 µs | ~35–49 µs | ~59–76 µs | ~114–129 µs |
+| without mmap (final) | 33.0 / 34.7 / 34.4 µs | 30.1 / 31.7 / 31.4 µs | 47.2 / 54.1 / 55.1 µs | ~95 / ~124 µs |
+
+Conclusion: `mmap_size` was a measurable regression on this workload and was removed; the
+rest of the pass is semantics-preserving and should mainly help under real concurrency
+(DB roundtrips halved on the message path; limiter no longer scans all users per call).
+End-to-end S1/S2 still require live traffic to measure.

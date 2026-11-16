@@ -264,9 +264,12 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     // the `file_id` is cached so the next pick answers instantly via
     // `CachedAudio`. The PM copy is the only durable holder of that `file_id`;
     // keep it (deleting the storage message may invalidate the cached id).
-    let upload_targets = [state.config.storage_chat_id.map(ChatId), Some(ChatId(user_id))]
-        .into_iter()
-        .flatten();
+    let upload_targets = [
+        state.config.storage_chat_id.map(ChatId),
+        Some(ChatId(user_id)),
+    ]
+    .into_iter()
+    .flatten();
     let mut minted: Option<(String, String)> = None;
     for chat in upload_targets {
         match send::send_prepared(&bot, chat, &prepared).await {
@@ -275,7 +278,10 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
                     minted = Some(pair);
                     break;
                 }
-                None => warn!(chat = chat.0, "inline file_id upload yielded no audio file_id"),
+                None => warn!(
+                    chat = chat.0,
+                    "inline file_id upload yielded no audio file_id"
+                ),
             },
             Err(error) => warn!(%error, chat = chat.0, "inline file_id upload failed"),
         }

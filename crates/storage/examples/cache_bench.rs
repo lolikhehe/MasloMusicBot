@@ -12,7 +12,11 @@ use storage::Db;
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
-    let db = Db::connect(&format!("sqlite://{}", dir.path().join("bench.db").display())).await?;
+    let db = Db::connect(&format!(
+        "sqlite://{}",
+        dir.path().join("bench.db").display()
+    ))
+    .await?;
 
     const N: usize = 100;
     for i in 0..N {

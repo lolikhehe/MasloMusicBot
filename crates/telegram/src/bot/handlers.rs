@@ -38,15 +38,13 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     };
 
     if text.trim_start().starts_with('/') {
-        if let Some(command) = commands::parse_command(text, &state.bot_username)
-            && !matches!(command, Command::Unknown(_))
-        {
-            return commands::handle_command(&state, &bot, &msg, command).await;
-        }
-        if let Some(Command::Unknown(_)) = commands::parse_command(text, &state.bot_username) {
-            return commands::handle_command(&state, &bot, &msg, Command::Help).await;
-        }
-        return Ok(());
+        return match commands::parse_command(text, &state.bot_username) {
+            Some(Command::Unknown(_)) => {
+                commands::handle_command(&state, &bot, &msg, Command::Help).await
+            }
+            Some(command) => commands::handle_command(&state, &bot, &msg, command).await,
+            None => Ok(()),
+        };
     }
 
     if !msg.chat.is_private() {
@@ -440,13 +438,25 @@ pub fn error_text(lang: Lang, error: &BoxError) -> String {
 }
 
 pub fn escape_html(value: &str) -> String {
+    // Fast path: skip the escaping machinery entirely for clean titles.
+    if !value
+        .bytes()
+        .any(|b| matches!(b, b'&' | b'<' | b'>' | b'"' | b'\''))
+    {
+        return value.to_owned();
+    }
     html_escape::encode_text(value).to_string()
 }
 
+/// Single pass: the old implementation iterated `chars()` twice.
 pub fn truncate(value: &str, max: usize) -> String {
-    let mut result: String = value.chars().take(max).collect();
-    if value.chars().count() > max {
-        result.push('…');
+    let mut result = String::with_capacity(value.len().min((max + 1) * 4));
+    for (index, ch) in value.chars().enumerate() {
+        if index == max {
+            result.push('…');
+            return result;
+        }
+        result.push(ch);
     }
     result
 }

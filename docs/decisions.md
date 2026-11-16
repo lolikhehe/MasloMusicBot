@@ -132,6 +132,20 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Optimization pass decisions (2026-11-16)
+
+- `mmap_size` for SQLite was tried and **reverted**: on the tiny hot cache DB it consistently
+  regressed `get_track` (avg ~34→~52 µs, p50 ~31→~35–49 µs over three runs). Kept
+  `cache_size=-65536`, `temp_store=MEMORY`, `statement_cache_capacity(256)`.
+- `ensure_user` uses `INSERT … ON CONFLICT DO UPDATE … RETURNING` — one round trip instead of
+  two; SQLite ≥ 3.35 required (bookworm ships 3.40).
+- Rate limiter no longer `retain`s the whole users map on every call (was O(total users)
+  per keystroke); empty-entry sweep is triggered only above 4096 tracked users.
+- Unbounded `Mutex<HashMap<…>>` leaks fixed: inline-generation counters and per-user download
+  semaphores are now bounded `moka` caches (10k entries, generations idle-expire after 10 min).
+- Release profile was already `lto=fat`, `codegen-units=1`, `strip=true`, and mimalloc is the
+  global allocator — left alone.
+
 ## Ops incident (2026-11-16): inline uncached track lands in private chat, not the group
 
 Symptom: user picks an uncached inline result ("Завантажую: …" placeholder); the audio is

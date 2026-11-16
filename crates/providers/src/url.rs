@@ -1,4 +1,4 @@
-﻿//! Offline input parsing. Nothing here performs a network request, so a cache
+//! Offline input parsing. Nothing here performs a network request, so a cache
 //! hit can be answered without contacting a provider.
 
 use common::domain::{AlbumRef, DownloadTarget, Provider, TrackKey, TrackRequest};
@@ -26,22 +26,22 @@ pub fn parse_input(raw: &str) -> ParsedInput {
         return ParsedInput::Search(input.to_owned());
     };
 
-    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    let host = host.strip_prefix("www.").unwrap_or(&host).to_owned();
+    // The `url` crate already normalizes the host to lowercase, so no extra
+    // lowercase pass or allocation is needed here.
+    let host = url.host_str().unwrap_or_default();
+    let host = host.strip_prefix("www.").unwrap_or(host);
 
-    match host.as_str() {
+    match host {
         "youtube.com"
         | "m.youtube.com"
         | "music.youtube.com"
         | "youtu.be"
-        | "youtube-nocookie.com" => parse_youtube(&url, &host),
-        "soundcloud.com" | "m.soundcloud.com" | "on.soundcloud.com" => {
-            parse_soundcloud(&url, &host)
-        }
+        | "youtube-nocookie.com" => parse_youtube(&url, host),
+        "soundcloud.com" | "m.soundcloud.com" | "on.soundcloud.com" => parse_soundcloud(&url, host),
         "open.spotify.com" | "play.spotify.com" => parse_spotify(&url),
         "music.apple.com" | "itunes.apple.com" => parse_apple(&url),
         "deezer.com" | "www.deezer.com" => parse_deezer(&url),
-        _ if host.ends_with(".bandcamp.com") => parse_bandcamp(&url, &host),
+        _ if host.ends_with(".bandcamp.com") => parse_bandcamp(&url, host),
         _ => ParsedInput::Unsupported(format!("unsupported host: {host}")),
     }
 }

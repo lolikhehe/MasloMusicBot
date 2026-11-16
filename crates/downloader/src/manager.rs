@@ -45,7 +45,7 @@ pub struct DownloadManager {
     cover_client: reqwest::Client,
     semaphore: Arc<Semaphore>,
     inflight: Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>>,
-    user_semaphores: Mutex<HashMap<i64, Arc<Semaphore>>>,
+    user_semaphores: Cache<i64, Arc<Semaphore>>,
     search_cache: Cache<String, Vec<SearchResult>>,
 }
 
@@ -60,6 +60,7 @@ impl DownloadManager {
             .max_capacity(1_000)
             .time_to_live(Duration::from_secs(600))
             .build();
+        let user_semaphores = Cache::builder().max_capacity(10_000).build();
         Self {
             semaphore: Arc::new(Semaphore::new(config.max_concurrent_downloads)),
             config,
@@ -68,7 +69,7 @@ impl DownloadManager {
             external,
             cover_client,
             inflight: Mutex::new(HashMap::new()),
-            user_semaphores: Mutex::new(HashMap::new()),
+            user_semaphores,
             search_cache,
         }
     }
@@ -198,14 +199,12 @@ impl DownloadManager {
             return Err(DownloadError::ProviderDisabled(request.provider));
         }
 
-        let user_sem = {
-            let mut map = self.user_semaphores.lock().await;
-            map.entry(user_id)
-                .or_insert_with(|| {
-                    Arc::new(Semaphore::new(self.config.max_active_downloads_per_user))
-                })
-                .clone()
-        };
+        let user_sem = self
+            .user_semaphores
+            .get_with(user_id, async {
+                Arc::new(Semaphore::new(self.config.max_active_downloads_per_user))
+            })
+            .await;
         let _user_permit = user_sem
             .acquire_owned()
             .await

@@ -5,11 +5,9 @@ use common::config::Config;
 use common::domain::{Album, TrackRequest};
 use downloader::DownloadManager;
 use moka::future::Cache;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use storage::Db;
-use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -25,7 +23,8 @@ pub struct AppState {
     pub started_at: Instant,
     /// Per-user generation counter for inline queries; a new query cancels the
     /// answer of a stale one (Telegram sends `inline_query` on every keystroke).
-    pub inline_generations: Arc<Mutex<HashMap<i64, u64>>>,
+    /// Bounded and self-expiring so the map can't grow without limit.
+    pub inline_generations: Cache<i64, u64>,
 }
 
 impl AppState {
@@ -44,6 +43,10 @@ impl AppState {
             .time_to_live(Duration::from_secs(30 * 60))
             .build();
         let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
+        let inline_generations = Cache::builder()
+            .max_capacity(10_000)
+            .time_to_idle(Duration::from_secs(600))
+            .build();
         Self {
             config,
             db,
@@ -53,7 +56,7 @@ impl AppState {
             limiter,
             bot_username,
             started_at: Instant::now(),
-            inline_generations: Arc::new(Mutex::new(HashMap::new())),
+            inline_generations,
         }
     }
 
@@ -62,21 +65,19 @@ impl AppState {
     }
 
     /// Bump the per-user inline generation counter; returns the new value.
+    /// Atomic per key (concurrent bumps are serialized) and bounded in size.
     pub async fn bump_inline_generation(&self, user_id: i64) -> u64 {
-        let mut map = self.inline_generations.lock().await;
-        let entry = map.entry(user_id).or_insert(0);
-        *entry += 1;
-        *entry
+        let entry = self
+            .inline_generations
+            .entry(user_id)
+            .and_upsert_with(|old| async move { old.map(|entry| *entry.value()).unwrap_or(0) + 1 })
+            .await;
+        *entry.value()
     }
 
     /// Current generation for the user (0 if unknown).
     pub async fn inline_generation(&self, user_id: i64) -> u64 {
-        self.inline_generations
-            .lock()
-            .await
-            .get(&user_id)
-            .copied()
-            .unwrap_or(0)
+        self.inline_generations.get(&user_id).await.unwrap_or(0)
     }
 
     pub fn uptime(&self) -> String {
