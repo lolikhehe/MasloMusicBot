@@ -132,6 +132,38 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Ops incident (2026-11-16): inline uncached track lands in private chat, not the group
+
+Symptom: user picks an uncached inline result ("Завантажую: …" placeholder); the audio is
+delivered to the user's private chat with the bot and the placeholder stays "Завантажую:"
+forever. Logs: `Bad Request: invalid message content specified` on editMessageMedia.
+
+Root causes:
+1. `STORAGE_CHAT_ID` was effectively empty at runtime (the value in the env file is not a
+   clean numeric chat id after trimming — consistent with `STORAGE_CHAT_ID=` / CRLF in a
+   Windows env file; compose passes the trailing CR, `env_optional` trims to empty, storage
+   is silently disabled). With no storage chat there is no way to mint a `file_id` for an
+   inline message.
+2. Code unconditionally tried `editMessageMedia` with a freshly uploaded file for the inline
+   message. Bot API forbids that: "When an inline message is edited, a new file can't be
+   uploaded; use a previously uploaded file via its file_id or specify a URL." (text→media
+   replacement itself IS allowed). Telegram rejected it, `fallback_private` sent the audio to
+   the user in DM, and the placeholder was never updated.
+
+Fix (code):
+- `inline.rs`: no more blind upload-edit for inline messages; without a storage chat the track
+  goes straight to private delivery. The inline placeholder is edited to
+  `i18n::sent_to_private` ("Трек надіслано вам в особисті повідомлення з ботом") so the group
+  doesn't keep a stale "Завантажую:". Storage file_id-edit failures are now logged (warn)
+  instead of swallowed by `let _ =`.
+
+Action for the operator: set `STORAGE_CHAT_ID` in the env file to a real numeric chat id of a
+channel where the bot is an admin (e.g. `STORAGE_CHAT_ID=-100xxxxxxxxxx`, no trailing
+spaces/CR) and recreate the container (`docker compose up -d --force-recreate`). Then uncached
+inline picks are uploaded to the storage channel, the placeholder is swapped to the audio in
+the group, and the `file_id` is cached for instant inline replay. Verify the storage channel
+receives the audio and `/metrics` shows the upload.
+
 ## Ops (2026-11-16): deno pinned as yt-dlp JS runtime (EJS)
 
 Symptom: yt-dlp 2026.10.26 warns `No supported JavaScript runtime could be found`; YouTube

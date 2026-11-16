@@ -3,10 +3,14 @@
 //! Cached tracks answer immediately with `CachedAudio` (Telegram streams the
 //! existing file_id, no bot involvement). Uncached results are articles whose
 //! inline keyboard forces `inline_message_id` to be present, so the bot can
-//! later swap the placeholder text for the audio via `editMessageMedia`.
-//! A freshly uploaded file only yields a file_id when the bot sends it to the
-//! `STORAGE_CHAT_ID` channel first; without a storage chat the audio is sent
-//! inline but stays uncached (§9, етап 7).
+//! later swap the placeholder for the audio via `editMessageMedia`.
+//! Bot API forbids uploading a fresh file into an inline message: the new
+//! media must reference a previously uploaded `file_id`, so a cold track only
+//! lands in the inline message when it is first sent to the `STORAGE_CHAT_ID`
+//! channel, the resulting `file_id` is cached, and the placeholder is edited
+//! with it. Without a storage chat the audio cannot be placed inline; the
+//! track is delivered to the user's private chat and the placeholder is
+//! edited to point there (§9, етап 7).
 //!
 //! `inline_query` fires on every keystroke, so results are per-user and the
 //! answer of a stale query is silently dropped (generation counter).
@@ -273,36 +277,28 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
                 metrics::counter!("music_bot_uploads_total").increment(1);
                 if let Some(inline_message_id) = result.inline_message_id.clone() {
                     let media = file_id_media(&prepared, &file_id);
-                    let _ = bot
+                    if let Err(error) = bot
                         .edit_message_media_inline(inline_message_id, media)
-                        .await;
+                        .await
+                    {
+                        warn!(%error, "could not edit inline message with storage file_id");
+                    }
                 }
                 return Ok(());
             }
             Err(error) => {
-                warn!(%error, "storage chat upload failed; falling back to direct edit");
+                warn!(%error, "storage chat upload failed; falling back to private delivery");
             }
         }
     }
 
-    // No storage configured (or it failed): the file goes in as-is and no
-    // file_id comes back, so this inline result is not cached.
-    let Some(inline_message_id) = result.inline_message_id.clone() else {
-        fallback_private(&state, &bot, &result, user.quality).await;
-        return Ok(());
-    };
-    match bot
-        .edit_message_media_inline(inline_message_id, prepared_media(&prepared))
-        .await
-    {
-        Ok(_) => {
-            metrics::counter!("music_bot_uploads_total").increment(1);
-        }
-        Err(error) => {
-            warn!(%error, "could not edit inline message with uploaded audio");
-            fallback_private(&state, &bot, &result, user.quality).await;
-        }
-    }
+    // Bot API forbids uploading a fresh file into an inline message
+    // ("a new file can't be uploaded; use a previously uploaded file via
+    // its file_id or specify a URL"), so without a storage chat there is no
+    // way to place this audio into the inline message. Deliver it to the
+    // user's private chat instead and fix the placeholder so the group
+    // doesn't keep a stale "Downloading…" forever.
+    fallback_private(&state, &bot, &result, user.quality, lang).await;
     Ok(())
 }
 
@@ -336,26 +332,6 @@ fn cached_media(cached: &CachedTrack) -> InputMedia {
     InputMedia::Audio(media)
 }
 
-fn prepared_media(prepared: &downloader::PreparedAudio) -> InputMedia {
-    let input = InputFile::file(prepared.audio_path.clone()).file_name(prepared.file_name());
-    let mut media = InputMediaAudio::new(input);
-    media.title = Some(truncate(&prepared.meta.title, 128));
-    media.performer = prepared
-        .meta
-        .performer
-        .as_deref()
-        .map(|value| truncate(value, 128));
-    media.duration = prepared
-        .meta
-        .duration_secs
-        .map(|value| value.min(u16::MAX as u32) as u16);
-    media.thumbnail = prepared
-        .cover_path
-        .as_ref()
-        .map(|path| InputFile::file(path.clone()));
-    InputMedia::Audio(media)
-}
-
 fn file_id_media(prepared: &downloader::PreparedAudio, file_id: &str) -> InputMedia {
     let mut media = InputMediaAudio::new(InputFile::file_id(FileId(file_id.to_owned())));
     media.title = Some(truncate(&prepared.meta.title, 128));
@@ -371,7 +347,23 @@ fn file_id_media(prepared: &downloader::PreparedAudio, file_id: &str) -> InputMe
     InputMedia::Audio(media)
 }
 
-async fn fallback_private(state: &AppState, bot: &Bot, result: &ChosenInlineResult, quality: u32) {
+async fn fallback_private(
+    state: &AppState,
+    bot: &Bot,
+    result: &ChosenInlineResult,
+    quality: u32,
+    lang: Lang,
+) {
+    // Fix the inline placeholder so the chat doesn't keep a stale
+    // "Downloading…" message; the audio arrives in private chat instead.
+    if let Some(inline_message_id) = result.inline_message_id.clone() {
+        if let Err(error) = bot
+            .edit_message_text_inline(inline_message_id, i18n::sent_to_private(lang))
+            .await
+        {
+            warn!(%error, "could not edit inline placeholder to point at private chat");
+        }
+    }
     let Some(request) = state.selections.get(&result.result_id).await else {
         return;
     };

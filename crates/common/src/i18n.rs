@@ -316,6 +316,14 @@ pub fn open_bot(lang: Lang) -> &'static str {
     pick(lang, "Open bot", "Відкрити бота")
 }
 
+pub fn sent_to_private(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "📩 Sent to your private messages with the bot.",
+        "📩 Трек надіслано вам в особисті повідомлення з ботом.",
+    )
+}
+
 pub fn preparing_inline(lang: Lang) -> &'static str {
     pick(lang, "⏳ Preparing the track…", "⏳ Готую трек…")
 }
@@ -338,6 +346,7 @@ mod tests {
             assert!(!help(lang, true).is_empty());
             assert!(!error(lang, &DownloadError::NotFound).is_empty());
             assert!(!stats(lang, &Stats::default(), "0s").is_empty());
+            assert!(!sent_to_private(lang).is_empty());
         }
     }
 }
