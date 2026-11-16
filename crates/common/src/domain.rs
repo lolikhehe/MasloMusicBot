@@ -236,7 +236,7 @@ impl TrackMeta {
         let tags: Vec<String> = self
             .genres
             .iter()
-            .take(4)
+            .take(8)
             .filter_map(|genre| genre_hashtag(genre))
             .collect();
         if !tags.is_empty() {
@@ -250,14 +250,77 @@ impl TrackMeta {
     }
 }
 
-/// Sanitize a genre name into a Telegram hashtag, keeping only alphanumeric
-/// characters and underscores (`Hip Hop` → `#HipHop`, `r&b` → `#Rb`).
+/// Sanitize a genre name into a readable Telegram hashtag: split on any
+/// separator, title-case each word (`alternative rock` → `#AlternativeRock`).
 fn genre_hashtag(genre: &str) -> Option<String> {
-    let cleaned: String = genre.chars().filter(|c| c.is_alphanumeric()).collect();
-    if cleaned.is_empty() {
-        return None;
+    if genre.trim().eq_ignore_ascii_case("r&b") {
+        return Some("#RnB".to_owned());
     }
-    Some(format!("#{cleaned}"))
+    let cleaned: String = genre
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut characters = word.chars();
+            match characters.next() {
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &characters.as_str().to_lowercase()
+                }
+                None => String::new(),
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(format!("#{cleaned}"))
+    }
+}
+
+/// Last.fm tags include a lot of user noise ("seen live", "favorites", ...).
+/// Drop it, de-duplicate case-insensitively, preserve source order, and keep at
+/// most `max` useful genres.
+pub fn clean_genres(tags: Vec<String>, max: usize) -> Vec<String> {
+    const NOISE: &[&str] = &[
+        "seen live",
+        "favorites",
+        "favourites",
+        "favorite",
+        "favourite",
+        "own",
+        "awesome",
+        "liked",
+        "love",
+        "good",
+        "best",
+        "cool",
+        "music",
+        "songs",
+        "seen",
+        "want",
+        "all time favorite",
+        "my top",
+        "top",
+        "chill",
+    ];
+    let mut result: Vec<String> = Vec::new();
+    for tag in tags {
+        let tag = tag.trim().to_owned();
+        let lowered = tag.to_lowercase();
+        if tag.is_empty()
+            || tag.chars().count() > 30
+            || NOISE.contains(&lowered.as_str())
+            || result
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&tag))
+        {
+            continue;
+        }
+        result.push(tag);
+        if result.len() >= max {
+            break;
+        }
+    }
+    result
 }
 
 /// What yt-dlp should be pointed at. URLs are validated by the provider layer;
@@ -461,7 +524,7 @@ mod tests {
         };
         assert_eq!(
             meta.tags_caption().as_deref(),
-            Some("💿 Metallica (Remastered 2021)\n#HeavyMetal #rb")
+            Some("💿 Metallica (Remastered 2021)\n#HeavyMetal #RnB")
         );
         let bare = TrackMeta {
             title: "x".into(),
@@ -477,6 +540,22 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(album_only.tags_caption().as_deref(), Some("#Metal"));
+    }
+
+    #[test]
+    fn clean_genres_drops_noise_and_duplicates() {
+        let cleaned = super::clean_genres(
+            vec![
+                " Thrash Metal ".into(),
+                "seen live".into(),
+                "THRASH METAL".into(),
+                "heavy metal".into(),
+                "favorites".into(),
+                "hard rock".into(),
+            ],
+            3,
+        );
+        assert_eq!(cleaned, ["Thrash Metal", "heavy metal", "hard rock"]);
     }
 
     #[test]

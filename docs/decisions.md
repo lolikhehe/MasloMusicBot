@@ -17,6 +17,29 @@ character audio-caption limit with room reserved for the FLAC-fallback note.
 Inline `CachedAudio` results still cannot carry captions (Telegram limitation),
 so those results remain article answers.
 
+## Accurate genres via Last.fm; real HQ covers (2026-11-16, v1.2.0)
+
+iTunes `primaryGenreName` was the only genre source and its ±15 s duration
+match left most tracks with zero tags. Replaced with Last.fm's public
+`track.getInfo` toptags (fallback `artist.getTopTags`) using the operator's
+existing LASTFM_API_KEY — no new credentials, no user data. iTunes is now only
+a fallback when Last.fm has no key/match. Results are de-duplicated, stripped
+of noise tags ("seen live", "favorites", ...), capped at 8, and cached in
+`AppState.genre_cache` for 24 h because enrichment also runs on cache hits.
+`genre_hashtag` now title-cases each word (`alternative rock` →
+`#AlternativeRock`, `r&b` → `#RnB`).
+
+HQ covers had two real bugs: (1) a JPEG source already under 200 KB was copied
+verbatim even in HQ mode, and (2) the same 200 KB-capped file was both the
+Telegram thumbnail (always shown small) and the image embedded in the tags.
+`prepare_cover` now returns `CoverFiles { embedded, thumbnail }`: embedded is
+up to 1000 px at q2 with no Telegram cap (players show it full-size), while
+the thumbnail is 320 px at q4 with a 240 px fallback, always ≤200 KB. YouTube
+search only exposes `hqdefault.jpg` (480px), so HQ tries `maxresdefault.jpg`
+first and verifies the JPEG's SOF dimensions — YouTube's 120x90 placeholder
+is rejected in favour of the original. Apple `100x100bb` is upgraded to
+`1000x1000bb`. The cover task timeout rose to 16 s to allow the extra fetch.
+
 ## Spec truncation (original) — now resolved
 
 The Markdown spec at `C:\Users\pylyp\Downloads\Telegram-бот для завантаження музики на Rust технічне завдання для агента.md`

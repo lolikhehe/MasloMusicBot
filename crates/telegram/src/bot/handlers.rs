@@ -3,7 +3,7 @@
 use crate::bot::commands::{self, Command};
 use crate::bot::send;
 use crate::state::AppState;
-use common::domain::{Lang, TrackKey, TrackMeta, TrackRequest};
+use common::domain::{Lang, TrackKey, TrackMeta, TrackRequest, clean_genres};
 use common::error::{AppError, DownloadError, HandlerResult};
 use common::i18n;
 use common::version::DEV_CHANNEL_LINE;
@@ -14,7 +14,7 @@ use teloxide::prelude::*;
 use teloxide::types::{
     InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntityKind, MessageId, ParseMode,
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -460,23 +460,56 @@ pub fn caption_with_flac_fallback(caption: Option<String>, fell_back: bool) -> O
     }
 }
 
-/// Best-effort genre/album enrichment when the user opted into tags and the
-/// source had no genres: one public iTunes Search API call for metadata
-/// only; failures are silent so the track still sends without tags.
+/// Best-effort genre enrichment when the user opted into tags.
+///
+/// Last.fm is the primary source: a track's community tags are specific and
+/// numerous (`thrash metal`, `groove metal`, ...) unlike the single coarse
+/// `primaryGenreName` iTunes returns. iTunes stays as a fallback when there is
+/// no Last.fm key, no match, or the lookup fails. The result is cached in memory
+/// because this runs again on cache hits and album replays.
 pub async fn enrich_tags(state: &AppState, meta: &mut TrackMeta, tags_enabled: bool) {
-    if !tags_enabled || !meta.genres.is_empty() {
+    if !tags_enabled || meta.genres.len() >= 8 {
         return;
     }
-    if let Some((genre, album)) = state
-        .manager
-        .itunes_tags(&meta.search_query(), meta.duration_secs)
-        .await
-    {
-        meta.genres = vec![genre];
-        if meta.album.is_none() {
-            meta.album = album;
+    let clean = meta.without_artist_prefix();
+    let cache_key = clean.search_query().to_lowercase();
+    let fetched = if let Some(cached) = state.genre_cache.get(&cache_key).await {
+        cached
+    } else {
+        let mut tags: Vec<String> = Vec::new();
+        let artist = clean.performer.as_deref().unwrap_or("");
+        if let Some(lastfm) = &state.lastfm {
+            match lastfm.track_tags(artist, &clean.title).await {
+                Ok(found) => tags = found,
+                Err(error) => debug!(%error, "last.fm genre lookup failed; trying iTunes"),
+            }
+        }
+        if tags.is_empty() {
+            if let Some((genre, album)) = state
+                .manager
+                .itunes_tags(&clean.search_query(), clean.duration_secs)
+                .await
+            {
+                tags.push(genre);
+                if meta.album.is_none() {
+                    meta.album = album;
+                }
+            }
+        }
+        let tags = clean_genres(tags, 8);
+        state.genre_cache.insert(cache_key, tags.clone()).await;
+        tags
+    };
+    for tag in fetched {
+        if !meta
+            .genres
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&tag))
+        {
+            meta.genres.push(tag);
         }
     }
+    meta.genres.truncate(8);
 }
 
 /// Caption for a sent track. The developer-channel line always goes out (that

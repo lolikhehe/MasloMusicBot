@@ -24,7 +24,10 @@ use tracing::{info, warn};
 pub struct PreparedAudio {
     pub meta: TrackMeta,
     pub audio_path: PathBuf,
+    /// Full-size cover embedded into the audio tags.
     pub cover_path: Option<PathBuf>,
+    /// Small (<200 KB) cover for Telegram's `thumbnail` parameter.
+    pub thumb_path: Option<PathBuf>,
     /// Holds the temporary directory alive until the audio file is consumed.
     _dir: Arc<TempDir>,
 }
@@ -485,14 +488,14 @@ impl DownloadManager {
                 actual: u64::from(duration),
             });
         }
-        let cover_path = match cover_task {
-            // Never let a stuck cover delay the audio: 8 s is generous for a
-            // sub-10 MB image on any real network.
-            Some(task) => tokio::time::timeout(std::time::Duration::from_secs(8), task)
+        let covers = match cover_task {
+            // HQ may fetch a second image URL and re-encode twice, so allow a
+            // little more time than the old single-thumbnail path did.
+            Some(task) => tokio::time::timeout(std::time::Duration::from_secs(16), task)
                 .await
                 .ok()
                 .and_then(|join| join.ok())
-                .flatten(),
+                .unwrap_or_default(),
             None => {
                 audio::prepare_cover(
                     &self.cover_client,
@@ -506,13 +509,19 @@ impl DownloadManager {
         };
 
         let audio_path = downloaded.audio_path.clone();
-        audio::tag_audio(audio_path.clone(), merged_meta.clone(), cover_path.clone()).await;
+        audio::tag_audio(
+            audio_path.clone(),
+            merged_meta.clone(),
+            covers.embedded.clone(),
+        )
+        .await;
         drop(_permit);
 
         Ok(PreparedAudio {
             meta: merged_meta,
             audio_path,
-            cover_path,
+            cover_path: covers.embedded,
+            thumb_path: covers.thumbnail,
             _dir: Arc::new(dir),
         })
     }
@@ -622,9 +631,10 @@ async fn clear_dir(dir: &Path) {
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         if entry.file_type().await.is_ok_and(|kind| kind.is_file()) {
-            // The early cover task may have written cover.jpg while the audio
-            // attempt was running; deleting it here would race tagging.
-            if entry.file_name().to_string_lossy().starts_with("cover.") {
+            // The early cover task may have written cover.jpg / cover_*.jpg
+            // while the audio attempt was running; deleting them here would
+            // race tagging.
+            if entry.file_name().to_string_lossy().starts_with("cover") {
                 continue;
             }
             let _ = tokio::fs::remove_file(entry.path()).await;

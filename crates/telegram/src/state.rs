@@ -37,9 +37,12 @@ pub struct AppState {
     /// instead of running a yt-dlp subprocess to the end and discarding its
     /// output.
     pub inline_generation_tx: Cache<i64, tokio::sync::watch::Sender<u64>>,
-    /// Last.fm client (public "now playing" feed); `None` when the operator
-    /// did not set LASTFM_API_KEY.
+    /// Last.fm client (public "now playing" feed + genre tags); `None` when the
+    /// operator did not set LASTFM_API_KEY.
     pub lastfm: Option<providers::lastfm::LastFmClient>,
+    /// Genre lookups are repeated on cache hits and album replays; keep them in
+    /// memory for a day so we don't hammer Last.fm/iTunes per send.
+    pub genre_cache: Cache<String, Vec<String>>,
 }
 
 impl AppState {
@@ -65,6 +68,10 @@ impl AppState {
             .max_capacity(1_000)
             .time_to_live(Duration::from_secs(30 * 60))
             .build();
+        let genre_cache = Cache::builder()
+            .max_capacity(5_000)
+            .time_to_live(Duration::from_secs(24 * 60 * 60))
+            .build();
         let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
         let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
         let inline_generations = Cache::builder()
@@ -89,6 +96,7 @@ impl AppState {
             inline_generations,
             inline_generation_tx,
             lastfm,
+            genre_cache,
         }
     }
 

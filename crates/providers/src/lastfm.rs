@@ -77,10 +77,161 @@ impl LastFmClient {
         };
         Ok(Some(track.into_now_playing()))
     }
+
+    /// Community-curated genre tags for a track — far richer and more accurate
+    /// than the single coarse genre Apple/iTunes exposes. `track.getInfo`
+    /// returns up to five toptags; `artist.getTopTags` is the fallback when the
+    /// track page has none (e.g. obscure uploads). Returns names sorted by
+    /// Last.fm's tag count, already trimmed and de-duplicated.
+    pub async fn track_tags(
+        &self,
+        artist: &str,
+        title: &str,
+    ) -> Result<Vec<String>, DownloadError> {
+        let artist = artist.trim();
+        let title = title.trim();
+        if title.is_empty() || artist.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = "https://ws.audioscrobbler.com/2.0/";
+        let info: TrackInfoResponse = self
+            .client
+            .get(url)
+            .query(&[
+                ("method", "track.getInfo"),
+                ("artist", artist),
+                ("track", title),
+                ("api_key", &self.api_key),
+                ("format", "json"),
+                ("autocorrect", "1"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        let tags = info
+            .track
+            .and_then(|track| track.toptags)
+            .map(TagList::into_names)
+            .unwrap_or_default();
+        if !tags.is_empty() {
+            return Ok(tags);
+        }
+
+        let top: ArtistTagsResponse = self
+            .client
+            .get(url)
+            .query(&[
+                ("method", "artist.getTopTags"),
+                ("artist", artist),
+                ("api_key", &self.api_key),
+                ("format", "json"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        Ok(top.toptags.map(TagList::into_names).unwrap_or_default())
+    }
 }
 
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
     DownloadError::SourceUnavailable(format!("lastfm request failed: {error}"))
+}
+
+/// Last.fm returns a single object instead of an array when there is only one
+/// item — handle both shapes so a one-tag response doesn't fail to parse.
+fn one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany<T> {
+        One(T),
+        Many(Vec<T>),
+    }
+    Ok(match Option::<OneOrMany<T>>::deserialize(deserializer)? {
+        Some(OneOrMany::One(value)) => vec![value],
+        Some(OneOrMany::Many(values)) => values,
+        None => Vec::new(),
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct TrackInfoResponse {
+    #[serde(default)]
+    track: Option<TrackInfo>,
+    #[serde(default)]
+    error: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrackInfo {
+    #[serde(default)]
+    toptags: Option<TagList>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistTagsResponse {
+    #[serde(default)]
+    toptags: Option<TagList>,
+    #[serde(default)]
+    error: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TagList {
+    #[serde(default, deserialize_with = "one_or_many")]
+    tag: Vec<LastFmTag>,
+}
+
+/// Last.fm serializes tag counts as strings ("90"), occasionally numbers.
+fn optional_number_string<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value {
+        Number(u32),
+        Text(String),
+    }
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        Some(Value::Number(number)) => Some(number),
+        Some(Value::Text(text)) => text.parse().ok(),
+        None => None,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct LastFmTag {
+    #[serde(default)]
+    name: String,
+    #[serde(default, deserialize_with = "optional_number_string")]
+    count: Option<u32>,
+}
+
+impl TagList {
+    fn into_names(self) -> Vec<String> {
+        let mut tags: Vec<(u32, String)> = self
+            .tag
+            .into_iter()
+            .filter(|tag| !tag.name.trim().is_empty())
+            .map(|tag| (tag.count.unwrap_or(0), tag.name.trim().to_owned()))
+            .collect();
+        tags.sort_by(|left, right| right.0.cmp(&left.0));
+        tags.into_iter().map(|(_, name)| name).collect()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,5 +445,45 @@ mod tests {
         let body: RecentTracksResponse = serde_json::from_str(json).expect("json");
         assert_eq!(body.error, Some(6));
         assert_eq!(body.message.as_deref(), Some("User not found"));
+    }
+
+    #[test]
+    fn track_toptags_are_sorted_by_count() {
+        let json = r##"{
+            "track": {
+                "name": "Enter Sandman",
+                "toptags": {"tag": [
+                    {"name": "metal", "count": "90"},
+                    {"name": "thrash metal", "count": "75"},
+                    {"name": "hard rock", "count": "40"}
+                ]}
+            }
+        }"##;
+        let body: TrackInfoResponse = serde_json::from_str(json).expect("json");
+        let tags = body
+            .track
+            .expect("track")
+            .toptags
+            .expect("toptags")
+            .into_names();
+        assert_eq!(tags, ["metal", "thrash metal", "hard rock"]);
+    }
+
+    #[test]
+    fn single_tag_object_is_accepted() {
+        // Last.fm serializes one tag as an object, not a one-element array.
+        let json = r##"{"toptags":{"tag":{"name":"alternative rock","count":"12"}}}"##;
+        let body: ArtistTagsResponse = serde_json::from_str(json).expect("json");
+        assert_eq!(
+            body.toptags.expect("toptags").into_names(),
+            ["alternative rock"]
+        );
+    }
+
+    #[test]
+    fn missing_track_yields_no_tags() {
+        let json = r##"{"error":6,"message":"Track not found"}"##;
+        let body: TrackInfoResponse = serde_json::from_str(json).expect("json");
+        assert!(body.track.is_none());
     }
 }

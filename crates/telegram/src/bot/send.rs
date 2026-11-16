@@ -54,7 +54,13 @@ pub async fn send_prepared(
     if let Some(duration) = meta.duration_secs {
         request = request.duration(duration);
     }
-    if let Some(cover) = prepared.cover_path.as_ref() {
+    // Telegram caps audio thumbnails at 200 KB. The HQ cover is embedded in
+    // the tags for full-size display; only the small variant goes here.
+    if let Some(cover) = prepared
+        .thumb_path
+        .as_ref()
+        .or(prepared.cover_path.as_ref())
+    {
         request = request.thumbnail(InputFile::file(cover.clone()));
     }
     if let Some(caption) = caption {
