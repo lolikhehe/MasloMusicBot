@@ -232,6 +232,9 @@ impl TrackMeta {
             .filter(|a| !a.is_empty())
         {
             lines.push(format!("💿 {album}"));
+            // A blank line keeps the album title visually separate from the
+            // hashtag block in Telegram's caption rendering.
+            lines.push(String::new());
         }
         let tags = self.hashtags(8);
         if !tags.is_empty() {
@@ -531,7 +534,7 @@ mod tests {
         };
         assert_eq!(
             meta.tags_caption().as_deref(),
-            Some("💿 Metallica (Remastered 2021)\n#HeavyMetal #RnB")
+            Some("💿 Metallica (Remastered 2021)\n\n#HeavyMetal #RnB")
         );
         let bare = TrackMeta {
             title: "x".into(),

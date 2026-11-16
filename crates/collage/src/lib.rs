@@ -3,7 +3,8 @@
 //! identical on the developer's Windows box and in the Linux container.
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
-use image::{Rgba, RgbaImage};
+use image::imageops::FilterType;
+use image::{Rgba, RgbaImage, imageops};
 use std::path::Path;
 
 const FONT: &[u8] = include_bytes!("../../../assets/DejaVuSans.ttf");
@@ -23,6 +24,9 @@ pub struct CollageItem {
     pub name: String,
     pub secondary: Option<String>,
     pub playcount: u64,
+    /// Decoded cover bytes (JPEG/PNG). When absent the cell keeps the plain
+    /// dark placeholder.
+    pub cover: Option<Vec<u8>>,
 }
 
 fn font() -> FontRef<'static> {
@@ -101,6 +105,28 @@ fn fill_rect(canvas: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32, co
     }
 }
 
+fn blend_rect(canvas: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32, alpha: f32) {
+    for py in y..(y + height).min(canvas.height()) {
+        for px in x..(x + width).min(canvas.width()) {
+            let background = canvas.get_pixel(px, py);
+            let mut blended = Rgba([0, 0, 0, 255]);
+            for channel in 0..3 {
+                blended.0[channel] =
+                    (f32::from(background.0[channel]) * (1.0 - alpha)).round() as u8;
+            }
+            canvas.put_pixel(px, py, blended);
+        }
+    }
+}
+
+/// Dark gradient behind the caption so text stays readable over any artwork.
+fn shade_bottom(canvas: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32) {
+    for row in 0..height {
+        let alpha = 0.88 * (row as f32 / height as f32).powi(2);
+        blend_rect(canvas, x, y + row, width, 1, alpha);
+    }
+}
+
 /// Wrap into at most `max_lines`, then truncate the last line with an ellipsis.
 fn wrap(text: &str, max_width: f32, max_lines: usize, font: &FontRef<'_>) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
@@ -168,6 +194,23 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
         fill_rect(&mut canvas, inner_x, inner_y, inner_w, inner_h, CELL_COLOR);
 
         let center = inner_x as f32 + inner_w as f32 / 2.0;
+
+        let Some(item) = items.get(index) else {
+            continue;
+        };
+        let mut has_cover = false;
+        if let Some(bytes) = item.cover.as_deref()
+            && let Ok(decoded) = image::load_from_memory(bytes)
+        {
+            let cover = decoded
+                .resize_to_fill(inner_w, inner_h, FilterType::Lanczos3)
+                .to_rgba8();
+            imageops::overlay(&mut canvas, &cover, i64::from(inner_x), i64::from(inner_y));
+            has_cover = true;
+            blend_rect(&mut canvas, inner_x, inner_y, 46, 34, 0.62);
+            shade_bottom(&mut canvas, inner_x, inner_y + inner_h - 96, inner_w, 96);
+        }
+        // Rank goes on top of the artwork so it stays visible.
         draw(
             &mut canvas,
             &format!("#{}", index + 1),
@@ -178,9 +221,6 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
             &font,
         );
 
-        let Some(item) = items.get(index) else {
-            continue;
-        };
         let mut label = item.name.clone();
         if let Some(artist) = &item.secondary {
             if !artist.is_empty() {
@@ -189,12 +229,17 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
             }
         }
         let lines = wrap(&label, inner_w as f32 - 24.0, 3, &font);
+        let text_top = if has_cover {
+            inner_y + inner_h - 92
+        } else {
+            inner_y + 82
+        };
         for (line_index, line) in lines.iter().enumerate() {
             draw_centered(
                 &mut canvas,
                 line,
                 center,
-                inner_y as f32 + 82.0 + line_index as f32 * 24.0,
+                text_top as f32 + line_index as f32 * 22.0,
                 18.0,
                 TEXT,
                 &font,
@@ -204,7 +249,7 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
             &mut canvas,
             &format!("{} plays", item.playcount),
             center,
-            inner_y as f32 + inner_h as f32 - 18.0,
+            inner_y as f32 + inner_h as f32 - 12.0,
             16.0,
             ACCENT,
             &font,
@@ -229,6 +274,7 @@ mod tests {
                 name: format!("Track {index}"),
                 secondary: Some("Artist".to_owned()),
                 playcount: 42 - index,
+                cover: None,
             })
             .collect();
         render("Top tracks · 3 months", &items, 3, &path).expect("render");
@@ -236,5 +282,29 @@ mod tests {
         assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
         let decoded = image::load_from_memory(&bytes).expect("decode");
         assert!(decoded.width() > 600 && decoded.height() > 600);
+    }
+
+    #[test]
+    fn renders_cover_cells_without_panicking() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("with-covers.png");
+        let source = RgbaImage::from_pixel(200, 200, Rgba([120, 80, 200, 255]));
+        let mut encoded = Vec::new();
+        source
+            .write_to(
+                &mut std::io::Cursor::new(&mut encoded),
+                image::ImageFormat::Png,
+            )
+            .expect("encode cover");
+        let items: Vec<CollageItem> = (0..9)
+            .map(|index| CollageItem {
+                name: format!("Album {index}"),
+                secondary: Some("Artist".to_owned()),
+                playcount: 100 - index,
+                cover: Some(encoded.clone()),
+            })
+            .collect();
+        render("Top albums", &items, 3, &path).expect("render");
+        assert!(std::fs::metadata(&path).expect("png").len() > 10_000);
     }
 }

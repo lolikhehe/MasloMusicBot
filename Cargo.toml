@@ -15,7 +15,7 @@ anyhow = "1"
 dotenvy = "0.15"
 futures = "0.3"
 html-escape = "0.2"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 lofty = "0.25"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"

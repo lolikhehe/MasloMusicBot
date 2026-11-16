@@ -35,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage <tracks|albums|artists> [3x3..10x10] [period] — PNG chart of your most played items",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage <tracks|albums|artists> [3x3..10x10] [період] — PNG-колаж найбільш прослуханих",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих",
     );
     if is_admin {
         format!(
@@ -636,10 +636,10 @@ pub fn profile_summary(
     let period = html_escape::encode_text(period_label);
     let mut body = match lang {
         Lang::En => format!(
-            "📊 <b>Last.fm: {name}</b>\nPeriod: <b>{period}</b>\nScrobbles: <b>{playcount}</b>\nLibrary: {tracks} tracks · {albums} albums · {artists} artists"
+            "📊 <b>Last.fm: {name}</b>\nScrobbles (all time): <b>{playcount}</b>\nLibrary (all time): {tracks} tracks · {albums} albums · {artists} artists"
         ),
         Lang::Uk => format!(
-            "📊 <b>Last.fm: {name}</b>\nПеріод: <b>{period}</b>\nПрослуховувань: <b>{playcount}</b>\nБібліотека: {tracks} треків · {albums} альбомів · {artists} виконавців"
+            "📊 <b>Last.fm: {name}</b>\nСкроблів (весь час): <b>{playcount}</b>\nБібліотека (весь час): {tracks} треків · {albums} альбомів · {artists} виконавців"
         ),
     };
     if let Some(country) = country.filter(|value| !value.is_empty()) {
@@ -651,10 +651,11 @@ pub fn profile_summary(
         body.push_str(&line);
     }
     if !top_lines.is_empty() {
-        body.push_str(match lang {
-            Lang::En => "\n\n<b>Top tracks:</b>",
-            Lang::Uk => "\n\n<b>Топ треків:</b>",
-        });
+        let header = match lang {
+            Lang::En => format!("\n\n<b>Top tracks ({period}):</b>"),
+            Lang::Uk => format!("\n\n<b>Топ треків ({period}):</b>"),
+        };
+        body.push_str(&header);
         for line in top_lines {
             body.push_str("\n• ");
             body.push_str(line);
@@ -709,6 +710,16 @@ mod tests {
             assert!(!error(lang, &DownloadError::NotFound).is_empty());
             assert!(!stats(lang, &Stats::default(), "0s").is_empty());
             assert!(!sent_to_private(lang).is_empty());
+        }
+    }
+
+    #[test]
+    fn help_has_no_unescaped_angle_brackets() {
+        for lang in [Lang::En, Lang::Uk] {
+            let help = help(lang, true);
+            assert!(help.contains("&lt;tracks|albums|artists&gt;"));
+            assert!(!help.contains("<tracks"));
+            assert!(!help.contains("<nick>"));
         }
     }
 }

@@ -35,12 +35,12 @@ impl StatsPeriod {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
-            "7day" | "week" | "7d" => Some(Self::Week),
-            "1month" | "month" | "1m" => Some(Self::Month),
-            "3month" | "3m" => Some(Self::ThreeMonths),
-            "6month" | "6m" => Some(Self::SixMonths),
-            "12month" | "year" | "1y" | "overall" => Some(Self::Year),
-            "all" => Some(Self::Overall),
+            "7day" | "7days" | "week" | "7d" => Some(Self::Week),
+            "1month" | "1months" | "month" | "1m" => Some(Self::Month),
+            "3month" | "3months" | "3m" => Some(Self::ThreeMonths),
+            "6month" | "6months" | "6m" => Some(Self::SixMonths),
+            "12month" | "12months" | "12m" | "year" | "1y" => Some(Self::Year),
+            "overall" | "all" | "alltime" => Some(Self::Overall),
             _ => None,
         }
     }
@@ -98,6 +98,9 @@ pub struct ScrobbleItem {
     pub name: String,
     pub secondary: Option<String>,
     pub playcount: u64,
+    /// Largest artwork URL Last.fm returned for this item (album/track/artist
+    /// cover). Used to draw real covers in collages instead of empty cells.
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -351,10 +354,24 @@ impl LastFmClient {
                             .or_else(|| value.as_u64())
                     })
                     .unwrap_or(0);
+                // Last.fm orders images small → extralarge/mega; the last one
+                // is the biggest available.
+                let image_url = row
+                    .get("image")
+                    .and_then(|images| images.as_array())
+                    .and_then(|images| {
+                        images
+                            .iter()
+                            .filter_map(|image| image.get("#text")?.as_str())
+                            .filter(|url| !url.is_empty())
+                            .last()
+                    })
+                    .map(str::to_owned);
                 Some(ScrobbleItem {
                     name,
                     secondary,
                     playcount,
+                    image_url,
                 })
             })
             .collect();
@@ -732,6 +749,19 @@ mod tests {
             body.toptags.expect("toptags").into_names(),
             ["alternative rock"]
         );
+    }
+
+    #[test]
+    fn stats_periods_parse_all_supported_aliases() {
+        assert_eq!(StatsPeriod::parse("6m"), Some(StatsPeriod::SixMonths));
+        assert_eq!(StatsPeriod::parse("6month"), Some(StatsPeriod::SixMonths));
+        assert_eq!(StatsPeriod::parse("1y"), Some(StatsPeriod::Year));
+        assert_eq!(StatsPeriod::parse("12month"), Some(StatsPeriod::Year));
+        assert_eq!(StatsPeriod::parse("overall"), Some(StatsPeriod::Overall));
+        assert_eq!(StatsPeriod::parse("all"), Some(StatsPeriod::Overall));
+        assert_eq!(StatsPeriod::parse("3M"), Some(StatsPeriod::ThreeMonths));
+        assert_eq!(StatsPeriod::parse("garbage"), None);
+        assert_eq!(StatsPeriod::Overall.as_str(), "overall");
     }
 
     #[test]

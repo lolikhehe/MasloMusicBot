@@ -8,8 +8,12 @@ use common::domain::Lang;
 use common::error::HandlerResult;
 use common::i18n;
 use providers::lastfm::{LastFmClient, ScrobbleItem, StatsKind, StatsPeriod};
+use std::sync::Arc;
+use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, ParseMode};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::warn;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -209,12 +213,43 @@ async fn send_collage(
             .await?;
         return Ok(());
     }
+    // Fetch real artwork from the URLs Last.fm already returned. Bounded
+    // concurrency keeps this gentle on the operator's network, and nothing is
+    // cached on disk.
+    let mut covers: Vec<Option<Vec<u8>>> = vec![None; items.len()];
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(6))
+        .build()
+        .unwrap_or_default();
+    let semaphore = Arc::new(Semaphore::new(4));
+    let mut tasks = JoinSet::new();
+    for (index, item) in items.iter().enumerate() {
+        if let Some(url) = item.image_url.clone() {
+            let client = client.clone();
+            let semaphore = semaphore.clone();
+            tasks.spawn(async move {
+                let _permit = semaphore.acquire().await.ok()?;
+                let response = client.get(&url).send().await.ok()?;
+                if !response.status().is_success() {
+                    return None;
+                }
+                Some((index, response.bytes().await.ok()?.to_vec()))
+            });
+        }
+    }
+    while let Some(result) = tasks.join_next().await {
+        if let Ok(Some((index, bytes))) = result {
+            covers[index] = Some(bytes);
+        }
+    }
     let cells: Vec<collage::CollageItem> = items
         .into_iter()
-        .map(|item| collage::CollageItem {
+        .enumerate()
+        .map(|(index, item)| collage::CollageItem {
             name: item.name,
             secondary: item.secondary,
             playcount: item.playcount,
+            cover: covers.get(index).cloned().flatten(),
         })
         .collect();
     let label = match (kind, context.lang) {
