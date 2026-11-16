@@ -39,6 +39,7 @@ RUN mkdir -p /data && chown -R bot:bot /data
 
 ENV DATABASE_URL=sqlite:///data/bot.db \
     TMP_DIR=/data/tmp \
+    TMPDIR=/data/tmp \
     YTDLP_PATH=/usr/local/bin/yt-dlp \
     FFMPEG_PATH=/usr/bin/ffmpeg \
     METRICS_ADDR=0.0.0.0:9090 \
