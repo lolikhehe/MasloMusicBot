@@ -132,6 +132,26 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Alternative-source fallback chain (2026-11-16)
+
+Cold downloads now iterate open catalogs on "this catalog can't serve it" failures:
+`Url(link) → Search("Artist Title") (ytsearch1:) → SoundCloudSearch("Artist Title") (scsearch1:)`.
+Triggers: `Private`, `RegionLocked`, `NotFound`, `SourceUnavailable` (rate limits/retries
+handled per attempt as before). `TooLong`/`TooLarge` are final and never fall through.
+Directives:
+- Only metadata available to the bot is ever used to hunt elsewhere (search query /
+  resolved artist+title). A bare restricted link with no metadata has nothing to search,
+  so it gets only its own attempt, then the usual error.
+- Fallback downloads keep the original cache key (the user's pick is fulfilled by
+  whichever catalog served it). SoundCloud audio flows through the YouTube-keyed cache;
+  genres from SoundCloud are persisted as usual.
+- Hot path unchanged; cost appears only on a refusal (one extra yt-dlp subprocess per
+  extra catalog plus `clear_dir` between attempts). Fallbacks counted via
+  `music_bot_download_fallbacks_total`.
+- This is NOT a bypass: restricted/member-only/DRM content stays undownloadable; the
+  fallback only finds copies that catalogs themselves serve openly (SoundCloud
+  artist uploads, official Topic channels, etc.).
+
 ## Album/genre tags: cold vs cached sends (2026-11-16)
 
 - Cached inline answers are served by Telegram from the `file_id` with no bot

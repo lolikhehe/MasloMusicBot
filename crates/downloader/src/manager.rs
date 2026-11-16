@@ -12,7 +12,7 @@ use moka::future::Cache;
 use providers::external::ExternalResolver;
 use providers::ytdlp::YtDlp;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use storage::Db;
@@ -310,12 +310,11 @@ impl DownloadManager {
         quality: u32,
     ) -> Result<PreparedAudio, DownloadError> {
         if request.provider.is_external()
-            && (request.meta.is_none()
-                || matches!(&request.target, DownloadTarget::Search(query) if query.trim().is_empty()))
+            && (request.meta.is_none() || is_empty_search_query(&request.target))
         {
             self.external.resolve_track(&mut request).await?;
         }
-        if matches!(&request.target, DownloadTarget::Search(query) if query.trim().is_empty()) {
+        if is_empty_search_query(&request.target) {
             let query = request
                 .meta
                 .as_ref()
@@ -340,37 +339,45 @@ impl DownloadManager {
             })?;
 
         info!(key = %request.key, target = ?request.target, "starting download");
-        let downloaded = {
-            // One retry for transient network/RateLimit failures with
-            // exponential backoff (spec §9 етап 3). Permanent failures
-            // (private/region/too large) are never retried.
-            match self
-                .ytdlp
-                .download(
-                    &request.target,
-                    dir.path(),
-                    quality,
-                    self.config.max_duration_secs,
-                    self.config.max_file_bytes(),
-                )
-                .await
+        // Fallback chain: the same track on other openly available catalogs.
+        // A bare restricted link with no metadata gives us nothing to search
+        // for, so it gets only its own attempt; known tracks roll on to
+        // YouTube and SoundCloud search until one serves the audio.
+        let candidates = fallback_candidates(&request);
+        let mut downloaded: Option<providers::ytdlp::DownloadedAudio> = None;
+        let mut last_error: Option<DownloadError> = None;
+        for (attempt, target) in candidates.iter().enumerate() {
+            if attempt > 0 {
+                metrics::counter!("music_bot_download_fallbacks_total").increment(1);
+                warn!(key = %request.key, ?target, "source refused the track; trying another catalog");
+                clear_dir(dir.path()).await;
+            }
+            match download_attempt(
+                &self.ytdlp,
+                target,
+                dir.path(),
+                quality,
+                self.config.max_duration_secs,
+                self.config.max_file_bytes(),
+            )
+            .await
             {
-                Ok(downloaded) => downloaded,
-                Err(error) if is_transient(&error) => {
-                    warn!(key = %request.key, error = %error, "transient download failure; retrying once");
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    self.ytdlp
-                        .download(
-                            &request.target,
-                            dir.path(),
-                            quality,
-                            self.config.max_duration_secs,
-                            self.config.max_file_bytes(),
-                        )
-                        .await?
+                Ok(value) => {
+                    downloaded = Some(value);
+                    break;
+                }
+                Err(error) if fallback_triggers(&error) => {
+                    last_error = Some(error);
                 }
                 Err(error) => return Err(error),
             }
+        }
+        let Some(downloaded) = downloaded else {
+            return Err(last_error.unwrap_or_else(|| {
+                DownloadError::SourceUnavailable(
+                    "all configured sources refused the track".to_owned(),
+                )
+            }));
         };
 
         let merged_meta = merge_meta(request.meta.as_ref(), &downloaded.meta);
@@ -414,6 +421,101 @@ fn is_transient(error: &DownloadError) -> bool {
         || message.contains("429")
 }
 
+fn is_empty_search_query(target: &DownloadTarget) -> bool {
+    matches!(
+        target,
+        DownloadTarget::Search(query) | DownloadTarget::SoundCloudSearch(query)
+            if query.trim().is_empty()
+    )
+}
+
+/// Only "this catalog can't serve it" failures roll on to the next source;
+/// duration, size and policy failures are final.
+fn fallback_triggers(error: &DownloadError) -> bool {
+    matches!(
+        error,
+        DownloadError::Private
+            | DownloadError::RegionLocked
+            | DownloadError::NotFound
+            | DownloadError::SourceUnavailable(_)
+    )
+}
+
+/// Ordered candidates for the same track: original target first, then search
+/// the open catalogs. No query (bare restricted link without metadata) means
+/// there is nothing to search, so the original target is the only attempt.
+fn fallback_candidates(request: &TrackRequest) -> Vec<DownloadTarget> {
+    let mut candidates = vec![request.target.clone()];
+    let Some(query) = fallback_query(request) else {
+        return candidates;
+    };
+    let youtube = DownloadTarget::Search(query.clone());
+    let soundcloud = DownloadTarget::SoundCloudSearch(query);
+    match &request.target {
+        DownloadTarget::Url(_) => {
+            candidates.push(youtube);
+            candidates.push(soundcloud);
+        }
+        DownloadTarget::Search(_) => candidates.push(soundcloud),
+        DownloadTarget::SoundCloudSearch(_) => candidates.push(youtube),
+    }
+    candidates
+}
+
+/// The query to hunt the track elsewhere with: the search query itself, or —
+/// for a URL with resolved metadata — "Artist Title".
+fn fallback_query(request: &TrackRequest) -> Option<String> {
+    match &request.target {
+        DownloadTarget::Search(query) | DownloadTarget::SoundCloudSearch(query) => {
+            let query = query.trim();
+            (!query.is_empty()).then(|| query.to_owned())
+        }
+        DownloadTarget::Url(_) => request.meta.as_ref().and_then(|meta| {
+            let query = meta.search_query();
+            let query = query.trim();
+            (!query.is_empty()).then(|| query.to_owned())
+        }),
+    }
+}
+
+async fn download_attempt(
+    ytdlp: &providers::ytdlp::YtDlp,
+    target: &DownloadTarget,
+    dir: &Path,
+    quality: u32,
+    max_duration_secs: u64,
+    max_bytes: u64,
+) -> Result<providers::ytdlp::DownloadedAudio, DownloadError> {
+    match ytdlp
+        .download(target, dir, quality, max_duration_secs, max_bytes)
+        .await
+    {
+        Ok(downloaded) => Ok(downloaded),
+        Err(error) if is_transient(&error) => {
+            warn!(?target, error = %error, "transient download failure; retrying once");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            ytdlp
+                .download(target, dir, quality, max_duration_secs, max_bytes)
+                .await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Remove leftover files from a failed attempt so the next candidate starts
+/// on a clean directory (yt-dlp output template is fixed).
+async fn clear_dir(dir: &Path) {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if entry.file_type().await.is_ok_and(|kind| kind.is_file()) {
+            let _ = tokio::fs::remove_file(entry.path()).await;
+        }
+    }
+}
+
 fn merge_meta(requested: Option<&TrackMeta>, downloaded: &TrackMeta) -> TrackMeta {
     let Some(requested) = requested else {
         return downloaded.clone();
@@ -445,6 +547,69 @@ fn merge_meta(requested: Option<&TrackMeta>, downloaded: &TrackMeta) -> TrackMet
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fallback_chain_starts_with_original_then_open_catalogs() {
+        let request = TrackRequest {
+            key: TrackKey::new("youtube:locked"),
+            provider: Provider::YouTube,
+            source_url: Some("https://youtu.be/locked".into()),
+            meta: Some(TrackMeta {
+                title: "Song".into(),
+                performer: Some("Artist".into()),
+                ..Default::default()
+            }),
+            target: DownloadTarget::Url("https://youtu.be/locked".into()),
+        };
+        assert_eq!(
+            fallback_candidates(&request),
+            vec![
+                DownloadTarget::Url("https://youtu.be/locked".into()),
+                DownloadTarget::Search("Artist Song".into()),
+                DownloadTarget::SoundCloudSearch("Artist Song".into()),
+            ]
+        );
+
+        let soundcloud = TrackRequest {
+            target: DownloadTarget::SoundCloudSearch("Artist Song".into()),
+            ..request.clone()
+        };
+        assert_eq!(
+            fallback_candidates(&soundcloud),
+            vec![
+                DownloadTarget::SoundCloudSearch("Artist Song".into()),
+                DownloadTarget::Search("Artist Song".into()),
+            ]
+        );
+
+        // No metadata and a bare URL: nothing to search for, no fallback.
+        let bare = TrackRequest {
+            meta: None,
+            ..request
+        };
+        assert_eq!(
+            fallback_candidates(&bare),
+            vec![DownloadTarget::Url("https://youtu.be/locked".into())]
+        );
+    }
+
+    #[test]
+    fn fallback_triggers_only_on_catalog_refusals() {
+        assert!(fallback_triggers(&DownloadError::Private));
+        assert!(fallback_triggers(&DownloadError::RegionLocked));
+        assert!(fallback_triggers(&DownloadError::NotFound));
+        assert!(fallback_triggers(&DownloadError::SourceUnavailable(
+            "x".into()
+        )));
+        assert!(!fallback_triggers(&DownloadError::TooLong {
+            limit: 100,
+            actual: 101,
+        }));
+        assert!(!fallback_triggers(&DownloadError::TooLarge {
+            limit: 100,
+            actual: 101,
+        }));
+    }
 
     #[test]
     fn merges_requested_and_downloaded_metadata() {

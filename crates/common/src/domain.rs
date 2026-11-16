@@ -227,11 +227,13 @@ fn genre_hashtag(genre: &str) -> Option<String> {
 }
 
 /// What yt-dlp should be pointed at. URLs are validated by the provider layer;
-/// `Search` is passed as a `ytsearch1:` pseudo-URL.
+/// `Search` is passed as a `ytsearch1:` pseudo-URL, `SoundCloudSearch` as
+/// `scsearch1:` — the alternative-source fallback uses it when YouTube refuses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DownloadTarget {
     Url(String),
     Search(String),
+    SoundCloudSearch(String),
 }
 
 impl DownloadTarget {
@@ -239,6 +241,7 @@ impl DownloadTarget {
         match self {
             Self::Url(url) => url.clone(),
             Self::Search(query) => format!("ytsearch1:{query}"),
+            Self::SoundCloudSearch(query) => format!("scsearch1:{query}"),
         }
     }
 }
