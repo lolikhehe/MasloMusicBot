@@ -60,6 +60,7 @@ pub fn settings_keyboard(
     quality: u32,
     search_source: Provider,
     tags_enabled: bool,
+    hq_cover: bool,
 ) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = [128u32, 192, 256, 320]
         .chunks(2)
@@ -99,6 +100,14 @@ pub fn settings_keyboard(
             i18n::tags_label(lang)
         ),
         format!("s:tags:{}", u8::from(!tags_enabled)),
+    )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{}{}",
+            if hq_cover { "✓ " } else { "" },
+            i18n::hq_cover_label(lang)
+        ),
+        format!("s:hq:{}", u8::from(!hq_cover)),
     )]);
     rows.push(
         [Lang::En, Lang::Uk]
@@ -153,6 +162,7 @@ pub async fn handle_command(
                 user_record.search_source,
                 user_record.tags_enabled,
                 user_record.lastfm_user.as_deref(),
+                user_record.hq_cover,
             );
             if !state
                 .config
@@ -169,6 +179,7 @@ pub async fn handle_command(
                     user_record.quality,
                     user_record.search_source,
                     user_record.tags_enabled,
+                    user_record.hq_cover,
                 ))
                 .await?;
         }
@@ -229,8 +240,33 @@ pub async fn handle_command(
                         send_plain(bot, msg.chat.id, i18n::lastfm_invalid(lang)).await?;
                         return Ok(());
                     }
-                    state.db.set_lastfm_user(user_id, Some(value)).await?;
-                    send_plain(bot, msg.chat.id, i18n::lastfm_connected(lang, value)).await?;
+                    // Live check through the operator's API key: don't save
+                    // nicks that Last.fm can't resolve.
+                    let Some(client) = state.lastfm.as_ref() else {
+                        send_plain(bot, msg.chat.id, i18n::lastfm_disabled(lang)).await?;
+                        return Ok(());
+                    };
+                    match client.now_playing(value).await {
+                        Ok(Some(now)) => {
+                            state.db.set_lastfm_user(user_id, Some(value)).await?;
+                            let title = now.meta.display_title();
+                            send_plain(
+                                bot,
+                                msg.chat.id,
+                                i18n::lastfm_connected_track(lang, value, &title),
+                            )
+                            .await?;
+                        }
+                        Ok(None) => {
+                            state.db.set_lastfm_user(user_id, Some(value)).await?;
+                            send_plain(bot, msg.chat.id, i18n::lastfm_no_activity(lang, value))
+                                .await?;
+                        }
+                        Err(error) => {
+                            warn!(%error, nick = value, "lastfm rejected the nick at connect time");
+                            send_plain(bot, msg.chat.id, i18n::lastfm_not_found(lang)).await?;
+                        }
+                    }
                 }
             }
         }

@@ -39,6 +39,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             user.lang,
             user.quality,
             user.tags_enabled,
+            user.hq_cover,
         )
         .await?;
     } else if let Some(id) = data.strip_prefix("alc:") {
@@ -50,6 +51,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             user.lang,
             user.quality,
             user.tags_enabled,
+            user.hq_cover,
         )
         .await?;
     } else if let Some(id) = data.strip_prefix("alx:") {
@@ -67,6 +69,28 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 user.search_source,
                 enabled,
                 user.lastfm_user.as_deref(),
+                user.hq_cover,
+            )
+            .await?;
+            let _ = bot
+                .answer_callback_query(query.id.clone())
+                .text(i18n::settings_saved(user.lang))
+                .await;
+        }
+    } else if let Some(value) = data.strip_prefix("s:hq:") {
+        if let Some(enabled) = parse_bool(value) {
+            state.db.set_hq_cover(user_id, enabled).await?;
+            let user = state.db.ensure_user(user_id, preferred).await?;
+            refresh_settings(
+                &state,
+                &bot,
+                &query,
+                user.lang,
+                user.quality,
+                user.search_source,
+                user.tags_enabled,
+                user.lastfm_user.as_deref(),
+                enabled,
             )
             .await?;
             let _ = bot
@@ -86,6 +110,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 user.search_source,
                 user.tags_enabled,
                 user.lastfm_user.as_deref(),
+                user.hq_cover,
             )
             .await?;
             let _ = bot
@@ -106,6 +131,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 source,
                 user.tags_enabled,
                 user.lastfm_user.as_deref(),
+                user.hq_cover,
             )
             .await?;
             let _ = bot
@@ -126,6 +152,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 user.search_source,
                 user.tags_enabled,
                 user.lastfm_user.as_deref(),
+                user.hq_cover,
             )
             .await?;
             let _ = bot
@@ -147,6 +174,7 @@ async fn handle_selection(
     lang: common::domain::Lang,
     quality: u32,
     tags_enabled: bool,
+    hq_cover: bool,
 ) -> HandlerResult {
     let _ = bot.answer_callback_query(query.id.clone()).await;
     let Some(message) = query.regular_message() else {
@@ -182,6 +210,7 @@ async fn handle_selection(
         quality,
         user_id,
         tags_enabled,
+        hq_cover,
     )
     .await
     {
@@ -217,6 +246,7 @@ async fn handle_album_confirm(
     lang: common::domain::Lang,
     quality: u32,
     tags_enabled: bool,
+    hq_cover: bool,
 ) -> HandlerResult {
     let _ = bot.answer_callback_query(query.id.clone()).await;
     let Some(message) = query.regular_message() else {
@@ -246,6 +276,7 @@ async fn handle_album_confirm(
         user_id,
         album,
         tags_enabled,
+        hq_cover,
     )
     .await
 }
@@ -282,6 +313,7 @@ async fn refresh_settings(
     search_source: common::domain::Provider,
     tags_enabled: bool,
     lastfm_user: Option<&str>,
+    hq_cover: bool,
 ) -> HandlerResult {
     let Some(message) = query.regular_message() else {
         return Ok(());
@@ -293,6 +325,7 @@ async fn refresh_settings(
         search_source,
         tags_enabled,
         lastfm_user,
+        hq_cover,
     );
     if !state.config.search_providers.contains(&search_source) {
         body.push_str("\n\n");
@@ -305,6 +338,7 @@ async fn refresh_settings(
             quality,
             search_source,
             tags_enabled,
+            hq_cover,
         ))
         .await?;
     Ok(())

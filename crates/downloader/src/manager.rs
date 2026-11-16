@@ -252,6 +252,7 @@ impl DownloadManager {
         request: TrackRequest,
         quality: u32,
         user_id: i64,
+        hq_cover: bool,
     ) -> Result<PreparedAudio, DownloadError> {
         if !self.config.provider_enabled(request.provider) {
             return Err(DownloadError::ProviderDisabled(request.provider));
@@ -291,7 +292,7 @@ impl DownloadManager {
                     Ok(Err(error)) => return Err((*error).clone()),
                     Err(broadcast::error::RecvError::Closed) => {
                         // The leader disappeared without publishing. Try again.
-                        return Box::pin(self.prepare(request, quality, user_id)).await;
+                        return Box::pin(self.prepare(request, quality, user_id, hq_cover)).await;
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 }
@@ -299,7 +300,7 @@ impl DownloadManager {
         }
 
         let sender = sender.expect("leader sender must exist");
-        let result = self.prepare_leader(request, quality).await;
+        let result = self.prepare_leader(request, quality, hq_cover).await;
         let broadcast_result = result.clone().map_err(|error| Arc::new(error.clone()));
         let _ = sender.send(broadcast_result);
         let mut inflight = self.inflight.lock().await;
@@ -313,9 +314,10 @@ impl DownloadManager {
         &self,
         request: TrackRequest,
         quality: u32,
+        hq_cover: bool,
     ) -> Result<PreparedAudio, DownloadError> {
         metrics::gauge!("music_bot_downloads_inflight").increment(1.0);
-        let result = self.prepare_leader_inner(request, quality).await;
+        let result = self.prepare_leader_inner(request, quality, hq_cover).await;
         metrics::gauge!("music_bot_downloads_inflight").decrement(1.0);
         result
     }
@@ -324,6 +326,7 @@ impl DownloadManager {
         &self,
         mut request: TrackRequest,
         quality: u32,
+        hq_cover: bool,
     ) -> Result<PreparedAudio, DownloadError> {
         if request.provider.is_external()
             && (request.meta.is_none() || is_empty_search_query(&request.target))
@@ -365,7 +368,7 @@ impl DownloadManager {
                 let ffmpeg = self.config.ffmpeg_path.clone();
                 let dir_path = dir.path().to_owned();
                 tokio::spawn(async move {
-                    audio::prepare_cover(&client, &ffmpeg, Some(&url), &dir_path).await
+                    audio::prepare_cover(&client, &ffmpeg, Some(&url), &dir_path, hq_cover).await
                 })
             });
 
@@ -434,6 +437,7 @@ impl DownloadManager {
                     &self.config.ffmpeg_path,
                     merged_meta.thumbnail_url.as_deref(),
                     dir.path(),
+                    hq_cover,
                 )
                 .await
             }

@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const SCHEMA: &str = include_str!("../../../migrations/0001_init.sql");
 const MIGRATION_0002: &str = include_str!("../../../migrations/0002_user_search_source.sql");
 const MIGRATION_0004: &str = include_str!("../../../migrations/0004_lastfm.sql");
+const MIGRATION_0005: &str = include_str!("../../../migrations/0005_hq_cover.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -103,6 +104,18 @@ impl Db {
         .map_err(db_err)?;
         if has_lastfm_user == 0 {
             sqlx::raw_sql(MIGRATION_0004)
+                .execute(&pool)
+                .await
+                .map_err(db_err)?;
+        }
+        let has_hq_cover: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'hq_cover'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(db_err)?;
+        if has_hq_cover == 0 {
+            sqlx::raw_sql(MIGRATION_0005)
                 .execute(&pool)
                 .await
                 .map_err(db_err)?;
@@ -305,7 +318,7 @@ impl Db {
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user",
+             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user, hq_cover",
         )
         .bind(id)
         .bind(fallback.code())
@@ -325,6 +338,7 @@ impl Db {
                 .unwrap_or(Provider::YouTube),
             tags_enabled: row.get::<i64, _>("tags_enabled") != 0,
             lastfm_user: row.get::<Option<String>, _>("lastfm_user"),
+            hq_cover: row.get::<i64, _>("hq_cover") != 0,
         })
     }
 
@@ -365,6 +379,17 @@ impl Db {
     pub async fn set_lastfm_user(&self, id: i64, lastfm_user: Option<&str>) -> AppResult<()> {
         sqlx::query("UPDATE users SET lastfm_user = ?, last_seen_at = ? WHERE user_id = ?")
             .bind(lastfm_user)
+            .bind(unix_now())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn set_hq_cover(&self, id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query("UPDATE users SET hq_cover = ?, last_seen_at = ? WHERE user_id = ?")
+            .bind(i64::from(enabled))
             .bind(unix_now())
             .bind(id)
             .execute(&self.pool)
@@ -468,8 +493,10 @@ mod tests {
         db.set_lastfm_user(42, Some("TestUser"))
             .await
             .expect("lastfm set");
+        db.set_hq_cover(42, true).await.expect("hq cover");
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert_eq!(user.lastfm_user.as_deref(), Some("TestUser"));
+        assert!(user.hq_cover);
         db.set_lastfm_user(42, None).await.expect("lastfm off");
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert!(user.lastfm_user.is_none());

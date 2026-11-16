@@ -284,6 +284,8 @@ pub struct UserRecord {
     pub tags_enabled: bool,
     /// Connected public Last.fm username (inline "now playing" suggestions).
     pub lastfm_user: Option<String>,
+    /// Per-user switch for high-quality audio covers (1000px, JPEG q2).
+    pub hq_cover: bool,
 }
 
 #[derive(Debug, Clone)]

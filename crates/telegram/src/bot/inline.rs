@@ -245,7 +245,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     metrics::counter!("music_bot_downloads_total").increment(1);
     let prepared = match state
         .manager
-        .prepare(request.clone(), user.quality, user_id)
+        .prepare(request.clone(), user.quality, user_id, user.hq_cover)
         .await
     {
         Ok(prepared) => prepared,
@@ -305,7 +305,16 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     // with it — spec §9, етап 7).
     let Some((file_id, file_unique_id)) = minted else {
         warn!("could not mint file_id for inline result; falling back to private delivery");
-        fallback_private(&state, &bot, &result, user.quality, lang, user.tags_enabled).await;
+        fallback_private(
+            &state,
+            &bot,
+            &result,
+            user.quality,
+            lang,
+            user.tags_enabled,
+            user.hq_cover,
+        )
+        .await;
         return Ok(());
     };
 
@@ -326,13 +335,40 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     metrics::counter!("music_bot_uploads_total").increment(1);
     if let Some(inline_message_id) = result.inline_message_id.clone() {
         let media = file_id_media(&prepared, &file_id, caption.clone());
-        if let Err(error) = bot
-            .edit_message_media_inline(inline_message_id, media)
+        match bot
+            .edit_message_media_inline(inline_message_id.clone(), media)
             .await
         {
-            warn!(%error, "could not edit inline message with minted file_id");
+            Ok(_) => return Ok(()),
+            Err(error) => {
+                warn!(
+                    %error,
+                    inline_message_id_len = inline_message_id.len(),
+                    "could not edit inline message with minted file_id; delivering to PM instead"
+                );
+                // Best-effort pointer in the inline message; the track itself
+                // is delivered to the user's private chat.
+                let _ = bot
+                    .edit_message_text_inline(inline_message_id, i18n::sent_to_private(lang))
+                    .await;
+            }
         }
     }
+    // The inline message could not carry the audio for this particular result:
+    // deliver it to the user's private chat. The file_id was just recorded
+    // above, so the delivery is an instant cache hit.
+    let chat = ChatId(user_id);
+    let _ = deliver_track(
+        &state,
+        &bot,
+        chat,
+        request,
+        user.quality,
+        user_id,
+        user.tags_enabled,
+        user.hq_cover,
+    )
+    .await;
     Ok(())
 }
 
@@ -379,6 +415,7 @@ async fn fallback_private(
     quality: u32,
     lang: Lang,
     tags_enabled: bool,
+    hq_cover: bool,
 ) {
     // Fix the inline placeholder so the chat doesn't keep a stale
     // "Downloading…" message; the audio arrives in private chat instead.
@@ -396,7 +433,17 @@ async fn fallback_private(
     let chat = ChatId(result.from.id.0 as i64);
     let user_id = result.from.id.0 as i64;
     info!("falling back to private delivery for inline result");
-    let _ = deliver_track(state, bot, chat, request, quality, user_id, tags_enabled).await;
+    let _ = deliver_track(
+        state,
+        bot,
+        chat,
+        request,
+        quality,
+        user_id,
+        tags_enabled,
+        hq_cover,
+    )
+    .await;
 }
 
 /// The search side of an inline query: parse, describe or search the user's

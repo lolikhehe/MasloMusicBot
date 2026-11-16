@@ -85,7 +85,7 @@ fn map_reqwest(error: reqwest::Error) -> DownloadError {
 
 #[derive(Debug, Deserialize)]
 struct RecentTracksResponse {
-    #[serde(default, rename = "recentTracks")]
+    #[serde(default, rename = "recenttracks", alias = "recentTracks")]
     recent_tracks: Option<RecentTracksPage>,
     #[serde(default)]
     error: Option<i32>,
@@ -198,6 +198,36 @@ impl RecentTrack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_lowercase_collection_key() {
+        // Real payload shape captured from ws.audioscrobbler.com (top-level
+        // collection key is lowercase, not camelCase).
+        let json = r##"{
+            "recenttracks": {
+                "track": [{
+                    "name": "Walk",
+                    "artist": {"#text": "Pantera", "mbid": ""},
+                    "album": {"#text": "Vulgar Display of Power", "mbid": ""},
+                    "duration": "327",
+                    "@attr": {"nowplaying": "true"}
+                }]
+            },
+            "@attr": {"user": "someone", "total": "1"}
+        }"##;
+        let body: RecentTracksResponse = serde_json::from_str(json).expect("json");
+        let now = body
+            .recent_tracks
+            .expect("page")
+            .track
+            .into_iter()
+            .next()
+            .expect("track")
+            .into_now_playing();
+        assert!(now.is_now_playing);
+        assert_eq!(now.meta.title, "Walk");
+        assert_eq!(now.meta.performer.as_deref(), Some("Pantera"));
+    }
 
     #[test]
     fn parses_now_playing_track() {

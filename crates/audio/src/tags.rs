@@ -1,4 +1,4 @@
-﻿//! Audio tagging and cover preparation. Tagging is best-effort: a track is
+//! Audio tagging and cover preparation. Tagging is best-effort: a track is
 //! still delivered if a container refuses a tag or the cover is unavailable.
 
 use common::domain::TrackMeta;
@@ -17,6 +17,7 @@ pub async fn prepare_cover(
     ffmpeg: &str,
     url: Option<&str>,
     dir: &Path,
+    high_quality: bool,
 ) -> Option<PathBuf> {
     let url = url?;
     if !(url.starts_with("https://") || url.starts_with("http://")) {
@@ -65,20 +66,76 @@ pub async fn prepare_cover(
         return None;
     }
 
-    let status = tokio::time::timeout(
+    // Low quality (default): small 320 px thumbnail-friendly frame, hard size
+    // budget. High quality (/settings): up to 1000 px, JPEG q2; if that still
+    // exceeds Telegram's 200 KB thumbnail budget, step down to 640 px q4.
+    let (scale, quality) = if high_quality {
+        ("scale=1000:1000:force_original_aspect_ratio=decrease", "2")
+    } else {
+        ("scale=320:320:force_original_aspect_ratio=decrease", "4")
+    };
+
+    let hq_result = convert_cover(ffmpeg, &source, &output, scale, quality).await;
+    match hq_result {
+        Ok(()) => {}
+        Err(()) => return None,
+    }
+
+    let size = tokio::fs::metadata(&output)
+        .await
+        .map(|meta| meta.len())
+        .unwrap_or(u64::MAX);
+    if size <= MAX_COVER_BYTES as u64 {
+        return Some(output);
+    }
+    if !high_quality {
+        warn!(size, "cover is still too large for Telegram");
+        return None;
+    }
+    warn!(
+        size,
+        "1000px cover exceeds Telegram's budget; stepping down to 640px"
+    );
+    let _ = tokio::fs::remove_file(&output).await;
+    if convert_cover(
+        ffmpeg,
+        &source,
+        &output,
+        "scale=640:640:force_original_aspect_ratio=decrease",
+        "4",
+    )
+    .await
+    .is_err()
+    {
+        return None;
+    }
+    let size = tokio::fs::metadata(&output)
+        .await
+        .map(|meta| meta.len())
+        .unwrap_or(u64::MAX);
+    if size <= MAX_COVER_BYTES as u64 {
+        Some(output)
+    } else {
+        warn!(size, "640px cover is still too large for Telegram");
+        None
+    }
+}
+
+/// Run ffmpeg once for the cover. Returns Err(()) on any failure.
+async fn convert_cover(
+    ffmpeg: &str,
+    source: &std::path::Path,
+    output: &std::path::Path,
+    scale: &str,
+    quality: &str,
+) -> Result<(), ()> {
+    let result = tokio::time::timeout(
         Duration::from_secs(30),
         tokio::process::Command::new(ffmpeg)
             .args(["-nostdin", "-y", "-loglevel", "error", "-i"])
-            .arg(&source)
-            .args([
-                "-frames:v",
-                "1",
-                "-vf",
-                "scale=320:320:force_original_aspect_ratio=decrease",
-                "-q:v",
-                "4",
-            ])
-            .arg(&output)
+            .arg(source)
+            .args(["-frames:v", "1", "-vf", scale, "-q:v", quality])
+            .arg(output)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -87,33 +144,22 @@ pub async fn prepare_cover(
     )
     .await;
 
-    match status {
-        Ok(Ok(result)) if result.status.success() => {
-            let size = tokio::fs::metadata(&output)
-                .await
-                .map(|meta| meta.len())
-                .unwrap_or(u64::MAX);
-            if size <= MAX_COVER_BYTES as u64 {
-                Some(output)
-            } else {
-                warn!(size, "cover is still too large for Telegram");
-                None
-            }
-        }
-        Ok(Ok(result)) => {
+    match result {
+        Ok(Ok(output)) if output.status.success() => Ok(()),
+        Ok(Ok(output)) => {
             warn!(
-                stderr = %String::from_utf8_lossy(&result.stderr),
+                stderr = %String::from_utf8_lossy(&output.stderr),
                 "ffmpeg cover conversion failed"
             );
-            None
+            Err(())
         }
         Ok(Err(error)) => {
             warn!(%error, "could not start ffmpeg for cover");
-            None
+            Err(())
         }
         Err(_) => {
             warn!("ffmpeg cover conversion timed out");
-            None
+            Err(())
         }
     }
 }

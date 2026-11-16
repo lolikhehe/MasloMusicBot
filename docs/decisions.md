@@ -196,6 +196,20 @@ Directives:
   fallback only finds copies that catalogs themselves serve openly (SoundCloud
   artist uploads, official Topic channels, etc.).
 
+## /settings: HQ cover toggle (2026-11-16)
+
+Albums/playlists were already supported (YouTube Music / YouTube playlist / SoundCloud
+set / Bandcamp / Deezer / Apple Music — flat-list or public album API, confirmation
+keyboard, 2-3 parallel tracks, cap MAX_COLLECTION_TRACKS=25; Spotify refused, no auth
+API). What was missing is a way to get better covers.
+
+`/settings` now has an "🖼 HQ cover (1000px)" toggle (per user, default off). When on,
+the cover pipeline keeps up to 1000px at JPEG q2 (stepping down to 640px q4 only if
+that would exceed Telegram's 200 KB thumbnail budget); default stays 320px q4.
+JPEG sources that are already small are passed through as today. Implemented as
+`users.hq_cover` (migration 0005, auto-applied), threaded through deliver paths
+(PM, search selection, albums, inline).
+
 ## Album/genre tags: cold vs cached sends (2026-11-16)
 
 - Cached inline answers are served by Telegram from the `file_id` with no bot

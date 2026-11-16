@@ -100,6 +100,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
                 user_id,
                 request,
                 user.tags_enabled,
+                user.hq_cover,
             )
             .await
         }
@@ -140,13 +141,25 @@ async fn handle_track(
     user_id: i64,
     request: TrackRequest,
     tags_enabled: bool,
+    hq_cover: bool,
 ) -> HandlerResult {
     if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
         return Ok(());
     }
 
     let placeholder = send::send_html(bot, chat, i18n::downloading(lang)).await?;
-    match deliver_track(state, bot, chat, request, quality, user_id, tags_enabled).await {
+    match deliver_track(
+        state,
+        bot,
+        chat,
+        request,
+        quality,
+        user_id,
+        tags_enabled,
+        hq_cover,
+    )
+    .await
+    {
         Ok(_) => {
             if let Err(error) = bot.delete_message(chat, placeholder.id).await {
                 warn!(%error, "could not delete progress message");
@@ -283,6 +296,7 @@ pub async fn deliver_album(
     user_id: i64,
     album: common::domain::Album,
     tags_enabled: bool,
+    hq_cover: bool,
 ) -> HandlerResult {
     let total = album.tracks.len();
     let title = escape_html(&album.title);
@@ -307,6 +321,7 @@ pub async fn deliver_album(
                 quality,
                 user_id,
                 tags_enabled,
+                hq_cover,
             )
             .await
         });
@@ -409,6 +424,7 @@ pub async fn deliver_track(
     quality: u32,
     user_id: i64,
     tags_enabled: bool,
+    hq_cover: bool,
 ) -> Result<Delivery, BoxError> {
     if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
         return Ok(Delivery::Cached);
@@ -418,7 +434,7 @@ pub async fn deliver_track(
     let download_started = Instant::now();
     let prepared = match state
         .manager
-        .prepare(request.clone(), quality, user_id)
+        .prepare(request.clone(), quality, user_id, hq_cover)
         .await
     {
         Ok(prepared) => prepared,

@@ -41,7 +41,7 @@ not be editable into messages.
 |---|---|---|
 | `/start` | everyone | Disclaimer and quick intro |
 | `/help` | everyone | How to use the bot |
-| `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags) |
+| `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px) |
 | `/stats` | admins | Tracks cached, users seen, uptime |
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |

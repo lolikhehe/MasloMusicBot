@@ -53,6 +53,7 @@ pub fn settings_title(
     search_source: Provider,
     tags_enabled: bool,
     lastfm_user: Option<&str>,
+    hq_cover: bool,
 ) -> String {
     let title = pick(lang, "<b>Settings</b>", "<b>Налаштування</b>");
     let q = pick(lang, "Quality", "Якість");
@@ -70,8 +71,14 @@ pub fn settings_title(
         "not connected (setup: /lastfm)",
         "не підключено (налаштування: /lastfm)",
     ));
+    let hq = if hq_cover {
+        pick(lang, "on", "увімк.")
+    } else {
+        pick(lang, "off", "вимк.")
+    };
+    let hql = pick(lang, "HQ cover (1000px)", "Обкладинка HQ (1000px)");
     format!(
-        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>",
+        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>\n{hql}: <b>{hq}</b>",
         language_name(language),
         search_source.display_name(),
         state
@@ -103,19 +110,38 @@ pub fn lastfm_status(lang: Lang, user: Option<&str>) -> String {
     }
 }
 
-pub fn lastfm_connected(lang: Lang, nick: &str) -> String {
+pub fn lastfm_disconnected(lang: Lang) -> &'static str {
+    pick(lang, "🔌 Last.fm disconnected.", "🔌 Last.fm відключено.")
+}
+
+pub fn lastfm_not_found(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "⚠️ Last.fm says there is no such user. Check the nickname spelling at last.fm.",
+        "⚠️ Last.fm не знає такого користувача. Перевір написання нікнейму на last.fm.",
+    )
+}
+
+pub fn lastfm_no_activity(lang: Lang, nick: &str) -> String {
     match lang {
         Lang::En => format!(
-            "✅ Last.fm connected as <b>{nick}</b>. Type nothing in inline mode to see what's playing."
+            "✅ Connected as <b>{nick}</b>, but no recent tracks yet. Make sure your player scrobbles to Last.fm and your profile is public."
         ),
         Lang::Uk => format!(
-            "✅ Last.fm підключено як <b>{nick}</b>. Залиште inline-поле порожнім, щоб побачити, що грає зараз."
+            "✅ Підключено як <b>{nick}</b>, але останніх треків ще немає. Переконайся, що плеєр скроблить на Last.fm, а профіль — публічний."
         ),
     }
 }
 
-pub fn lastfm_disconnected(lang: Lang) -> &'static str {
-    pick(lang, "🔌 Last.fm disconnected.", "🔌 Last.fm відключено.")
+pub fn lastfm_connected_track(lang: Lang, nick: &str, track: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "✅ Connected as <b>{nick}</b>. Now playing: <b>{track}</b>. In inline mode, an empty query will propose it."
+        ),
+        Lang::Uk => format!(
+            "✅ Підключено як <b>{nick}</b>. Зараз грає: <b>{track}</b>. Порожній inline-запит запропонує його."
+        ),
+    }
 }
 
 pub fn lastfm_invalid(lang: Lang) -> &'static str {
@@ -132,6 +158,10 @@ pub fn now_playing_inline(lang: Lang, track: &str) -> String {
         Lang::En => format!("▶ Now playing: {track}"),
         Lang::Uk => format!("▶ Зараз грає: {track}"),
     }
+}
+
+pub fn hq_cover_label(lang: Lang) -> &'static str {
+    pick(lang, "🖼 HQ cover (1000px)", "🖼 Обкладинка HQ (1000px)")
 }
 
 /// Shown in /settings when the user's chosen source is outside the operator's
