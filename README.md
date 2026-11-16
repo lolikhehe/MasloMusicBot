@@ -58,7 +58,7 @@ In a private chat:
   as a keyboard ("Artist — Title · N tracks · source"), picking one leads to the same
   confirmation flow; metadata only, audio still resolves via the usual sources
 - Tap a search result to download
-- In `/settings` the quality row includes a **FLAC** option: it keeps the best source the site serves into a FLAC container (no re-encode settings). YouTube never serves true lossless, so the bitrate is whatever the source has; Bandcamp/SoundCloud may be genuinely better there. Fresh downloads are tagged and cached under quality `0`.
+- In `/settings` the quality row includes a **FLAC** option: it keeps the best source the site serves into a FLAC container (no re-encode settings). YouTube never serves true lossless, so the bitrate is whatever the source has; Bandcamp/SoundCloud may be genuinely better there. Fresh downloads are tagged and cached under quality `0`. FLAC files above 50 MB need the local Bot API server — see **Local Bot API migration** below; without it the bot automatically re-sends the track as m4a 320 kbps with a warning note.
 
 In any chat, `@your_bot Artist — Title` offers candidates inline; picking one posts the audio in that
 chat. Cached tracks post instantly; uncached tracks download and are edited into the message.
@@ -88,6 +88,10 @@ and starts with a read-only rootfs + `tmpfs /tmp`.
 The bundled local server raises the upload ceiling to 2000 MB and shares a filesystem with the bot.
 You need `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from <https://my.telegram.org>.
 
+The image is `aiogram/telegram-bot-api` (the upstream `tdlib/telegram-bot-api` has no Docker
+Hub image; verified 2026-11-16). The entrypoint maps `TELEGRAM_API_ID`/`TELEGRAM_API_HASH`/
+`TELEGRAM_LOCAL=1` to the server flags, so no `command:` override is needed.
+
 1. **Migrate the bot off the cloud API first** — the cloud and local endpoints are mutually exclusive
    for a given bot for a while. While the bot is stopped or scaled down, call
    [`logOut`](https://core.telegram.org/bots/api#log-out):
@@ -106,10 +110,10 @@ You need `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from <https://my.telegram.org
    TELEGRAM_API_URL=http://bot-api:8081/
    ```
 
-3. Start both services:
+3. Start both services (the bot is recreated so it picks up `TELEGRAM_API_URL` from `.env`):
 
    ```sh
-   docker compose --profile local up -d
+   docker compose --profile local up -d --force-recreate
    ```
 
 4. Health is visible via `/metrics` on port 9090 — the `/healthz` endpoint confirms the process and SQLite.

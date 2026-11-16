@@ -176,10 +176,17 @@ impl Config {
     }
 
     pub fn max_file_bytes(&self) -> u64 {
-        // Telegram's hosted Bot API rejects uploads above 50 MB, so the env
-        // ceiling (MAX_FILE_MB, default 100) can never be reached by audio.
-        // Clamp to 49 MB — past this, a ready file is undeliverable.
-        self.max_file_mb.saturating_mul(1_000_000).min(49_000_000)
+        // The ceiling depends on which Bot API endpoint serves the upload:
+        // cloud api.telegram.org rejects audio above 50 MB; the bundled local
+        // server (TELEGRAM_API_URL set, docker compose --profile local) uses
+        // MTProto and accepts up to ~2 GB. The env value can never exceed the
+        // active mode's ceiling.
+        let ceiling = if self.telegram_api_url.is_some() {
+            2_000_000_000
+        } else {
+            49_000_000
+        };
+        self.max_file_mb.saturating_mul(1_000_000).min(ceiling)
     }
 }
 

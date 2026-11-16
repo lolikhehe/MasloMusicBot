@@ -219,6 +219,31 @@ with `TrackMeta::without_artist_prefix` so Telegram's "performer – title"
 does not show the artist twice (old cache entries are normalized at send
 time, fresh downloads at merge time).
 
+## Local Bot API for >50 MB uploads (2026-11-16)
+
+Cloud Bot API caps uploads at 50 MB, which makes FLAC (a 6.5-minute render is
+~78 MB) undeliverable — the send failed with a raw network error on /sendAudio.
+Telegram's own answer is the local Bot API server (tdlib/telegram-bot-api):
+self-hosted, `--local` mode, uploads go over MTProto up to ~2 GB. The repo
+already carried a compose profile for it, but pointed at a nonexistent
+`tdlib/telegram-bot-api` Docker image (pull access denied, verified) — switched
+to `aiogram/telegram-bot-api` (48M pulls, env-driven entrypoint:
+TELEGRAM_API_ID/HASH, TELEGRAM_LOCAL=1 → --local, port 8081) and boot-tested it
+(HTTP listener answers on /bot path; / returns 404 as expected).
+
+Code changes to make the two modes coexist safely:
+- `max_file_bytes()` is now mode-aware: cloud mode keeps the 49 MB clamp
+  (uploads above that can never be sent); local mode allows up to 2 GB, still
+  bounded by MAX_FILE_MB. FLAC therefore stays deliverable in both modes.
+- The automatic FLAC→m4a 320 fallback stays as the safety net for anything
+  beyond the active ceiling.
+
+Migration is operator-side and one-time (README "Local Bot API migration"):
+create api_id/api_hash at my.telegram.org, `logOut` on the cloud API while the
+bot is stopped, set TELEGRAM_API_ID/HASH/URL in .env, then
+`docker compose --profile local up -d --force-recreate`. Without those steps
+the bot runs exactly as before (cloud API + 49 MB clamp).
+
 ## /settings: FLAC lossless option (2026-11-16)
 
 Quality is `users.quality: INTEGER`, where 0 is now reserved as the lossless
