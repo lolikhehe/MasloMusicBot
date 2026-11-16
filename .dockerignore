@@ -1,0 +1,11 @@
+# Build context: keep it tiny. The builder stage only needs manifests,
+# sources and migrations (image builds were copying ~800 MB of target/ otherwise).
+target/
+.git/
+.gitignore
+.github/
+data/
+.env
+.env.example
+docs/
+*.md

@@ -104,3 +104,30 @@ Where this document contradicts the earlier truncation-era text, the full spec w
 - The local Bot API server (`tdlib/telegram-bot-api`) is an **opt-in profile** (`local`) because this
   deployment has no `TELEGRAM_API_ID`/`TELEGRAM_API_HASH`; the bot runs against the public API by
   default with a 50 MB upload ceiling. See README for the migration steps.
+
+## Ops incident (2026-11-16): yt-dlp exits 127 inside the container
+
+Symptom: every download failed with `yt-dlp failed status=exit status: 127` and stderr
+`error while loading shared libraries: libz.so.1: failed to map segment from shared object`.
+
+Root cause: the pinned `yt-dlp` binary is a PyInstaller onefile bundle. On start it extracts
+itself to a temp dir and `mmap`s its bundled `libz.so.1` (and friends) from there. The compose
+stack mounts `/tmp` as tmpfs with `noexec` (hardening default), so those mappings fail — the
+error names `libz.so.1` but the faulting object is the extracted bundle's library, not the
+system one. The image itself was verified good: running yt-dlp with an exec-allowed temp dir
+(e.g. `docker run -v bot-data:/data -e TMPDIR=/data/tmp`) prints `2026.10.26` successfully.
+
+Fix (defense in depth, both layers):
+- `Dockerfile`: `ENV TMPDIR=/data/tmp` — image works out of the box on any runtime.
+- `docker-compose.yml`: `TMPDIR: /data/tmp` on the bot service + comment explaining why — overrides
+  the runtime env and protects against accidental future `tmpfs /tmp` re-adds.
+Confirmed: container recreated, `yt-dlp --version` → `2026.10.26`, `/healthz` → `{"status":"ok"}`,
+bot reconnected to Telegram as `MaslougazeMusicBot`.
+
+Related ops hygiene: added `.dockerignore` (`target/`, `.git/`, `.env`, `data/`). Previously the
+build context was ~820 MB (mostly `target/`), which made `docker compose build` look hung —
+it was still transferring the context. Image build now runs in seconds.
+
+Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded ~0.46 s avg
+on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
+after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.

@@ -35,3 +35,25 @@
 - tracing structured logs (`LOG_FORMAT=json`), per-request timing spans in the handler.
 - `metrics-exporter-prometheus` recorder on `METRICS_ADDR`.
 - No tokio-console/flamegraph integration yet — add behind a `debug` feature if needed.
+
+## Deployment verification (2026-11-16)
+
+Live deploy succeeded: `docker compose up -d`, container `music-bot-bot-1` healthy, `/healthz` returns
+`{"status":"ok"}`, bot connected to Telegram as `MaslougazeMusicBot`.
+
+First two user requests landed before the yt-dlp `TMPDIR` fix (see decisions.md): downloads failed fast
+(exit 127), so end-to-end numbers do **not** reflect a working cold path yet. Measured counters:
+
+- `music_bot_requests_total = 2`
+- `music_bot_request_seconds_sum ≈ 0.92 s` → ~0.46 s avg over 2 requests (all fast-fail paths)
+
+Local microbenchmark (SQLite cache layer only — the hot path for an S1-style hit, measured on this
+Windows x64 dev machine with `cargo run --release -p storage --example cache_bench`):
+
+- `get_track` (cache hot path): 1000 iterations, avg ≈ 34 µs, p50 ≈ 31 µs, p95 ≈ 47 µs, max ≈ 92 µs.
+- `touch_track` (hit bookkeeping UPSERT): avg ≈ 98 µs, p50 ≈ 45 µs, p95 ≈ 68 µs, one outlier ≈ 19 ms.
+
+S1/S2/S3/S4 remain **NOT MEASURED** end-to-end until the operator (or user) exercises the bot against
+real sources post-fix; re-check `/metrics` exports then and update the table above. Honest framing:
+the database is demonstrably sub-millisecond; network-to-Telegram upload dominates wall-clock and is
+the number to watch.
