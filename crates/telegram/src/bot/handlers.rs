@@ -322,12 +322,30 @@ pub async fn deliver_album(
     )
     .await;
 
+    // Hold a slot for the whole download+upload, not just the download part:
+    // releasing the user semaphore before the Telegram upload let ~10 large
+    // files land in one chat at once and triggered 429s.
+    let send_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(
+        state.config.max_active_downloads_per_user,
+    ));
     let mut set = tokio::task::JoinSet::new();
     for track in album.tracks {
         let state = state.clone();
         let bot_clone = bot.clone();
+        let track_title = track
+            .meta
+            .as_ref()
+            .map(|meta| meta.display_title())
+            .unwrap_or_else(|| track.key.to_string());
+        let send_slots = send_slots.clone();
         set.spawn(async move {
-            deliver_track(
+            let Ok(_permit) = send_slots.acquire().await else {
+                return (
+                    track_title,
+                    Err(AppError::Message("album send semaphore closed".to_owned()).into()),
+                );
+            };
+            let result = deliver_track(
                 &state,
                 &bot_clone,
                 chat,
@@ -337,18 +355,33 @@ pub async fn deliver_album(
                 tags_enabled,
                 hq_cover,
             )
-            .await
+            .await;
+            (track_title, result)
         });
     }
 
     let mut ok = 0usize;
     let mut failed = 0usize;
     let mut done = 0usize;
+    let mut failed_titles: Vec<String> = Vec::new();
     let mut last_edit = Instant::now();
-    while let Some(result) = set.join_next().await {
-        match result {
-            Ok(Ok(_)) => ok += 1,
-            _ => failed += 1,
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok((track_title, Ok(_))) => {
+                let _ = track_title;
+                ok += 1;
+            }
+            Ok((track_title, Err(error))) => {
+                failed += 1;
+                warn!(%track_title, %error, "album track delivery failed");
+                if failed_titles.len() < 8 {
+                    failed_titles.push(escape_html(&track_title));
+                }
+            }
+            Err(error) => {
+                failed += 1;
+                warn!(%error, "album track task failed to join");
+            }
         }
         done += 1;
         if last_edit.elapsed() >= std::time::Duration::from_secs(2) || done == total {
@@ -363,7 +396,16 @@ pub async fn deliver_album(
         }
     }
 
-    let _ = edit_html(bot, chat, progress, i18n::album_done(lang, ok, failed)).await;
+    let mut final_text = i18n::album_done(lang, ok, failed);
+    if !failed_titles.is_empty() {
+        final_text.push_str("\n\n");
+        final_text.push_str(&i18n::album_failed_list(
+            lang,
+            &failed_titles,
+            failed.saturating_sub(failed_titles.len()),
+        ));
+    }
+    let _ = edit_html(bot, chat, progress, final_text).await;
     Ok(())
 }
 
@@ -454,6 +496,7 @@ pub async fn deliver_track(
         Ok(prepared) => prepared,
         Err(error) => {
             metrics::counter!("music_bot_download_errors_total").increment(1);
+            warn!(key = %request.key, %error, "track preparation failed");
             return Err(error.into());
         }
     };
@@ -470,7 +513,13 @@ pub async fn deliver_track(
     metrics::counter!("music_bot_uploads_total").increment(1);
     let caption = tags_caption(&prepared.meta, tags_enabled);
     let upload_started = Instant::now();
-    let message = send::send_prepared(bot, chat, &prepared, caption).await?;
+    let message = match send::send_prepared(bot, chat, &prepared, caption).await {
+        Ok(message) => message,
+        Err(error) => {
+            warn!(key = %request.key, %error, "track upload to Telegram failed");
+            return Err(error.into());
+        }
+    };
     metrics::histogram!("music_bot_upload_seconds").record(upload_started.elapsed().as_secs_f64());
 
     let Some((file_id, file_unique_id)) = send::extract_file_id(&message) else {

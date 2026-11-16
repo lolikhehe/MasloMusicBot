@@ -196,6 +196,29 @@ Directives:
   fallback only finds copies that catalogs themselves serve openly (SoundCloud
   artist uploads, official Topic channels, etc.).
 
+## Album failures: visibility and a Telegram-side 429 fix (2026-11-16)
+
+`/alb` test album "Gloire Éternelle" (Deezer 231087412, 10 tracks, HQ covers on):
+7/10 sent. DB diff showed the 3 failures were "La Veuve et Le Martyr"
+(yt-dlp 403 on YouTube; SoundCloud fallback also failed), "In'El" and
+"Sonata en Mi Mineur" (no yt-dlp error logged — almost certainly Telegram
+upload-side 429s: ~10 large files were uploaded at once because the per-user
+semaphore was released before send). Causes were invisible because no error
+was logged on the album path and the user only saw counts.
+
+Fixes: (1) per-track prepare/upload errors are now logged with key and the
+final album message lists the failed track names plus a "retry /alb — cache
+makes finished tracks instant" hint; (2) album delivery holds a slot for the
+whole download+upload (was: download only), capped at
+MAX_ACTIVE_DOWNLOADS_PER_USER (default 3) — stops burst-uploading into one
+chat; (3) yt-dlp HTTP 403 counts as transient (one retry) — it is usually
+rate limiting, fallback catalogs still run after; (4) `clear_dir` no longer
+deletes `cover.*` (it raced the concurrent early-cover task and caused
+"audio tagging skipped: cover read: No such file"); (5) titles are normalized
+with `TrackMeta::without_artist_prefix` so Telegram's "performer – title"
+does not show the artist twice (old cache entries are normalized at send
+time, fresh downloads at merge time).
+
 ## /alb: album search by name (2026-11-16)
 
 `/alb <name>` searches public album catalogs in parallel — Deezer

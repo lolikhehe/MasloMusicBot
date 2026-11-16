@@ -21,13 +21,14 @@ pub async fn send_cached(
     track: &CachedTrack,
     caption: Option<String>,
 ) -> Result<Message, teloxide::RequestError> {
+    let meta = track.meta.without_artist_prefix();
     let mut request = bot
         .send_audio(chat, InputFile::file_id(FileId(track.file_id.clone())))
-        .title(truncate(&track.meta.title, 128));
-    if let Some(performer) = track.meta.performer.as_deref() {
+        .title(truncate(&meta.title, 128));
+    if let Some(performer) = meta.performer.as_deref() {
         request = request.performer(truncate(performer, 128));
     }
-    if let Some(duration) = track.meta.duration_secs {
+    if let Some(duration) = meta.duration_secs {
         request = request.duration(duration);
     }
     if let Some(caption) = caption {
@@ -43,13 +44,14 @@ pub async fn send_prepared(
     caption: Option<String>,
 ) -> Result<Message, teloxide::RequestError> {
     let input = InputFile::file(prepared.audio_path.clone()).file_name(prepared.file_name());
+    let meta = prepared.meta.without_artist_prefix();
     let mut request = bot
         .send_audio(chat, input)
-        .title(truncate(&prepared.meta.title, 128));
-    if let Some(performer) = prepared.meta.performer.as_deref() {
+        .title(truncate(&meta.title, 128));
+    if let Some(performer) = meta.performer.as_deref() {
         request = request.performer(truncate(performer, 128));
     }
-    if let Some(duration) = prepared.meta.duration_secs {
+    if let Some(duration) = meta.duration_secs {
         request = request.duration(duration);
     }
     if let Some(cover) = prepared.cover_path.as_ref() {

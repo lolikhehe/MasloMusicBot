@@ -355,6 +355,28 @@ pub fn album_empty(lang: Lang) -> &'static str {
     )
 }
 
+/// Shown after an album finishes when some tracks failed: names of the
+/// missing tracks (already HTML-escaped) and how to retry.
+pub fn album_failed_list(lang: Lang, titles: &[String], extra: usize) -> String {
+    let list = titles.join(", ");
+    let more = if extra > 0 {
+        match lang {
+            Lang::En => format!(" and {extra} more"),
+            Lang::Uk => format!(" і ще {extra}"),
+        }
+    } else {
+        String::new()
+    };
+    match lang {
+        Lang::En => format!(
+            "⚠ Failed: {list}{more}.\nSend /alb again — the finished tracks will come from cache instantly."
+        ),
+        Lang::Uk => format!(
+            "⚠ Не вдалося: {list}{more}.\nПовтори виклик /alb — успішні треки будуть взяті з кешу миттєво."
+        ),
+    }
+}
+
 pub fn album_search_usage(lang: Lang) -> &'static str {
     pick(
         lang,

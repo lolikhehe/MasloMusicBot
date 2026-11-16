@@ -513,7 +513,9 @@ impl DownloadManager {
     }
 }
 
-/// Transient failures worth one retry: timeouts, resets and rate limiting.
+/// Transient failures worth one retry: timeouts, resets, rate limiting and
+/// YouTube's intermittent HTTP 403 (rate limiting as often as real refusals;
+/// the fallback catalogs still run after a failed retry).
 fn is_transient(error: &DownloadError) -> bool {
     let message = error.to_string().to_ascii_lowercase();
     message.contains("timed out")
@@ -522,6 +524,7 @@ fn is_transient(error: &DownloadError) -> bool {
         || message.contains("reset")
         || message.contains("too many requests")
         || message.contains("429")
+        || message.contains("403")
 }
 
 fn is_empty_search_query(target: &DownloadTarget) -> bool {
@@ -614,6 +617,11 @@ async fn clear_dir(dir: &Path) {
     };
     while let Ok(Some(entry)) = entries.next_entry().await {
         if entry.file_type().await.is_ok_and(|kind| kind.is_file()) {
+            // The early cover task may have written cover.jpg while the audio
+            // attempt was running; deleting it here would race tagging.
+            if entry.file_name().to_string_lossy().starts_with("cover.") {
+                continue;
+            }
             let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
@@ -621,7 +629,7 @@ async fn clear_dir(dir: &Path) {
 
 fn merge_meta(requested: Option<&TrackMeta>, downloaded: &TrackMeta) -> TrackMeta {
     let Some(requested) = requested else {
-        return downloaded.clone();
+        return downloaded.clone().without_artist_prefix();
     };
     TrackMeta {
         title: if downloaded.title.trim().is_empty() {
@@ -645,6 +653,7 @@ fn merge_meta(requested: Option<&TrackMeta>, downloaded: &TrackMeta) -> TrackMet
             downloaded.genres.clone()
         },
     }
+    .without_artist_prefix()
 }
 
 #[cfg(test)]

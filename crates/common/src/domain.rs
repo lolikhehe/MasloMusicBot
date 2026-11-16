@@ -177,6 +177,40 @@ impl TrackMeta {
         }
     }
 
+    /// Telegram renders "performer – title"; strip a duplicated artist prefix
+    /// that downloaded video titles often carry ("Artist - Title",
+    /// "Artist Title") so the chat doesn't show the name twice.
+    pub fn without_artist_prefix(&self) -> Self {
+        const SEPARATORS: &str = "-–—:|•/\\";
+        let title = self.title.trim();
+        let artist = self
+            .performer
+            .as_deref()
+            .map(str::trim)
+            .filter(|artist| !artist.is_empty());
+        let Some(artist) = artist else {
+            return self.clone();
+        };
+        let artist_len = artist.chars().count();
+        if title.chars().count() <= artist_len {
+            return self.clone();
+        }
+        if !title.to_lowercase().starts_with(&artist.to_lowercase()) {
+            return self.clone();
+        }
+        let rest: String = title.chars().skip(artist_len).collect();
+        let rest = rest
+            .trim_start()
+            .trim_start_matches(|ch| SEPARATORS.contains(ch))
+            .trim_start();
+        if rest.is_empty() {
+            return self.clone();
+        }
+        let mut meta = self.clone();
+        meta.title = rest.to_owned();
+        meta
+    }
+
     pub fn search_query(&self) -> String {
         match &self.performer {
             Some(performer) if !performer.trim().is_empty() => {
@@ -358,6 +392,56 @@ impl SearchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artist_prefix_is_stripped_from_title() {
+        let base = TrackMeta {
+            title: "First Fragment - Mort Éphémère".into(),
+            performer: Some("First Fragment".into()),
+            ..Default::default()
+        };
+        assert_eq!(base.without_artist_prefix().title, "Mort Éphémère");
+
+        let spaced = TrackMeta {
+            title: "First Fragment Mort Éphémère".into(),
+            ..base.clone()
+        };
+        assert_eq!(spaced.without_artist_prefix().title, "Mort Éphémère");
+
+        let dash = TrackMeta {
+            title: "Metallica – Master of Puppets".into(),
+            performer: Some("metallica".into()),
+            ..Default::default()
+        };
+        assert_eq!(dash.without_artist_prefix().title, "Master of Puppets");
+
+        // No artist prefix at all: untouched.
+        let plain = TrackMeta {
+            title: "Master of Puppets".into(),
+            performer: Some("Metallica".into()),
+            ..Default::default()
+        };
+        assert_eq!(plain.without_artist_prefix().title, "Master of Puppets");
+
+        // Title is only the artist: keep it (better than an empty title).
+        let only_artist = TrackMeta {
+            title: "Metallica".into(),
+            performer: Some("Metallica".into()),
+            ..Default::default()
+        };
+        assert_eq!(only_artist.without_artist_prefix().title, "Metallica");
+
+        // No performer: untouched.
+        let anon = TrackMeta {
+            title: "First Fragment Mort Éphémère".into(),
+            performer: None,
+            ..Default::default()
+        };
+        assert_eq!(
+            anon.without_artist_prefix().title,
+            "First Fragment Mort Éphémère"
+        );
+    }
 
     #[test]
     fn provider_round_trip() {
