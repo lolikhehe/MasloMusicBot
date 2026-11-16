@@ -219,6 +219,20 @@ with `TrackMeta::without_artist_prefix` so Telegram's "performer – title"
 does not show the artist twice (old cache entries are normalized at send
 time, fresh downloads at merge time).
 
+## yt-dlp auto-refresh at container start (experimental branch, 2026-11-16)
+
+Manual yt-dlp bumps (pinned version + SHA256 in Dockerfile) did not scale:
+YouTube forces a new extractor every ~17–20 days. `docker/entrypoint.sh` now
+refreshes the standalone yt-dlp binary into the writable /data volume on
+container start when YTDLP_AUTO_UPDATE=true (default on the experimental
+branch), verifies it answers --version, and points the bot at it via
+YTDLP_PATH; any failure falls back to the pinned binary. Admins revert by
+setting YTDLP_AUTO_UPDATE=false or checking out main. Known limits and the
+full comparison of alternatives (cobalt, NewPipeExtractor, rusty_ytdl) are in
+docs/yt-dlp-alternatives.md — the short version: there is no maintenance-free
+YouTube downloader; updates moved from "us, manually" to "the build,
+automatically".
+
 ## /alb: album search by name (2026-11-16)
 
 `/alb <name>` searches public album catalogs in parallel — Deezer

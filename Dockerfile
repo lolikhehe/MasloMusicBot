@@ -43,7 +43,9 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/music-bot /usr/local/bin/music-bot
-RUN mkdir -p /data && chown -R bot:bot /data
+COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint
+RUN chmod 755 /usr/local/bin/docker-entrypoint \
+ && mkdir -p /data && chown -R bot:bot /data
 
 ENV DATABASE_URL=sqlite:///data/bot.db \
     TMP_DIR=/data/tmp \
@@ -52,6 +54,9 @@ ENV DATABASE_URL=sqlite:///data/bot.db \
     XDG_CACHE_HOME=/data/tmp/cache \
     YTDLP_PATH=/usr/local/bin/yt-dlp \
     FFMPEG_PATH=/usr/bin/ffmpeg \
+    # refresh yt-dlp from the latest release on every container start;
+    # falls back to the pinned binary when the network is unavailable
+    YTDLP_AUTO_UPDATE=true \
     # deno's cache must live on the writable volume: the container root fs is read-only
     DENO_DIR=/data/tmp/deno \
     METRICS_ADDR=0.0.0.0:9090 \
@@ -61,4 +66,4 @@ VOLUME ["/data"]
 EXPOSE 9090
 
 USER bot
-ENTRYPOINT ["/usr/bin/tini", "--", "music-bot"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint", "music-bot"]
