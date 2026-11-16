@@ -244,6 +244,13 @@ bot is stopped, set TELEGRAM_API_ID/HASH/URL in .env, then
 `docker compose --profile local up -d --force-recreate`. Without those steps
 the bot runs exactly as before (cloud API + 49 MB clamp).
 
+Verified live 2026-11-16: `music-bot-bot-api-1` (aiogram image, `--local`) up,
+bot logs `using custom Bot API endpoint http://bot-api:8081/` + `connected to
+Telegram`, and a 72 556 029-byte FLAC was uploaded through the local server and
+delivered to the operator's private chat (`file_size` echo in the sendAudio
+response) — past the old 50 MB cloud ceiling. Test artifact removed from
+/data/tmp afterwards.
+
 ## /settings: FLAC lossless option (2026-11-16)
 
 Quality is `users.quality: INTEGER`, where 0 is now reserved as the lossless
