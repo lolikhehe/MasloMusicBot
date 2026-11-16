@@ -3,7 +3,7 @@
 use crate::bot::commands::{self, Command};
 use crate::bot::send;
 use crate::state::AppState;
-use common::domain::{Lang, TrackKey, TrackRequest};
+use common::domain::{Lang, TrackKey, TrackMeta, TrackRequest};
 use common::error::{AppError, DownloadError, HandlerResult};
 use common::i18n;
 use providers::{ParsedInput, parse_input};
@@ -99,6 +99,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
                 user.quality,
                 user_id,
                 request,
+                user.tags_enabled,
             )
             .await
         }
@@ -129,6 +130,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_track(
     state: &AppState,
     bot: &Bot,
@@ -137,13 +139,14 @@ async fn handle_track(
     quality: u32,
     user_id: i64,
     request: TrackRequest,
+    tags_enabled: bool,
 ) -> HandlerResult {
-    if try_cache_send(state, bot, chat, &request.key, quality).await? {
+    if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
         return Ok(());
     }
 
     let placeholder = send::send_html(bot, chat, i18n::downloading(lang)).await?;
-    match deliver_track(state, bot, chat, request, quality, user_id).await {
+    match deliver_track(state, bot, chat, request, quality, user_id, tags_enabled).await {
         Ok(_) => {
             if let Err(error) = bot.delete_message(chat, placeholder.id).await {
                 warn!(%error, "could not delete progress message");
@@ -279,6 +282,7 @@ pub async fn deliver_album(
     quality: u32,
     user_id: i64,
     album: common::domain::Album,
+    tags_enabled: bool,
 ) -> HandlerResult {
     let total = album.tracks.len();
     let title = escape_html(&album.title);
@@ -294,9 +298,18 @@ pub async fn deliver_album(
     for track in album.tracks {
         let state = state.clone();
         let bot_clone = bot.clone();
-        set.spawn(
-            async move { deliver_track(&state, &bot_clone, chat, track, quality, user_id).await },
-        );
+        set.spawn(async move {
+            deliver_track(
+                &state,
+                &bot_clone,
+                chat,
+                track,
+                quality,
+                user_id,
+                tags_enabled,
+            )
+            .await
+        });
     }
 
     let mut ok = 0usize;
@@ -325,6 +338,34 @@ pub async fn deliver_album(
     Ok(())
 }
 
+/// Best-effort genre/album enrichment when the user opted into tags and the
+/// source had no genres: one public iTunes Search API call for metadata
+/// only; failures are silent so the track still sends without tags.
+pub async fn enrich_tags(state: &AppState, meta: &mut TrackMeta, tags_enabled: bool) {
+    if !tags_enabled || !meta.genres.is_empty() {
+        return;
+    }
+    if let Some((genre, album)) = state
+        .manager
+        .itunes_tags(&meta.search_query(), meta.duration_secs)
+        .await
+    {
+        meta.genres = vec![genre];
+        if meta.album.is_none() {
+            meta.album = album;
+        }
+    }
+}
+
+/// Caption for a sent track (`/settings` tags toggle); language neutral.
+pub fn tags_caption(meta: &TrackMeta, tags_enabled: bool) -> Option<String> {
+    if tags_enabled {
+        meta.tags_caption()
+    } else {
+        None
+    }
+}
+
 /// Serve a cache entry if possible. A stale `file_id` is purged so the caller
 /// can fall back to a fresh download.
 async fn try_cache_send(
@@ -333,11 +374,13 @@ async fn try_cache_send(
     chat: ChatId,
     key: &TrackKey,
     quality: u32,
+    tags_enabled: bool,
 ) -> Result<bool, BoxError> {
     let Some(cached) = state.manager.get_cached(key, quality).await? else {
         return Ok(false);
     };
-    match send::send_cached(bot, chat, &cached).await {
+    let caption = tags_caption(&cached.meta, tags_enabled);
+    match send::send_cached(bot, chat, &cached, caption).await {
         Ok(_) => {
             state.manager.touch_cached(key, quality).await;
             metrics::counter!("music_bot_cache_hits_total").increment(1);
@@ -353,6 +396,7 @@ async fn try_cache_send(
 }
 
 /// Shared delivery path for direct requests, search callbacks and albums.
+#[allow(clippy::too_many_arguments)]
 pub async fn deliver_track(
     state: &AppState,
     bot: &Bot,
@@ -360,8 +404,9 @@ pub async fn deliver_track(
     request: TrackRequest,
     quality: u32,
     user_id: i64,
+    tags_enabled: bool,
 ) -> Result<Delivery, BoxError> {
-    if try_cache_send(state, bot, chat, &request.key, quality).await? {
+    if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
         return Ok(Delivery::Cached);
     }
 
@@ -378,17 +423,20 @@ pub async fn deliver_track(
             return Err(error.into());
         }
     };
+    let mut prepared = prepared;
+    enrich_tags(state, &mut prepared.meta, tags_enabled).await;
     metrics::histogram!("music_bot_download_seconds")
         .record(download_started.elapsed().as_secs_f64());
 
     // Another request may have finished while we downloaded.
-    if try_cache_send(state, bot, chat, &request.key, quality).await? {
+    if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
         return Ok(Delivery::Cached);
     }
 
     metrics::counter!("music_bot_uploads_total").increment(1);
+    let caption = tags_caption(&prepared.meta, tags_enabled);
     let upload_started = Instant::now();
-    let message = send::send_prepared(bot, chat, &prepared).await?;
+    let message = send::send_prepared(bot, chat, &prepared, caption).await?;
     metrics::histogram!("music_bot_upload_seconds").record(upload_started.elapsed().as_secs_f64());
 
     let Some((file_id, file_unique_id)) = send::extract_file_id(&message) else {

@@ -46,15 +46,42 @@ pub fn help(lang: Lang, is_admin: bool) -> String {
     }
 }
 
-pub fn settings_title(lang: Lang, quality: u32, language: Lang, search_source: Provider) -> String {
+pub fn settings_title(
+    lang: Lang,
+    quality: u32,
+    language: Lang,
+    search_source: Provider,
+    tags_enabled: bool,
+) -> String {
     let title = pick(lang, "<b>Settings</b>", "<b>Налаштування</b>");
     let q = pick(lang, "Quality", "Якість");
     let l = pick(lang, "Language", "Мова");
     let s = pick(lang, "Search source (inline)", "Джерело пошуку (inline)");
+    let t = pick(lang, "Tags (album + genres)", "Теги (альбом + жанри)");
+    let state = if tags_enabled {
+        pick(lang, "on", "увімк.")
+    } else {
+        pick(lang, "off", "вимк.")
+    };
     format!(
-        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>",
+        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>",
         language_name(language),
-        search_source.display_name()
+        search_source.display_name(),
+        state
+    )
+}
+
+pub fn tags_label(lang: Lang) -> &'static str {
+    pick(lang, "🏷 Tags: album + genre", "🏷 Теги: альбом і жанри")
+}
+
+/// Shown in /settings when the user's chosen source is outside the operator's
+/// SEARCH_PROVIDERS allow-list.
+pub fn search_source_blocked(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "⚠️ Your chosen search source is blocked by the server config — the bot falls back to YouTube. Ask the operator to enable it (SEARCH_PROVIDERS).",
+        "⚠️ Вибране джерело пошуку заблоковано налаштуванням сервера — бот шукатиме в YouTube. Попросіть оператора увімкнути його (SEARCH_PROVIDERS).",
     )
 }
 

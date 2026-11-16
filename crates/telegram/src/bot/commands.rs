@@ -56,6 +56,7 @@ pub fn settings_keyboard(
     lang: Lang,
     quality: u32,
     search_source: Provider,
+    tags_enabled: bool,
 ) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = [128u32, 192, 256, 320]
         .chunks(2)
@@ -88,6 +89,14 @@ pub fn settings_keyboard(
             })
             .collect(),
     );
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{}{}",
+            if tags_enabled { "✓ " } else { "" },
+            i18n::tags_label(lang)
+        ),
+        format!("s:tags:{}", u8::from(!tags_enabled)),
+    )]);
     rows.push(
         [Lang::En, Lang::Uk]
             .into_iter()
@@ -134,17 +143,30 @@ pub async fn handle_command(
             send_plain(bot, msg.chat.id, text).await?;
         }
         Command::Settings => {
-            bot.send_message(
-                msg.chat.id,
-                i18n::settings_title(lang, user_record.quality, lang, user_record.search_source),
-            )
-            .parse_mode(ParseMode::Html)
-            .reply_markup(settings_keyboard(
+            let mut body = i18n::settings_title(
                 lang,
                 user_record.quality,
+                lang,
                 user_record.search_source,
-            ))
-            .await?;
+                user_record.tags_enabled,
+            );
+            if !state
+                .config
+                .search_providers
+                .contains(&user_record.search_source)
+            {
+                body.push_str("\n\n");
+                body.push_str(i18n::search_source_blocked(lang));
+            }
+            bot.send_message(msg.chat.id, body)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(settings_keyboard(
+                    lang,
+                    user_record.quality,
+                    user_record.search_source,
+                    user_record.tags_enabled,
+                ))
+                .await?;
         }
         Command::Stats => {
             if !is_admin {

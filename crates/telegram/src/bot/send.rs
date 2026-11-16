@@ -19,6 +19,7 @@ pub async fn send_cached(
     bot: &Bot,
     chat: ChatId,
     track: &CachedTrack,
+    caption: Option<String>,
 ) -> Result<Message, teloxide::RequestError> {
     let mut request = bot
         .send_audio(chat, InputFile::file_id(FileId(track.file_id.clone())))
@@ -29,6 +30,9 @@ pub async fn send_cached(
     if let Some(duration) = track.meta.duration_secs {
         request = request.duration(duration);
     }
+    if let Some(caption) = caption {
+        request = request.caption(caption);
+    }
     request.await
 }
 
@@ -36,6 +40,7 @@ pub async fn send_prepared(
     bot: &Bot,
     chat: ChatId,
     prepared: &PreparedAudio,
+    caption: Option<String>,
 ) -> Result<Message, teloxide::RequestError> {
     let input = InputFile::file(prepared.audio_path.clone()).file_name(prepared.file_name());
     let mut request = bot
@@ -49,6 +54,9 @@ pub async fn send_prepared(
     }
     if let Some(cover) = prepared.cover_path.as_ref() {
         request = request.thumbnail(InputFile::file(cover.clone()));
+    }
+    if let Some(caption) = caption {
+        request = request.caption(caption);
     }
     request.await
 }

@@ -31,15 +31,61 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
     };
 
     if let Some(id) = data.strip_prefix("q:") {
-        handle_selection(&state, &bot, &query, id, user.lang, user.quality).await?;
+        handle_selection(
+            &state,
+            &bot,
+            &query,
+            id,
+            user.lang,
+            user.quality,
+            user.tags_enabled,
+        )
+        .await?;
     } else if let Some(id) = data.strip_prefix("alc:") {
-        handle_album_confirm(&state, &bot, &query, id, user.lang, user.quality).await?;
+        handle_album_confirm(
+            &state,
+            &bot,
+            &query,
+            id,
+            user.lang,
+            user.quality,
+            user.tags_enabled,
+        )
+        .await?;
     } else if let Some(id) = data.strip_prefix("alx:") {
         handle_album_cancel(&state, &bot, &query, id, user.lang).await?;
+    } else if let Some(value) = data.strip_prefix("s:tags:") {
+        if let Some(enabled) = parse_bool(value) {
+            state.db.set_tags_enabled(user_id, enabled).await?;
+            let user = state.db.ensure_user(user_id, preferred).await?;
+            refresh_settings(
+                &state,
+                &bot,
+                &query,
+                user.lang,
+                user.quality,
+                user.search_source,
+                enabled,
+            )
+            .await?;
+            let _ = bot
+                .answer_callback_query(query.id.clone())
+                .text(i18n::settings_saved(user.lang))
+                .await;
+        }
     } else if let Some(value) = data.strip_prefix("s:q:") {
         if let Ok(quality) = value.parse::<u32>() {
             state.db.set_quality(user_id, quality).await?;
-            refresh_settings(&state, &bot, &query, user.lang, quality, user.search_source).await?;
+            refresh_settings(
+                &state,
+                &bot,
+                &query,
+                user.lang,
+                quality,
+                user.search_source,
+                user.tags_enabled,
+            )
+            .await?;
             let _ = bot
                 .answer_callback_query(query.id.clone())
                 .text(i18n::settings_saved(user.lang))
@@ -49,7 +95,16 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         if let Some(source) = parse_search_source(code) {
             state.db.set_search_source(user_id, source).await?;
             let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(&state, &bot, &query, user.lang, user.quality, source).await?;
+            refresh_settings(
+                &state,
+                &bot,
+                &query,
+                user.lang,
+                user.quality,
+                source,
+                user.tags_enabled,
+            )
+            .await?;
             let _ = bot
                 .answer_callback_query(query.id.clone())
                 .text(i18n::settings_saved(user.lang))
@@ -59,7 +114,16 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         if let Some(lang) = common::domain::Lang::from_code(code) {
             state.db.set_language(user_id, lang).await?;
             let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(&state, &bot, &query, lang, user.quality, user.search_source).await?;
+            refresh_settings(
+                &state,
+                &bot,
+                &query,
+                lang,
+                user.quality,
+                user.search_source,
+                user.tags_enabled,
+            )
+            .await?;
             let _ = bot
                 .answer_callback_query(query.id.clone())
                 .text(i18n::settings_saved(lang))
@@ -78,6 +142,7 @@ async fn handle_selection(
     selection_id: &str,
     lang: common::domain::Lang,
     quality: u32,
+    tags_enabled: bool,
 ) -> HandlerResult {
     let _ = bot.answer_callback_query(query.id.clone()).await;
     let Some(message) = query.regular_message() else {
@@ -105,7 +170,17 @@ async fn handle_selection(
 
     let _ = edit_html(bot, chat, message_id, i18n::downloading(lang)).await;
     info!(selection_id, "delivering selected search result");
-    match deliver_track(state, bot, chat, request.clone(), quality, user_id).await {
+    match deliver_track(
+        state,
+        bot,
+        chat,
+        request.clone(),
+        quality,
+        user_id,
+        tags_enabled,
+    )
+    .await
+    {
         Ok(_) => {
             let title = request
                 .meta
@@ -137,6 +212,7 @@ async fn handle_album_confirm(
     selection_id: &str,
     lang: common::domain::Lang,
     quality: u32,
+    tags_enabled: bool,
 ) -> HandlerResult {
     let _ = bot.answer_callback_query(query.id.clone()).await;
     let Some(message) = query.regular_message() else {
@@ -156,7 +232,18 @@ async fn handle_album_confirm(
         tracks = album.tracks.len(),
         "album confirmed; starting downloads"
     );
-    deliver_album(state, bot, chat, message_id, lang, quality, user_id, album).await
+    deliver_album(
+        state,
+        bot,
+        chat,
+        message_id,
+        lang,
+        quality,
+        user_id,
+        album,
+        tags_enabled,
+    )
+    .await
 }
 
 /// User declined a collection: discard the pending expansion.
@@ -189,20 +276,35 @@ async fn refresh_settings(
     lang: common::domain::Lang,
     quality: u32,
     search_source: common::domain::Provider,
+    tags_enabled: bool,
 ) -> HandlerResult {
     let Some(message) = query.regular_message() else {
         return Ok(());
     };
-    let _ = state;
-    bot.edit_message_text(
-        message.chat.id,
-        message.id,
-        i18n::settings_title(lang, quality, lang, search_source),
-    )
-    .parse_mode(ParseMode::Html)
-    .reply_markup(settings_keyboard(lang, quality, search_source))
-    .await?;
+    let mut body = i18n::settings_title(lang, quality, lang, search_source, tags_enabled);
+    if !state.config.search_providers.contains(&search_source) {
+        body.push_str("\n\n");
+        body.push_str(i18n::search_source_blocked(lang));
+    }
+    bot.edit_message_text(message.chat.id, message.id, body)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(settings_keyboard(
+            lang,
+            quality,
+            search_source,
+            tags_enabled,
+        ))
+        .await?;
     Ok(())
+}
+
+/// Accept only the exact flag values produced by the keyboard.
+fn parse_bool(value: &str) -> Option<bool> {
+    match value {
+        "0" => Some(false),
+        "1" => Some(true),
+        _ => None,
+    }
 }
 
 /// Parse a `/settings` search-source callback, accepting only the exposed

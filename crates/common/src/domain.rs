@@ -161,6 +161,10 @@ pub struct TrackMeta {
     pub album: Option<String>,
     pub duration_secs: Option<u32>,
     pub thumbnail_url: Option<String>,
+    /// Genre names as reported by the source (yt-dlp / Deezer / iTunes);
+    /// empty when the source does not provide them.
+    #[serde(default)]
+    pub genres: Vec<String>,
 }
 
 impl TrackMeta {
@@ -181,6 +185,45 @@ impl TrackMeta {
             _ => self.title.trim().to_owned(),
         }
     }
+
+    /// Caption for the sent audio when the per-user tags setting is on:
+    /// the exact album title (when known) and genre hashtags. Language
+    /// neutral on purpose. `None` when there is nothing to show.
+    pub fn tags_caption(&self) -> Option<String> {
+        let mut lines: Vec<String> = Vec::new();
+        if let Some(album) = self
+            .album
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+        {
+            lines.push(format!("💿 {album}"));
+        }
+        let tags: Vec<String> = self
+            .genres
+            .iter()
+            .take(4)
+            .filter_map(|genre| genre_hashtag(genre))
+            .collect();
+        if !tags.is_empty() {
+            lines.push(tags.join(" "));
+        }
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines.join("\n"))
+        }
+    }
+}
+
+/// Sanitize a genre name into a Telegram hashtag, keeping only alphanumeric
+/// characters and underscores (`Hip Hop` → `#HipHop`, `r&b` → `#Rb`).
+fn genre_hashtag(genre: &str) -> Option<String> {
+    let cleaned: String = genre.chars().filter(|c| c.is_alphanumeric()).collect();
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(format!("#{cleaned}"))
 }
 
 /// What yt-dlp should be pointed at. URLs are validated by the provider layer;
@@ -234,6 +277,8 @@ pub struct UserRecord {
     pub banned: bool,
     /// Per-user search source used for inline and text search.
     pub search_source: Provider,
+    /// Per-user switch for the album/genre tags caption on sent tracks.
+    pub tags_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +329,35 @@ mod tests {
         for provider in Provider::ALL {
             assert_eq!(provider.as_str().parse::<Provider>(), Ok(provider));
         }
+    }
+
+    #[test]
+    fn tags_caption_builds_album_and_hashtags() {
+        let meta = TrackMeta {
+            title: "Enter Sandman".into(),
+            performer: Some("Metallica".into()),
+            album: Some("Metallica (Remastered 2021)".into()),
+            genres: vec!["Heavy Metal".into(), "r&b".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            meta.tags_caption().as_deref(),
+            Some("💿 Metallica (Remastered 2021)\n#HeavyMetal #rb")
+        );
+        let bare = TrackMeta {
+            title: "x".into(),
+            album: None,
+            genres: vec![],
+            ..Default::default()
+        };
+        assert!(bare.tags_caption().is_none());
+        let album_only = TrackMeta {
+            title: "x".into(),
+            album: Some("  ".into()),
+            genres: vec!["Metal".into()],
+            ..Default::default()
+        };
+        assert_eq!(album_only.tags_caption().as_deref(), Some("#Metal"));
     }
 
     #[test]

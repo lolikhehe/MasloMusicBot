@@ -67,6 +67,33 @@ impl Db {
                 .await
                 .map_err(db_err)?;
         }
+        // 0003: per-user tags toggle + genres column on tracks. The users and
+        // tracks columns are checked independently so partial states upgrade
+        // cleanly (kept in migrations/0003_tags.sql for reference).
+        let has_tags_enabled: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'tags_enabled'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(db_err)?;
+        let has_genres: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = 'genres'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(db_err)?;
+        if has_tags_enabled == 0 {
+            sqlx::query("ALTER TABLE users ADD COLUMN tags_enabled INTEGER NOT NULL DEFAULT 0")
+                .execute(&pool)
+                .await
+                .map_err(db_err)?;
+        }
+        if has_genres == 0 {
+            sqlx::query("ALTER TABLE tracks ADD COLUMN genres TEXT NOT NULL DEFAULT '[]'")
+                .execute(&pool)
+                .await
+                .map_err(db_err)?;
+        }
 
         // Drop expired L2 search cache rows; they are cheap to recompute.
         let now = unix_now();
@@ -90,7 +117,7 @@ impl Db {
     pub async fn get_track(&self, key: &TrackKey, quality: u32) -> AppResult<Option<CachedTrack>> {
         let row = sqlx::query(
             "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,
-                    performer, album, duration_secs, size_bytes, thumbnail_url
+                    performer, album, duration_secs, size_bytes, thumbnail_url, genres
              FROM tracks WHERE track_key = ? AND quality = ?",
         )
         .bind(key.as_str())
@@ -119,6 +146,8 @@ impl Db {
                     album: row.get("album"),
                     duration_secs: duration,
                     thumbnail_url: row.get("thumbnail_url"),
+                    genres: serde_json::from_str(row.get::<String, _>("genres").as_str())
+                        .unwrap_or_default(),
                 },
             }
         }))
@@ -131,11 +160,12 @@ impl Db {
         size_bytes: Option<i64>,
     ) -> AppResult<()> {
         let now = unix_now();
+        let genres = serde_json::to_string(&track.meta.genres).unwrap_or_else(|_| "[]".to_owned());
         sqlx::query(
             "INSERT INTO tracks
                 (track_key, quality, file_id, file_unique_id, source_url, provider, title, performer,
-                 album, duration_secs, size_bytes, thumbnail_url, created_at, last_used_at, uses)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 album, duration_secs, size_bytes, thumbnail_url, genres, created_at, last_used_at, uses)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
              ON CONFLICT(track_key, quality) DO UPDATE SET
                 file_id = excluded.file_id,
                 file_unique_id = excluded.file_unique_id,
@@ -147,6 +177,7 @@ impl Db {
                 duration_secs = excluded.duration_secs,
                 size_bytes = excluded.size_bytes,
                 thumbnail_url = excluded.thumbnail_url,
+                genres = excluded.genres,
                 last_used_at = excluded.last_used_at,
                 uses = tracks.uses + 1",
         )
@@ -162,6 +193,7 @@ impl Db {
         .bind(track.meta.duration_secs.map(i64::from))
         .bind(size_bytes)
         .bind(&track.meta.thumbnail_url)
+        .bind(&genres)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -260,7 +292,7 @@ impl Db {
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-             RETURNING language, quality, banned, search_source",
+             RETURNING language, quality, banned, search_source, tags_enabled",
         )
         .bind(id)
         .bind(fallback.code())
@@ -278,6 +310,7 @@ impl Db {
                 .get::<String, _>("search_source")
                 .parse::<Provider>()
                 .unwrap_or(Provider::YouTube),
+            tags_enabled: row.get::<i64, _>("tags_enabled") != 0,
         })
     }
 
@@ -307,6 +340,17 @@ impl Db {
     pub async fn set_search_source(&self, id: i64, source: Provider) -> AppResult<()> {
         sqlx::query("UPDATE users SET search_source = ?, last_seen_at = ? WHERE user_id = ?")
             .bind(source.as_str())
+            .bind(unix_now())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn set_tags_enabled(&self, id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query("UPDATE users SET tags_enabled = ?, last_seen_at = ? WHERE user_id = ?")
+            .bind(i64::from(enabled))
             .bind(unix_now())
             .bind(id)
             .execute(&self.pool)
@@ -387,11 +431,14 @@ mod tests {
         assert_eq!(user.quality, 320);
         assert_eq!(user.lang, Lang::En);
         assert_eq!(user.search_source, Provider::YouTube);
+        assert!(!user.tags_enabled);
         db.set_search_source(42, Provider::Deezer)
             .await
             .expect("source");
+        db.set_tags_enabled(42, true).await.expect("tags");
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert_eq!(user.search_source, Provider::Deezer);
+        assert!(user.tags_enabled);
 
         assert!(db.purge_track(&key).await.expect("purge"));
         assert!(db.get_track(&key, 192).await.expect("get").is_none());

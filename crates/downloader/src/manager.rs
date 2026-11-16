@@ -132,6 +132,11 @@ impl DownloadManager {
         ]
         .into_iter()
         .find(|candidate| self.config.search_providers.contains(candidate));
+        if !self.config.search_providers.contains(&preferred)
+            && let Some(fallback) = preferred_source
+        {
+            warn!(%preferred, %fallback, "user's search source not allowed by SEARCH_PROVIDERS; falling back");
+        }
         let Some(source) = preferred_source else {
             warn!("no search source allowed by SEARCH_PROVIDERS");
             return Ok(Vec::new());
@@ -169,6 +174,23 @@ impl DownloadManager {
                 .await;
         }
         Ok(results)
+    }
+
+    /// iTunes tag lookup for the per-user album/genre tags feature; one
+    /// public API call, metadata only. Returns None on any failure so the
+    /// track still sends without tags.
+    pub async fn itunes_tags(
+        &self,
+        query: &str,
+        duration_secs: Option<u32>,
+    ) -> Option<(String, Option<String>)> {
+        match self.external.itunes_tags(query, duration_secs).await {
+            Ok(value) => value,
+            Err(error) => {
+                warn!(%error, "iTunes tag lookup failed");
+                None
+            }
+        }
     }
 
     /// Resolve just enough metadata to show a track in inline results without
@@ -412,6 +434,11 @@ fn merge_meta(requested: Option<&TrackMeta>, downloaded: &TrackMeta) -> TrackMet
             .thumbnail_url
             .clone()
             .or_else(|| requested.thumbnail_url.clone()),
+        genres: if downloaded.genres.is_empty() {
+            requested.genres.clone()
+        } else {
+            downloaded.genres.clone()
+        },
     }
 }
 
@@ -427,6 +454,7 @@ mod tests {
             album: Some("Album".into()),
             duration_secs: Some(10),
             thumbnail_url: Some("https://x/cover.jpg".into()),
+            genres: vec!["Rock".into()],
         };
         let downloaded = TrackMeta {
             title: "Downloaded".into(),
@@ -437,6 +465,7 @@ mod tests {
         assert_eq!(merged.title, "Downloaded");
         assert_eq!(merged.performer.as_deref(), Some("Uploader"));
         assert_eq!(merged.album.as_deref(), Some("Album"));
+        assert_eq!(merged.genres, vec!["Rock".to_owned()]);
         assert_eq!(merged.duration_secs, Some(10));
     }
 }

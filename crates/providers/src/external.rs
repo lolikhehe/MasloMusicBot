@@ -98,6 +98,7 @@ impl ExternalResolver {
             album: None,
             duration_secs: None,
             thumbnail_url: body.thumbnail_url,
+            genres: Vec::new(),
         })
     }
 
@@ -128,6 +129,7 @@ impl ExternalResolver {
                 .track_time_millis
                 .and_then(|millis| u32::try_from(millis / 1000).ok()),
             thumbnail_url: track.artwork_url100.map(upgrade_artwork),
+            genres: Vec::new(),
         })
     }
 
@@ -159,6 +161,7 @@ impl ExternalResolver {
             album,
             duration_secs: track.duration,
             thumbnail_url,
+            genres: Vec::new(),
         })
     }
 
@@ -188,6 +191,64 @@ impl ExternalResolver {
             .await
             .map_err(map_reqwest)?;
         Ok(deezer_results_from_page(page))
+    }
+
+    /// Public iTunes Search API (no auth), used only when the user opted into
+    /// album/genre tags and the source had no genre of its own. Picks a song
+    /// within ±15 s of the candidate duration when duration is known; otherwise
+    /// takes the first track with a genre. Returns (genre, album).
+    pub async fn itunes_tags(
+        &self,
+        query: &str,
+        duration_secs: Option<u32>,
+    ) -> Result<Option<(String, Option<String>)>, DownloadError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(None);
+        }
+        let body: ItunesResponse = self
+            .client
+            .get("https://itunes.apple.com/search")
+            .query(&[
+                ("term", query),
+                ("entity", "song"),
+                ("country", "US"),
+                ("limit", "3"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        for track in body.results {
+            if track.wrapper_type.as_deref() != Some("track") {
+                continue;
+            }
+            let Some(genre) = track
+                .primary_genre_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|genre| !genre.is_empty())
+            else {
+                continue;
+            };
+            match duration_secs {
+                None => return Ok(Some((genre.to_owned(), track.collection_name))),
+                Some(wanted) => {
+                    let distance = track
+                        .track_time_millis
+                        .map(|ms| (ms / 1000).abs_diff(u64::from(wanted)))
+                        .unwrap_or(u64::MAX);
+                    if distance <= 15 {
+                        return Ok(Some((genre.to_owned(), track.collection_name)));
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     async fn deezer_album(&self, album: &AlbumRef, limit: usize) -> Result<Album, DownloadError> {
@@ -224,6 +285,7 @@ impl ExternalResolver {
                 album: Some(album_name.clone()),
                 duration_secs: track.duration,
                 thumbnail_url: cover.clone(),
+                genres: Vec::new(),
             };
             let track_id = track.id.to_string();
             tracks.push(external_request(Provider::Deezer, &track_id, meta));
@@ -285,6 +347,7 @@ impl ExternalResolver {
                     .track_time_millis
                     .and_then(|millis| u32::try_from(millis / 1000).ok()),
                 thumbnail_url: track.artwork_url100.map(upgrade_artwork),
+                genres: Vec::new(),
             };
             tracks.push(external_request(
                 Provider::AppleMusic,
@@ -387,6 +450,7 @@ fn deezer_results_from_page(page: DeezerTrackList) -> Vec<SearchResult> {
             album,
             duration_secs: track.duration,
             thumbnail_url,
+            genres: Vec::new(),
         };
         let id = track.id.to_string();
         let source_url = format!("https://www.deezer.com/track/{id}");
@@ -442,6 +506,8 @@ struct ItunesTrack {
     track_time_millis: Option<u64>,
     #[serde(default)]
     artwork_url100: Option<String>,
+    #[serde(default)]
+    primary_genre_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

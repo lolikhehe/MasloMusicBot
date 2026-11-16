@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     duration_secs INTEGER,
     size_bytes    INTEGER,
     thumbnail_url TEXT,
+    genres        TEXT NOT NULL DEFAULT '[]',
     created_at    INTEGER NOT NULL,
     last_used_at  INTEGER NOT NULL,
     uses          INTEGER NOT NULL DEFAULT 0,
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS users (
     quality      INTEGER NOT NULL DEFAULT 192,
     banned       INTEGER NOT NULL DEFAULT 0,
     search_source TEXT NOT NULL DEFAULT 'youtube',
+    tags_enabled INTEGER NOT NULL DEFAULT 0,
     created_at   INTEGER NOT NULL,
     last_seen_at INTEGER NOT NULL
 );

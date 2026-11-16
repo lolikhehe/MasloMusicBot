@@ -15,7 +15,7 @@
 //! `inline_query` fires on every keystroke, so results are per-user and the
 //! answer of a stale query is silently dropped (generation counter).
 
-use crate::bot::handlers::{deliver_track, truncate};
+use crate::bot::handlers::{deliver_track, enrich_tags, tags_caption, truncate};
 use crate::bot::send;
 use crate::state::AppState;
 use common::domain::{CachedTrack, Lang, TrackRequest};
@@ -159,9 +159,12 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
     }
 
     metrics::histogram!("music_bot_inline_seconds").record(started.elapsed().as_secs_f64());
+    // Results are personalized by the user's /settings search source, so
+    // server-side caching must be off: a 30 s shared cache meant the old
+    // source kept being served after the user switched it.
     bot.answer_inline_query(query.id.clone(), results)
-        .cache_time(30)
-        .is_personal(false)
+        .cache_time(0)
+        .is_personal(true)
         .await?;
     Ok(())
 }
@@ -217,8 +220,9 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         let Some(inline_message_id) = result.inline_message_id.clone() else {
             return Ok(());
         };
+        let caption = tags_caption(&cached.meta, user.tags_enabled);
         match bot
-            .edit_message_media_inline(inline_message_id, cached_media(&cached))
+            .edit_message_media_inline(inline_message_id, cached_media(&cached, caption))
             .await
         {
             Ok(_) => return Ok(()),
@@ -251,6 +255,8 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         }
     };
 
+    let mut prepared = prepared;
+    enrich_tags(&state, &mut prepared.meta, user.tags_enabled).await;
     let size_bytes = tokio::fs::metadata(&prepared.audio_path)
         .await
         .ok()
@@ -272,9 +278,10 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     ]
     .into_iter()
     .flatten();
+    let caption = tags_caption(&prepared.meta, user.tags_enabled);
     let mut minted: Option<(String, String)> = None;
     for chat in upload_targets {
-        match send::send_prepared(&bot, chat, &prepared).await {
+        match send::send_prepared(&bot, chat, &prepared, caption.clone()).await {
             Ok(message) => match send::extract_file_id(&message) {
                 Some(pair) => {
                     minted = Some(pair);
@@ -293,7 +300,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     // with it — spec §9, етап 7).
     let Some((file_id, file_unique_id)) = minted else {
         warn!("could not mint file_id for inline result; falling back to private delivery");
-        fallback_private(&state, &bot, &result, user.quality, lang).await;
+        fallback_private(&state, &bot, &result, user.quality, lang, user.tags_enabled).await;
         return Ok(());
     };
 
@@ -313,7 +320,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     }
     metrics::counter!("music_bot_uploads_total").increment(1);
     if let Some(inline_message_id) = result.inline_message_id.clone() {
-        let media = file_id_media(&prepared, &file_id);
+        let media = file_id_media(&prepared, &file_id, caption.clone());
         if let Err(error) = bot
             .edit_message_media_inline(inline_message_id, media)
             .await
@@ -324,9 +331,10 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     Ok(())
 }
 
-fn cached_media(cached: &CachedTrack) -> InputMedia {
+fn cached_media(cached: &CachedTrack, caption: Option<String>) -> InputMedia {
     let mut media = InputMediaAudio::new(InputFile::file_id(FileId(cached.file_id.clone())));
     media.title = Some(truncate(&cached.meta.title, 128));
+    media.caption = caption;
     media.performer = cached
         .meta
         .performer
@@ -339,9 +347,14 @@ fn cached_media(cached: &CachedTrack) -> InputMedia {
     InputMedia::Audio(media)
 }
 
-fn file_id_media(prepared: &downloader::PreparedAudio, file_id: &str) -> InputMedia {
+fn file_id_media(
+    prepared: &downloader::PreparedAudio,
+    file_id: &str,
+    caption: Option<String>,
+) -> InputMedia {
     let mut media = InputMediaAudio::new(InputFile::file_id(FileId(file_id.to_owned())));
     media.title = Some(truncate(&prepared.meta.title, 128));
+    media.caption = caption;
     media.performer = prepared
         .meta
         .performer
@@ -360,6 +373,7 @@ async fn fallback_private(
     result: &ChosenInlineResult,
     quality: u32,
     lang: Lang,
+    tags_enabled: bool,
 ) {
     // Fix the inline placeholder so the chat doesn't keep a stale
     // "Downloading…" message; the audio arrives in private chat instead.
@@ -377,7 +391,7 @@ async fn fallback_private(
     let chat = ChatId(result.from.id.0 as i64);
     let user_id = result.from.id.0 as i64;
     info!("falling back to private delivery for inline result");
-    let _ = deliver_track(state, bot, chat, request, quality, user_id).await;
+    let _ = deliver_track(state, bot, chat, request, quality, user_id, tags_enabled).await;
 }
 
 fn format_duration(seconds: u32) -> String {

@@ -132,6 +132,26 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Inline search personalization fix + tags feature (2026-11-16)
+
+- `answerInlineQuery` was sent with `cache_time=30` and `is_personal=false`, so Telegram
+  served a shared 30-second answer cache for identical query text regardless of the user's
+  `/settings` search source. Now `cache_time=0`, `is_personal=true` — results change
+  immediately after switching sources.
+- The env var `SEARCH_PROVIDERS=youtube` in the operator `.env` silently pinned inline
+  search to YouTube (user's Deezer/SoundCloud choice fell back with no signal). The
+  fallback now logs a warning, and `/settings` shows a "blocked by server config" notice
+  when the chosen source is outside the allow-list. Operators who want the full choice set
+  should set `SEARCH_PROVIDERS=youtube,soundcloud,deezer` or remove the line (new default).
+- New per-user **tags** toggle (`/settings`, default off): sent tracks show a short
+  caption `💿 <album>` + genre hashtags (`#Rock #Metal`). Genres come from the source when
+  available (yt-dlp `genres`, e.g. SoundCloud), otherwise from a single public iTunes
+  Search API call (±15 s duration match, metadata only). Genres are persisted
+  (`tracks.genres`) so cache-hit sends keep the caption.
+- Album title: exact from Deezer metadata; SoundCloud tracks carry no album (chapters only).
+- `TrackMeta.genres` is `#[serde(default)]` for backward compatibility with cached search
+  payloads.
+
 ## Inline/text search source per user (2026-11-16)
 
 `/settings` now offers a search-source row: **YouTube** (default), **SoundCloud**,

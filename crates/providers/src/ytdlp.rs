@@ -364,6 +364,9 @@ struct Info {
     entries: Option<Vec<Info>>,
     #[serde(default)]
     thumbnails: Vec<Thumbnail>,
+    /// yt-dlp exposes a `genres` array for some extractors (e.g. SoundCloud).
+    #[serde(default)]
+    genres: Option<Vec<String>>,
 }
 
 impl Info {
@@ -384,12 +387,21 @@ impl Info {
             .thumbnail
             .clone()
             .or_else(|| best_thumbnail(&self.thumbnails));
+        let genres: Vec<String> = self
+            .genres
+            .unwrap_or_default()
+            .into_iter()
+            .map(|genre| genre.trim().to_owned())
+            .filter(|genre| !genre.is_empty())
+            .take(4)
+            .collect();
         TrackMeta {
             title: title.trim().to_owned(),
             performer,
             album: self.album,
             duration_secs: duration_secs(self.duration),
             thumbnail_url,
+            genres,
         }
     }
 

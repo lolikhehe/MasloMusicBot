@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 album: Some("Bench Album".into()),
                 duration_secs: Some(180),
                 thumbnail_url: Some("https://example.test/cover.jpg".into()),
+                genres: vec!["Benchmark".into()],
             },
         };
         db.put_track(&track, 192, Some(8_000_000)).await?;
