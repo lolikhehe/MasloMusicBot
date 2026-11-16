@@ -41,7 +41,7 @@ not be editable into messages.
 |---|---|---|
 | `/start` | everyone | Disclaimer and quick intro |
 | `/help` | everyone | How to use the bot |
-| `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px) |
+| `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps, or **FLAC** lossless), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px) |
 | `/alb <name>` | everyone | Find an album by name (Deezer + Apple Music catalogs) and download it track by track |
 | `/stats` | admins | Tracks cached, users seen, uptime |
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
@@ -58,6 +58,7 @@ In a private chat:
   as a keyboard ("Artist — Title · N tracks · source"), picking one leads to the same
   confirmation flow; metadata only, audio still resolves via the usual sources
 - Tap a search result to download
+- In `/settings` the quality row includes a **FLAC** option: it keeps the best source the site serves into a FLAC container (no re-encode settings). YouTube never serves true lossless, so the bitrate is whatever the source has; Bandcamp/SoundCloud may be genuinely better there. Fresh downloads are tagged and cached under quality `0`.
 
 In any chat, `@your_bot Artist — Title` offers candidates inline; picking one posts the audio in that
 chat. Cached tracks post instantly; uncached tracks download and are edited into the message.

@@ -31,7 +31,12 @@ pub struct PreparedAudio {
 
 impl PreparedAudio {
     pub fn file_name(&self) -> String {
-        audio::safe_filename(&self.meta)
+        let extension = self
+            .audio_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("m4a");
+        audio::safe_filename(&self.meta, extension)
     }
 }
 

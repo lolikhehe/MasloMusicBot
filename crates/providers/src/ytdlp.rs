@@ -220,44 +220,60 @@ impl YtDlp {
         // target that starts with `-` can never be parsed as an option.
         // `--print after_move:filepath` prints the final (post-converted) path,
         // which we use verbatim; a slow fallback re-detects it by extension.
+        // Lossless switch: quality == 0 means "best available source, keep it
+        // in a FLAC container". YouTube never serves true lossless, so this is
+        // a container/format decision (no re-encode quality settings), not a
+        // promise of hi-res audio; the README says so.
+        let lossless = quality == 0;
+        let format_selector = if lossless {
+            "bestaudio[acodec=flac]/bestaudio/best"
+        } else {
+            "bestaudio[ext=m4a]/bestaudio"
+        };
+        let audio_format = if lossless { "flac" } else { "m4a" };
         let output_template = dir.join("audio.%(ext)s");
         let target_arg = target.ytdlp_argument();
-        let output = self
-            .run(
-                &[
-                    "--ignore-config",
-                    "--no-playlist",
-                    "--no-warnings",
-                    "--no-progress",
-                    "--no-part",
-                    "-f",
-                    "bestaudio[ext=m4a]/bestaudio",
-                    "--extract-audio",
-                    "--audio-format",
-                    "m4a",
-                    "--audio-quality",
-                    &format!("{}K", quality.clamp(64, 320)),
-                    "-N",
-                    "4",
-                    "--socket-timeout",
-                    "15",
-                    "--retries",
-                    "3",
-                    "--max-filesize",
-                    &max_bytes.to_string(),
-                    "--write-info-json",
-                    "--ffmpeg-location",
-                    &self.ffmpeg,
-                    "--output",
-                    &output_template.to_string_lossy(),
-                    "--print",
-                    "after_move:filepath",
-                    "--",
-                    &target_arg,
-                ],
-                self.download_timeout,
-            )
-            .await?;
+        let mut args: Vec<&str> = vec![
+            "--ignore-config",
+            "--no-playlist",
+            "--no-warnings",
+            "--no-progress",
+            "--no-part",
+            "-f",
+            format_selector,
+            "--extract-audio",
+            "--audio-format",
+            audio_format,
+        ];
+        let quality_arg;
+        if !lossless {
+            quality_arg = format!("{}K", quality.clamp(64, 320));
+            args.extend(["--audio-quality", quality_arg.as_str()]);
+        }
+        let max_bytes_arg = max_bytes.to_string();
+        let output_template_str = output_template.to_string_lossy();
+        let ffmpeg_location = &self.ffmpeg;
+        let target = &target_arg;
+        args.extend([
+            "-N",
+            "4",
+            "--socket-timeout",
+            "15",
+            "--retries",
+            "3",
+            "--max-filesize",
+            max_bytes_arg.as_str(),
+            "--write-info-json",
+            "--ffmpeg-location",
+            ffmpeg_location,
+            "--output",
+            &output_template_str,
+            "--print",
+            "after_move:filepath",
+            "--",
+            target,
+        ]);
+        let output = self.run(&args, self.download_timeout).await?;
         let printed_path = stdout_last_line(&output.stdout);
 
         if !output.status.success() {

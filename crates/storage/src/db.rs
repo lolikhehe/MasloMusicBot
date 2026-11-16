@@ -354,7 +354,12 @@ impl Db {
     }
 
     pub async fn set_quality(&self, id: i64, quality: u32) -> AppResult<()> {
-        let quality = quality.clamp(64, 320) as i64;
+        // 0 is the lossless sentinel (FLAC); keep it, clamp the rest.
+        let quality = if quality == 0 {
+            0
+        } else {
+            quality.clamp(64, 320)
+        } as i64;
         sqlx::query("UPDATE users SET quality = ?, last_seen_at = ? WHERE user_id = ?")
             .bind(quality)
             .bind(unix_now())

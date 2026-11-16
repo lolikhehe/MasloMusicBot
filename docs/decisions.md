@@ -219,6 +219,22 @@ with `TrackMeta::without_artist_prefix` so Telegram's "performer – title"
 does not show the artist twice (old cache entries are normalized at send
 time, fresh downloads at merge time).
 
+## /settings: FLAC lossless option (2026-11-16)
+
+Quality is `users.quality: INTEGER`, where 0 is now reserved as the lossless
+sentinel (settable only via `/settings → FLAC (lossless)`). With 0 the
+download path selects `bestaudio[acodec=flac]/bestaudio/best` (a real FLAC
+source is preferred when one exists) and converts with
+`--audio-format flac` with NO `--audio-quality` (bitrate is meaningless for
+FLAC). With kbps values behavior is unchanged (m4a, `--audio-quality {n}K`).
+TrackTagger/VorbisComments handle .flac natively; upload filename derives its
+extension from the produced file, so .flac files keep .flac names. Cache key is
+`(track_key, quality)` — FLAC entries live under quality 0. Honest note:
+YouTube never serves true lossless, so for most YouTube downloads this is a
+format choice (decode best source → FLAC, no generational re-encode quality
+settings), not hi-res; Bandcamp/SoundCloud may genuinely benefit. FLAC files
+run ~3–4× the m4a size, capped by MAX_FILE_MB (default 100 MB).
+
 ## yt-dlp auto-refresh at container start (experimental branch, 2026-11-16)
 
 Manual yt-dlp bumps (pinned version + SHA256 in Dockerfile) did not scale:

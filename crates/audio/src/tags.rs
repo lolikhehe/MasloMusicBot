@@ -227,7 +227,7 @@ fn tag_audio_sync(path: &Path, meta: &TrackMeta, cover: Option<&Path>) -> Result
         .map_err(|error| format!("tag save: {error}"))
 }
 
-pub fn safe_filename(meta: &TrackMeta) -> String {
+pub fn safe_filename(meta: &TrackMeta, extension: &str) -> String {
     let artist = meta.performer.as_deref().unwrap_or("").trim();
     let title = meta.title.trim();
     let mut name = if artist.is_empty() {
@@ -252,7 +252,7 @@ pub fn safe_filename(meta: &TrackMeta) -> String {
     if name.is_empty() {
         name = "track".to_owned();
     }
-    format!("{name}.m4a")
+    format!("{name}.{extension}")
 }
 
 fn trim_tag(value: &str) -> String {
@@ -281,7 +281,7 @@ mod tests {
             performer: Some("Artist".into()),
             ..Default::default()
         };
-        let name = safe_filename(&meta);
+        let name = safe_filename(&meta, "m4a");
         assert_eq!(name, "Artist - A_B_ _C__.m4a");
         assert!(!name.contains('/'));
     }
@@ -292,7 +292,8 @@ mod tests {
             title: "x".repeat(300),
             ..Default::default()
         };
-        let name = safe_filename(&meta);
+        let name = safe_filename(&meta, "flac");
+        assert!(name.ends_with(".flac"));
         assert!(name.chars().count() <= 102);
     }
 }

@@ -34,8 +34,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality, source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість, джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)",
     );
     if is_admin {
         format!(
@@ -77,8 +77,9 @@ pub fn settings_title(
         pick(lang, "off", "вимк.")
     };
     let hql = pick(lang, "HQ cover (1000px)", "Обкладинка HQ (1000px)");
+    let q_display = quality_display(lang, quality);
     format!(
-        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>\n{hql}: <b>{hq}</b>",
+        "{title}\n\n{q}: <b>{q_display}</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>\n{hql}: <b>{hq}</b>",
         language_name(language),
         search_source.display_name(),
         state
@@ -157,6 +158,23 @@ pub fn now_playing_inline(lang: Lang, track: &str) -> String {
     match lang {
         Lang::En => format!("▶ Now playing: {track}"),
         Lang::Uk => format!("▶ Зараз грає: {track}"),
+    }
+}
+
+pub fn quality_lossless_label(lang: Lang) -> &'static str {
+    pick(lang, "FLAC (lossless)", "FLAC (без втрати)")
+}
+
+/// Quality shown in /settings: "FLAC (lossless)" for the lossless sentinel,
+/// otherwise "N kbps".
+pub fn quality_display(lang: Lang, quality: u32) -> String {
+    if quality == 0 {
+        match lang {
+            Lang::En => "FLAC (lossless)".to_owned(),
+            Lang::Uk => "FLAC (без втрати)".to_owned(),
+        }
+    } else {
+        format!("{quality} kbps")
     }
 }
 

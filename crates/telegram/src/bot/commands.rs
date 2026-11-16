@@ -81,6 +81,14 @@ pub fn settings_keyboard(
                 .collect()
         })
         .collect();
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{}{}",
+            if quality == 0 { "✓ " } else { "" },
+            i18n::quality_lossless_label(lang)
+        ),
+        "s:q:0",
+    )]);
     rows.push(
         Provider::SEARCH_CHOICES
             .into_iter()
