@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
     banned       INTEGER NOT NULL DEFAULT 0,
     search_source TEXT NOT NULL DEFAULT 'youtube',
     tags_enabled INTEGER NOT NULL DEFAULT 0,
+    lastfm_user TEXT,
     created_at   INTEGER NOT NULL,
     last_seen_at INTEGER NOT NULL
 );

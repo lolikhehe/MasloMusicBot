@@ -66,6 +66,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 user.quality,
                 user.search_source,
                 enabled,
+                user.lastfm_user.as_deref(),
             )
             .await?;
             let _ = bot
@@ -84,6 +85,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 quality,
                 user.search_source,
                 user.tags_enabled,
+                user.lastfm_user.as_deref(),
             )
             .await?;
             let _ = bot
@@ -103,6 +105,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 user.quality,
                 source,
                 user.tags_enabled,
+                user.lastfm_user.as_deref(),
             )
             .await?;
             let _ = bot
@@ -122,6 +125,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 user.quality,
                 user.search_source,
                 user.tags_enabled,
+                user.lastfm_user.as_deref(),
             )
             .await?;
             let _ = bot
@@ -277,11 +281,19 @@ async fn refresh_settings(
     quality: u32,
     search_source: common::domain::Provider,
     tags_enabled: bool,
+    lastfm_user: Option<&str>,
 ) -> HandlerResult {
     let Some(message) = query.regular_message() else {
         return Ok(());
     };
-    let mut body = i18n::settings_title(lang, quality, lang, search_source, tags_enabled);
+    let mut body = i18n::settings_title(
+        lang,
+        quality,
+        lang,
+        search_source,
+        tags_enabled,
+        lastfm_user,
+    );
     if !state.config.search_providers.contains(&search_source) {
         body.push_str("\n\n");
         body.push_str(i18n::search_source_blocked(lang));

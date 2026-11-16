@@ -34,8 +34,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat.\n• Albums and playlists are downloaded one track at a time with a progress message.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language and audio quality",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова та якість аудіо",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality, source and tags\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість, джерело і теги\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)",
     );
     if is_admin {
         format!(
@@ -52,19 +52,26 @@ pub fn settings_title(
     language: Lang,
     search_source: Provider,
     tags_enabled: bool,
+    lastfm_user: Option<&str>,
 ) -> String {
     let title = pick(lang, "<b>Settings</b>", "<b>Налаштування</b>");
     let q = pick(lang, "Quality", "Якість");
     let l = pick(lang, "Language", "Мова");
     let s = pick(lang, "Search source (inline)", "Джерело пошуку (inline)");
     let t = pick(lang, "Tags (album + genres)", "Теги (альбом + жанри)");
+    let f = pick(lang, "Last.fm", "Last.fm");
     let state = if tags_enabled {
         pick(lang, "on", "увімк.")
     } else {
         pick(lang, "off", "вимк.")
     };
+    let lf = lastfm_user.unwrap_or(pick(
+        lang,
+        "not connected (setup: /lastfm)",
+        "не підключено (налаштування: /lastfm)",
+    ));
     format!(
-        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>",
+        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>",
         language_name(language),
         search_source.display_name(),
         state
@@ -73,6 +80,58 @@ pub fn settings_title(
 
 pub fn tags_label(lang: Lang) -> &'static str {
     pick(lang, "🏷 Tags: album + genre", "🏷 Теги: альбом і жанри")
+}
+
+pub fn lastfm_disabled(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "🎵 Last.fm is not configured on this bot yet.",
+        "🎵 Last.fm на цьому боті не налаштовано.",
+    )
+}
+
+pub fn lastfm_status(lang: Lang, user: Option<&str>) -> String {
+    match user {
+        Some(nick) => match lang {
+            Lang::En => format!("🎵 Last.fm connected as <b>{nick}</b>. In inline mode with an empty query the bot will now suggest what you're playing.\nDisconnect: /lastfm off"),
+            Lang::Uk => format!("🎵 Last.fm підключено як <b>{nick}</b>. Тепер в inline-режимі порожній запит запропонує те, що грає зараз.\nВідключити: /lastfm off"),
+        },
+        None => match lang {
+            Lang::En => "🎵 Last.fm: not connected.\nConnect: /lastfm &lt;your nickname&gt; — inline empty query will suggest what's playing now.".to_string(),
+            Lang::Uk => "🎵 Last.fm: не підключено.\nПідключити: /lastfm &lt;ваш нікнейм&gt; — порожній inline-запит запропонує те, що грає зараз.".to_string(),
+        },
+    }
+}
+
+pub fn lastfm_connected(lang: Lang, nick: &str) -> String {
+    match lang {
+        Lang::En => format!(
+            "✅ Last.fm connected as <b>{nick}</b>. Type nothing in inline mode to see what's playing."
+        ),
+        Lang::Uk => format!(
+            "✅ Last.fm підключено як <b>{nick}</b>. Залиште inline-поле порожнім, щоб побачити, що грає зараз."
+        ),
+    }
+}
+
+pub fn lastfm_disconnected(lang: Lang) -> &'static str {
+    pick(lang, "🔌 Last.fm disconnected.", "🔌 Last.fm відключено.")
+}
+
+pub fn lastfm_invalid(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "⚠️ Invalid Last.fm username (2–15 latin letters, digits, _ or -).",
+        "⚠️ Некоректний нікнейм Last.fm (2–15 латинських літер, цифр, _ або -).",
+    )
+}
+
+/// Placeholder for the "now playing" inline proposal message.
+pub fn now_playing_inline(lang: Lang, track: &str) -> String {
+    match lang {
+        Lang::En => format!("▶ Now playing: {track}"),
+        Lang::Uk => format!("▶ Зараз грає: {track}"),
+    }
 }
 
 /// Shown in /settings when the user's chosen source is outside the operator's

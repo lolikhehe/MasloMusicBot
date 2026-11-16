@@ -19,6 +19,8 @@ pub enum Command {
     Ban(Option<i64>),
     Unban(Option<i64>),
     Purge(Option<String>),
+    /// `/lastfm` — show status; `/lastfm <nick>` — connect; `/lastfm off` — disconnect.
+    LastFm(Option<String>),
     Unknown(String),
 }
 
@@ -44,6 +46,7 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "help" => Command::Help,
         "settings" => Command::Settings,
         "stats" => Command::Stats,
+        "lastfm" => Command::LastFm((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
         "purge" => Command::Purge((!args.is_empty()).then_some(args)),
@@ -149,6 +152,7 @@ pub async fn handle_command(
                 lang,
                 user_record.search_source,
                 user_record.tags_enabled,
+                user_record.lastfm_user.as_deref(),
             );
             if !state
                 .config
@@ -201,6 +205,35 @@ pub async fn handle_command(
             state.db.set_banned(target, false).await?;
             send_plain(bot, msg.chat.id, i18n::ban_ok(lang, target, false)).await?;
         }
+        Command::LastFm(arg) => {
+            if state.config.lastfm_api_key.is_none() {
+                send_plain(bot, msg.chat.id, i18n::lastfm_disabled(lang)).await?;
+                return Ok(());
+            }
+            match arg.as_deref() {
+                None => {
+                    let text = i18n::lastfm_status(lang, user_record.lastfm_user.as_deref());
+                    send_plain(bot, msg.chat.id, text).await?;
+                }
+                Some(value) => {
+                    let value = value.trim();
+                    if matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "off" | "reset" | "none"
+                    ) {
+                        state.db.set_lastfm_user(user_id, None).await?;
+                        send_plain(bot, msg.chat.id, i18n::lastfm_disconnected(lang)).await?;
+                        return Ok(());
+                    }
+                    if !is_valid_lastfm_username(value) {
+                        send_plain(bot, msg.chat.id, i18n::lastfm_invalid(lang)).await?;
+                        return Ok(());
+                    }
+                    state.db.set_lastfm_user(user_id, Some(value)).await?;
+                    send_plain(bot, msg.chat.id, i18n::lastfm_connected(lang, value)).await?;
+                }
+            }
+        }
         Command::Purge(input) => {
             if !is_admin {
                 send_plain(bot, msg.chat.id, i18n::admin_only(lang)).await?;
@@ -221,6 +254,14 @@ pub async fn handle_command(
         }
     }
     Ok(())
+}
+
+/// Last.fm usernames: 2–15 chars, latin letters/digits/`_`/`-`.
+fn is_valid_lastfm_username(value: &str) -> bool {
+    (2..=15).contains(&value.len())
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 async fn send_plain(

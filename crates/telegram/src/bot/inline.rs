@@ -18,7 +18,7 @@
 use crate::bot::handlers::{deliver_track, enrich_tags, tags_caption, truncate};
 use crate::bot::send;
 use crate::state::AppState;
-use common::domain::{CachedTrack, Lang, TrackRequest};
+use common::domain::{CachedTrack, DownloadTarget, Lang, Provider, TrackKey, TrackRequest};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::{ParsedInput, parse_input};
@@ -52,52 +52,35 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
     }
 
     let text = query.query.trim();
-    if text.chars().count() < 2 {
-        bot.answer_inline_query(query.id.clone(), Vec::new())
-            .await?;
-        return Ok(());
-    }
+    let short = text.chars().count() < 2;
 
     let generation = state.bump_inline_generation(user_id).await;
     let mut generation_rx = state.subscribe_inline_generation(user_id).await;
 
+    // With fewer than 2 chars: empty answer — unless the user connected
+    // Last.fm, in which case we propose the (likely) currently playing track
+    // as the single result.
+    let requests: Vec<TrackRequest> = if short {
+        match lastfm_now_playing(&state, &user).await {
+            Some(request) => vec![request],
+            None => Vec::new(),
+        }
+    } else {
+        tokio::select! {
+            result = async {
+                search_requests(&state, &user, text).await
+            } => result,
+            _ = generation_rx.changed() => {
+                info!("inline query superseded; dropping in-flight search");
+                return Ok(());
+            }
+        }
+    };
+
     // If the user keeps typing, the next keystroke wakes this branch and the
     // in-flight search (a yt-dlp subprocess or an HTTP call) is dropped here
     // instead of running to completion and being discarded.
-    let requests: Vec<TrackRequest> = tokio::select! {
-        result = async {
-            match parse_input(text) {
-            ParsedInput::Track(request) => match state.manager.describe(request).await {
-                Ok(request) => vec![request],
-                Err(error) => {
-                    warn!(%error, "inline metadata resolution failed");
-                    Vec::new()
-                }
-            },
-            ParsedInput::Search(query) => {
-                match state.manager.search(&query, 10, user.search_source).await {
-                    Ok(results) => results
-                        .into_iter()
-                        .map(|result| result.into_request())
-                        .collect(),
-                    Err(error) => {
-                        warn!(%error, "inline search failed");
-                        Vec::new()
-                    }
-                }
-            }
-            ParsedInput::Album(_) => Vec::new(),
-            ParsedInput::Unsupported(reason) => {
-                info!(%reason, "unsupported inline input");
-                Vec::new()
-            }
-            }
-        } => result,
-        _ = generation_rx.changed() => {
-            info!("inline query superseded; dropping in-flight search");
-            return Ok(());
-        }
-    };
+    // (Short-circuit: fewer than 2 chars is handled above, without dropping.)
 
     // The user typed more while we were searching; Telegram already knows.
     if generation != state.inline_generation(user_id).await {
@@ -148,9 +131,12 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             })
             .filter(|value| !value.is_empty());
 
-        let content = InputMessageContent::Text(InputMessageContentText::new(
-            i18n::downloading_track(lang, &title),
-        ));
+        let placeholder = if request.key.as_str().starts_with("lastfm:") {
+            i18n::now_playing_inline(lang, &title)
+        } else {
+            i18n::downloading_track(lang, &title)
+        };
+        let content = InputMessageContent::Text(InputMessageContentText::new(placeholder));
         let mut article = InlineQueryResultArticle::new(selection_id.clone(), title, content);
         if let Some(description) = description {
             article = article.description(description);
@@ -411,6 +397,92 @@ async fn fallback_private(
     let user_id = result.from.id.0 as i64;
     info!("falling back to private delivery for inline result");
     let _ = deliver_track(state, bot, chat, request, quality, user_id, tags_enabled).await;
+}
+
+/// The search side of an inline query: parse, describe or search the user's
+/// chosen source. Split out so the caller can race it against the next
+/// keystroke (generation watch).
+async fn search_requests(
+    state: &AppState,
+    user: &common::domain::UserRecord,
+    text: &str,
+) -> Vec<TrackRequest> {
+    match parse_input(text) {
+        ParsedInput::Track(request) => match state.manager.describe(request).await {
+            Ok(request) => vec![request],
+            Err(error) => {
+                warn!(%error, "inline metadata resolution failed");
+                Vec::new()
+            }
+        },
+        ParsedInput::Search(query) => {
+            match state.manager.search(&query, 10, user.search_source).await {
+                Ok(results) => results
+                    .into_iter()
+                    .map(|result| result.into_request())
+                    .collect(),
+                Err(error) => {
+                    warn!(%error, "inline search failed");
+                    Vec::new()
+                }
+            }
+        }
+        ParsedInput::Album(_) => Vec::new(),
+        ParsedInput::Unsupported(reason) => {
+            info!(%reason, "unsupported inline input");
+            Vec::new()
+        }
+    }
+}
+
+/// Track the user is (most likely) playing on Last.fm. `None` when Last.fm is
+/// not connected/configured, nothing is playing, or the fetch failed (never
+/// breaks the inline answer itself).
+async fn lastfm_now_playing(
+    state: &AppState,
+    user: &common::domain::UserRecord,
+) -> Option<TrackRequest> {
+    let nick = user.lastfm_user.as_deref()?;
+    let client = state.lastfm.as_ref()?;
+    match client.now_playing(nick).await {
+        Ok(Some(now)) => {
+            let artist = now.meta.performer.clone().unwrap_or_default();
+            let query = if artist.is_empty() {
+                now.meta.title.clone()
+            } else {
+                format!("{artist} {}", now.meta.title)
+            };
+            Some(TrackRequest {
+                key: TrackKey::new(format!("lastfm:{}", slugify(&artist, &now.meta.title))),
+                provider: Provider::YouTube,
+                source_url: now.url,
+                meta: Some(now.meta),
+                target: DownloadTarget::Search(query),
+            })
+        }
+        Ok(None) => None,
+        Err(error) => {
+            warn!(%error, nick, "lastfm now playing fetch failed");
+            None
+        }
+    }
+}
+
+/// Deterministic, filename-safe-ish slug used for the Last.fm cache key so
+/// the same track maps to one cached entry across users and restarts.
+fn slugify(artist: &str, title: &str) -> String {
+    let mut out = String::with_capacity(artist.len() + title.len() + 1);
+    let mut last_dash = true; // no leading dash
+    for c in format!("{artist} {title}").chars() {
+        if c.is_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_end_matches('-').to_owned()
 }
 
 fn format_duration(seconds: u32) -> String {

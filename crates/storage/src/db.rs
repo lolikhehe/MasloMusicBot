@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SCHEMA: &str = include_str!("../../../migrations/0001_init.sql");
 const MIGRATION_0002: &str = include_str!("../../../migrations/0002_user_search_source.sql");
+const MIGRATION_0004: &str = include_str!("../../../migrations/0004_lastfm.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -90,6 +91,18 @@ impl Db {
         }
         if has_genres == 0 {
             sqlx::query("ALTER TABLE tracks ADD COLUMN genres TEXT NOT NULL DEFAULT '[]'")
+                .execute(&pool)
+                .await
+                .map_err(db_err)?;
+        }
+        let has_lastfm_user: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'lastfm_user'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(db_err)?;
+        if has_lastfm_user == 0 {
+            sqlx::raw_sql(MIGRATION_0004)
                 .execute(&pool)
                 .await
                 .map_err(db_err)?;
@@ -292,7 +305,7 @@ impl Db {
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-             RETURNING language, quality, banned, search_source, tags_enabled",
+             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user",
         )
         .bind(id)
         .bind(fallback.code())
@@ -311,6 +324,7 @@ impl Db {
                 .parse::<Provider>()
                 .unwrap_or(Provider::YouTube),
             tags_enabled: row.get::<i64, _>("tags_enabled") != 0,
+            lastfm_user: row.get::<Option<String>, _>("lastfm_user"),
         })
     }
 
@@ -340,6 +354,17 @@ impl Db {
     pub async fn set_search_source(&self, id: i64, source: Provider) -> AppResult<()> {
         sqlx::query("UPDATE users SET search_source = ?, last_seen_at = ? WHERE user_id = ?")
             .bind(source.as_str())
+            .bind(unix_now())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn set_lastfm_user(&self, id: i64, lastfm_user: Option<&str>) -> AppResult<()> {
+        sqlx::query("UPDATE users SET lastfm_user = ?, last_seen_at = ? WHERE user_id = ?")
+            .bind(lastfm_user)
             .bind(unix_now())
             .bind(id)
             .execute(&self.pool)
@@ -439,6 +464,15 @@ mod tests {
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert_eq!(user.search_source, Provider::Deezer);
         assert!(user.tags_enabled);
+        assert!(user.lastfm_user.is_none());
+        db.set_lastfm_user(42, Some("TestUser"))
+            .await
+            .expect("lastfm set");
+        let user = db.ensure_user(42, Lang::Uk).await.expect("user");
+        assert_eq!(user.lastfm_user.as_deref(), Some("TestUser"));
+        db.set_lastfm_user(42, None).await.expect("lastfm off");
+        let user = db.ensure_user(42, Lang::Uk).await.expect("user");
+        assert!(user.lastfm_user.is_none());
 
         assert!(db.purge_track(&key).await.expect("purge"));
         assert!(db.get_track(&key, 192).await.expect("get").is_none());

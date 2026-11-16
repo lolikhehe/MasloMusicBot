@@ -282,6 +282,8 @@ pub struct UserRecord {
     pub search_source: Provider,
     /// Per-user switch for the album/genre tags caption on sent tracks.
     pub tags_enabled: bool,
+    /// Connected public Last.fm username (inline "now playing" suggestions).
+    pub lastfm_user: Option<String>,
 }
 
 #[derive(Debug, Clone)]

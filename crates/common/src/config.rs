@@ -26,6 +26,9 @@ pub struct Config {
     pub rate_limit_per_min: u32,
     /// Inline queries fire once per keystroke; a separate (looser) budget.
     pub rate_limit_inline_per_min: u32,
+    /// Optional Last.fm API key (https://www.last.fm/api/account); enables the
+    /// inline "now playing" suggestion via the public recent-tracks feed.
+    pub lastfm_api_key: Option<String>,
     pub max_concurrent_downloads: usize,
     pub admins: HashSet<i64>,
     pub default_lang: Lang,
@@ -122,6 +125,8 @@ impl Config {
             })
             .transpose()?;
 
+        let lastfm_api_key = env_optional("LASTFM_API_KEY");
+
         let mut tmp_dir =
             PathBuf::from(env_optional("TMP_DIR").unwrap_or_else(|| "./data/tmp".to_owned()));
         if tmp_dir.as_os_str().is_empty() {
@@ -145,6 +150,7 @@ impl Config {
             max_concurrent_downloads,
             admins,
             storage_chat_id,
+            lastfm_api_key,
             default_lang: env_optional("DEFAULT_LANG")
                 .and_then(|value| Lang::from_code(&value))
                 .unwrap_or(Lang::En),

@@ -132,6 +132,24 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Last.fm "now playing" inline proposal (2026-11-16)
+
+- `LASTFM_API_KEY` (optional env) enables the feature; without it `/lastfm`
+  reports "not configured" and inline empty query stays empty. Key is free at
+  https://www.last.fm/api/account.
+- Users connect with `/lastfm <public nick>` (never a password; only the public
+  recent-tracks feed is read) / `/lastfm off` disconnects / `/lastfm` shows
+  status. Nickname stored in `users.lastfm_user` (migration 0004, auto-applied).
+- With Last.fm connected and the inline query **empty**, the bot lists the
+  track currently (or most recently) playing as the single result; picking it
+  goes through the normal inline pipeline (cache keyed `lastfm:<slug>`, tags
+  and captions included, placeholder shows "▶ Зараз грає: …"). A normal text
+  query behaves exactly as before.
+- Failure mode is graceful: no key / Last.fm down / nick wrong → empty answer
+  with a warn log, never an error to the user.
+- Data minimization: no OAuth, no password, no listening-history persistence;
+  only the nickname is stored.
+
 ## Response-time pass (2026-11-16, round 2)
 
 - Inline search/describe now races the in-flight work against a per-user

@@ -34,6 +34,9 @@ pub struct AppState {
     /// instead of running a yt-dlp subprocess to the end and discarding its
     /// output.
     pub inline_generation_tx: Cache<i64, tokio::sync::watch::Sender<u64>>,
+    /// Last.fm client (public "now playing" feed); `None` when the operator
+    /// did not set LASTFM_API_KEY.
+    pub lastfm: Option<providers::lastfm::LastFmClient>,
 }
 
 impl AppState {
@@ -47,6 +50,10 @@ impl AppState {
             .max_capacity(10_000)
             .time_to_live(Duration::from_secs(30 * 60))
             .build();
+        let lastfm = config
+            .lastfm_api_key
+            .clone()
+            .map(providers::lastfm::LastFmClient::new);
         let album_selections = Cache::builder()
             .max_capacity(1_000)
             .time_to_live(Duration::from_secs(30 * 60))
@@ -73,6 +80,7 @@ impl AppState {
             started_at: Instant::now(),
             inline_generations,
             inline_generation_tx,
+            lastfm,
         }
     }
 
