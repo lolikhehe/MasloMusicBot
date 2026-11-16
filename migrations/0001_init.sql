@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS users (
     language     TEXT NOT NULL DEFAULT 'uk',
     quality      INTEGER NOT NULL DEFAULT 192,
     banned       INTEGER NOT NULL DEFAULT 0,
+    search_source TEXT NOT NULL DEFAULT 'youtube',
     created_at   INTEGER NOT NULL,
     last_seen_at INTEGER NOT NULL
 );

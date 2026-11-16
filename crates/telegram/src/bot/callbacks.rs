@@ -39,7 +39,17 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
     } else if let Some(value) = data.strip_prefix("s:q:") {
         if let Ok(quality) = value.parse::<u32>() {
             state.db.set_quality(user_id, quality).await?;
-            refresh_settings(&state, &bot, &query, user.lang, quality).await?;
+            refresh_settings(&state, &bot, &query, user.lang, quality, user.search_source).await?;
+            let _ = bot
+                .answer_callback_query(query.id.clone())
+                .text(i18n::settings_saved(user.lang))
+                .await;
+        }
+    } else if let Some(code) = data.strip_prefix("s:src:") {
+        if let Some(source) = parse_search_source(code) {
+            state.db.set_search_source(user_id, source).await?;
+            let user = state.db.ensure_user(user_id, preferred).await?;
+            refresh_settings(&state, &bot, &query, user.lang, user.quality, source).await?;
             let _ = bot
                 .answer_callback_query(query.id.clone())
                 .text(i18n::settings_saved(user.lang))
@@ -49,7 +59,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         if let Some(lang) = common::domain::Lang::from_code(code) {
             state.db.set_language(user_id, lang).await?;
             let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(&state, &bot, &query, lang, user.quality).await?;
+            refresh_settings(&state, &bot, &query, lang, user.quality, user.search_source).await?;
             let _ = bot
                 .answer_callback_query(query.id.clone())
                 .text(i18n::settings_saved(lang))
@@ -178,18 +188,29 @@ async fn refresh_settings(
     query: &CallbackQuery,
     lang: common::domain::Lang,
     quality: u32,
+    search_source: common::domain::Provider,
 ) -> HandlerResult {
     let Some(message) = query.regular_message() else {
         return Ok(());
     };
+    let _ = state;
     bot.edit_message_text(
         message.chat.id,
         message.id,
-        i18n::settings_title(lang, quality, lang),
+        i18n::settings_title(lang, quality, lang, search_source),
     )
     .parse_mode(ParseMode::Html)
-    .reply_markup(settings_keyboard(lang, quality))
+    .reply_markup(settings_keyboard(lang, quality, search_source))
     .await?;
-    let _ = state;
     Ok(())
+}
+
+/// Parse a `/settings` search-source callback, accepting only the exposed
+/// choices (YouTube / SoundCloud / Deezer).
+fn parse_search_source(value: &str) -> Option<common::domain::Provider> {
+    use common::domain::Provider;
+    use std::str::FromStr;
+    Provider::from_str(value.trim())
+        .ok()
+        .filter(|source| Provider::SEARCH_CHOICES.contains(source))
 }

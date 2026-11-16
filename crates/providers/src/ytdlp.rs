@@ -45,8 +45,31 @@ impl YtDlp {
         }
     }
 
+    /// YouTube search (`ytsearchN:`).
     pub async fn search(
         &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, DownloadError> {
+        self.search_prefixed("ytsearch", Provider::YouTube, query, limit)
+            .await
+    }
+
+    /// SoundCloud search (`scsearchN:`); audio itself is downloaded directly
+    /// from SoundCloud, no `ytsearch` re-match involved.
+    pub async fn search_soundcloud(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, DownloadError> {
+        self.search_prefixed("scsearch", Provider::SoundCloud, query, limit)
+            .await
+    }
+
+    async fn search_prefixed(
+        &self,
+        prefix: &str,
+        provider: Provider,
         query: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>, DownloadError> {
@@ -55,7 +78,8 @@ impl YtDlp {
             return Ok(Vec::new());
         }
         let limit = limit.clamp(1, 20);
-        let target = format!("ytsearch{limit}:{query}");
+        let target = format!("{prefix}{limit}:{query}");
+        let limit_arg = limit.to_string();
         let output = self
             .run(
                 &[
@@ -66,7 +90,7 @@ impl YtDlp {
                     "--no-warnings",
                     "--ignore-errors",
                     "--playlist-end",
-                    &limit.to_string(),
+                    &limit_arg,
                     &target,
                 ],
                 self.metadata_timeout,
@@ -87,7 +111,7 @@ impl YtDlp {
         let mut seen = HashSet::new();
         let mut results = Vec::new();
         for entry in entries {
-            if let Some(result) = search_result_from_entry(entry)
+            if let Some(result) = search_result_from_entry(entry, provider)
                 && seen.insert(result.key.clone())
             {
                 results.push(result);
@@ -401,23 +425,24 @@ fn duration_secs(duration: Option<f64>) -> Option<u32> {
         .map(|value| value.round() as u32)
 }
 
-fn search_result_from_entry(entry: Info) -> Option<SearchResult> {
+fn search_result_from_entry(entry: Info, provider: Provider) -> Option<SearchResult> {
+    let key_prefix = provider.as_str();
     let source_url = entry
         .webpage_url
         .clone()
-        .or_else(|| entry.url.clone())
+        .or_else(|| entry.url.clone().filter(|url| url.starts_with("http")))
         .or_else(|| {
-            entry
-                .id
-                .clone()
-                .map(|id| format!("https://www.youtube.com/watch?v={id}"))
+            entry.id.clone().map(|id| match provider {
+                Provider::SoundCloud => format!("https://soundcloud.com/tracks/{id}"),
+                _ => format!("https://www.youtube.com/watch?v={id}"),
+            })
         })?;
     if !source_url.starts_with("http") {
         return None;
     }
     let key = match parse_input(&source_url) {
         ParsedInput::Track(track) => track.key,
-        _ => TrackKey::new(format!("youtube:url:{source_url}")),
+        _ => TrackKey::new(format!("{key_prefix}:url:{source_url}")),
     };
     let meta = entry.into_meta();
     if meta.title.is_empty() {
@@ -425,7 +450,7 @@ fn search_result_from_entry(entry: Info) -> Option<SearchResult> {
     }
     Some(SearchResult {
         key,
-        provider: Provider::YouTube,
+        provider,
         target: DownloadTarget::Url(source_url.clone()),
         source_url,
         meta,

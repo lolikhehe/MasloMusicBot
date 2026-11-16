@@ -57,9 +57,18 @@ impl Config {
             &env_optional("ENABLED_PROVIDERS").unwrap_or_else(|| "all".to_owned()),
             Provider::ALL.as_slice(),
         )?;
+        // Search sources the operator allows bot-wide. Default is everything
+        // that can be searched anonymously; set SEARCH_PROVIDERS=youtube to
+        // pin the old behavior. Spotify is not searchable without OAuth.
         let search_providers = parse_providers(
-            &env_optional("SEARCH_PROVIDERS").unwrap_or_else(|| "youtube".to_owned()),
-            &[Provider::YouTube],
+            &env_optional("SEARCH_PROVIDERS")
+                .unwrap_or_else(|| "youtube,soundcloud,deezer".to_owned()),
+            &[
+                Provider::YouTube,
+                Provider::YouTubeMusic,
+                Provider::SoundCloud,
+                Provider::Deezer,
+            ],
         )?;
 
         // MAX_COLLECTION_TRACKS is the spec name (§9 stage 6), default 25;

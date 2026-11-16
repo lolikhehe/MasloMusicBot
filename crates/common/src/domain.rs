@@ -92,6 +92,10 @@ impl Provider {
         matches!(self, Self::Spotify | Self::AppleMusic | Self::Deezer)
     }
 
+    /// Sources the user can pick for inline/text search in `/settings`.
+    /// Spotify is deliberately absent: there is no anonymous search API.
+    pub const SEARCH_CHOICES: [Self; 3] = [Self::YouTube, Self::SoundCloud, Self::Deezer];
+
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::YouTube => "YouTube",
@@ -228,6 +232,8 @@ pub struct UserRecord {
     pub lang: Lang,
     pub quality: u32,
     pub banned: bool,
+    /// Per-user search source used for inline and text search.
+    pub search_source: Provider,
 }
 
 #[derive(Debug, Clone)]
@@ -278,6 +284,14 @@ mod tests {
         for provider in Provider::ALL {
             assert_eq!(provider.as_str().parse::<Provider>(), Ok(provider));
         }
+    }
+
+    #[test]
+    fn search_choices_roundtrip_through_str() {
+        for provider in Provider::SEARCH_CHOICES {
+            assert_eq!(provider.as_str().parse::<Provider>(), Ok(provider));
+        }
+        assert!(!Provider::SEARCH_CHOICES.contains(&Provider::Spotify));
     }
 
     #[test]

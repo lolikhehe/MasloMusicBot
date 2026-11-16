@@ -48,6 +48,8 @@ RUN mkdir -p /data && chown -R bot:bot /data
 ENV DATABASE_URL=sqlite:///data/bot.db \
     TMP_DIR=/data/tmp \
     TMPDIR=/data/tmp \
+    # yt-dlp keeps a small cache; container root fs is read-only, keep it on the volume
+    XDG_CACHE_HOME=/data/tmp/cache \
     YTDLP_PATH=/usr/local/bin/yt-dlp \
     FFMPEG_PATH=/usr/bin/ffmpeg \
     # deno's cache must live on the writable volume: the container root fs is read-only

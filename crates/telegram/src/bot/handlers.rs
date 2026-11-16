@@ -111,7 +111,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
                 send::send_html(&bot, msg.chat.id, i18n::no_results(lang)).await?;
                 Ok(())
             } else {
-                handle_search(&state, &bot, msg.chat.id, lang, query).await
+                handle_search(&state, &bot, msg.chat.id, lang, query, user.search_source).await
             }
         }
         ParsedInput::Unsupported(reason) => {
@@ -164,10 +164,11 @@ async fn handle_search(
     chat: ChatId,
     lang: Lang,
     query: &str,
+    search_source: common::domain::Provider,
 ) -> HandlerResult {
     let query: String = query.chars().take(200).collect();
     let progress = send::send_html(bot, chat, i18n::searching(lang)).await?;
-    let results = match state.manager.search(&query, 8).await {
+    let results = match state.manager.search(&query, 8, search_source).await {
         Ok(results) => results,
         Err(error) => {
             let _ = edit_html(bot, chat, progress.id, i18n::error(lang, &error)).await;

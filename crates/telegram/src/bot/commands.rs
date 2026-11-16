@@ -2,7 +2,7 @@
 //! suffixes and admin arguments behave predictably in groups.
 
 use crate::state::AppState;
-use common::domain::Lang;
+use common::domain::{Lang, Provider};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::key_from_input;
@@ -52,7 +52,11 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
     Some(command)
 }
 
-pub fn settings_keyboard(lang: Lang, quality: u32) -> InlineKeyboardMarkup {
+pub fn settings_keyboard(
+    lang: Lang,
+    quality: u32,
+    search_source: Provider,
+) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = [128u32, 192, 256, 320]
         .chunks(2)
         .map(|chunk| {
@@ -68,6 +72,22 @@ pub fn settings_keyboard(lang: Lang, quality: u32) -> InlineKeyboardMarkup {
                 .collect()
         })
         .collect();
+    rows.push(
+        Provider::SEARCH_CHOICES
+            .into_iter()
+            .map(|candidate| {
+                let check = if candidate == search_source {
+                    "✓ "
+                } else {
+                    ""
+                };
+                InlineKeyboardButton::callback(
+                    format!("{check}{}", candidate.display_name()),
+                    format!("s:src:{}", candidate.as_str()),
+                )
+            })
+            .collect(),
+    );
     rows.push(
         [Lang::En, Lang::Uk]
             .into_iter()
@@ -116,10 +136,14 @@ pub async fn handle_command(
         Command::Settings => {
             bot.send_message(
                 msg.chat.id,
-                i18n::settings_title(lang, user_record.quality, lang),
+                i18n::settings_title(lang, user_record.quality, lang, user_record.search_source),
             )
             .parse_mode(ParseMode::Html)
-            .reply_markup(settings_keyboard(lang, user_record.quality))
+            .reply_markup(settings_keyboard(
+                lang,
+                user_record.quality,
+                user_record.search_source,
+            ))
             .await?;
         }
         Command::Stats => {

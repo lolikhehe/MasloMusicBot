@@ -114,38 +114,58 @@ impl DownloadManager {
             .await
     }
 
+    /// Search for tracks. `preferred` is the user's `/settings` choice; it is
+    /// honored when allowed by the operator's SEARCH_PROVIDERS allow-list,
+    /// otherwise the first allowed source (YouTube → SoundCloud → Deezer) is
+    /// used instead.
     pub async fn search(
         &self,
         query: &str,
         limit: usize,
+        preferred: Provider,
     ) -> Result<Vec<SearchResult>, DownloadError> {
-        if !self.config.search_providers.contains(&Provider::YouTube) {
+        let preferred_source = [
+            preferred,
+            Provider::YouTube,
+            Provider::SoundCloud,
+            Provider::Deezer,
+        ]
+        .into_iter()
+        .find(|candidate| self.config.search_providers.contains(candidate));
+        let Some(source) = preferred_source else {
+            warn!("no search source allowed by SEARCH_PROVIDERS");
             return Ok(Vec::new());
-        }
+        };
         let normalized = query.trim().to_lowercase();
         if normalized.is_empty() {
             return Ok(Vec::new());
         }
-        if let Some(cached) = self.search_cache.get(&normalized).await {
+        let cache_key = format!("{}:{normalized}", source.as_str());
+        if let Some(cached) = self.search_cache.get(&cache_key).await {
             return Ok(cached);
         }
         // L2: SQLite-backed search cache survives restarts (10-30 min TTL).
-        if let Ok(Some(payload)) = self.db.get_search_cache("youtube", &normalized).await
+        if let Ok(Some(payload)) = self.db.get_search_cache(source.as_str(), &normalized).await
             && let Ok(parsed) = serde_json::from_str::<Vec<SearchResult>>(&payload)
         {
-            self.search_cache
-                .insert(normalized.clone(), parsed.clone())
-                .await;
+            self.search_cache.insert(cache_key, parsed.clone()).await;
             return Ok(parsed);
         }
-        let results = self.ytdlp.search(query, limit).await?;
-        self.search_cache
-            .insert(normalized.clone(), results.clone())
-            .await;
+        let results = match source {
+            Provider::SoundCloud => self.ytdlp.search_soundcloud(query, limit).await?,
+            Provider::Deezer => self.external.deezer_search(query, limit).await?,
+            _ => self.ytdlp.search(query, limit).await?,
+        };
+        self.search_cache.insert(cache_key, results.clone()).await;
         if let Ok(payload) = serde_json::to_string(&results) {
             let _ = self
                 .db
-                .put_search_cache("youtube", &normalized, &payload, Duration::from_secs(600))
+                .put_search_cache(
+                    source.as_str(),
+                    &normalized,
+                    &payload,
+                    Duration::from_secs(600),
+                )
                 .await;
         }
         Ok(results)

@@ -63,7 +63,7 @@ chat. Cached tracks post instantly; uncached tracks download and are edited into
 All settings come from environment variables (see `.env.example`). Highlights:
 
 - `ENABLED_PROVIDERS` — comma-separated, or `all` (`youtube,youtube_music,soundcloud,bandcamp,spotify,apple_music,deezer`)
-- `SEARCH_PROVIDERS` — `youtube` (only supported search provider)
+- `SEARCH_PROVIDERS` — `youtube,soundcloud,deezer` (anonymous search allowed for the bot; restrict e.g. to `youtube` to pin old behavior). Order is irrelevant; per-user choice wins. Search is two-tier cached (moka L1 + SQLite `search_cache` L2) keyed per source, and inline results carry no new file uploads.
 - `MAX_DURATION_SECS` (default 1200), `MAX_FILE_MB` (default 100, up to 2000)
 - `MAX_COLLECTION_TRACKS` (default 25), `MAX_ACTIVE_DOWNLOADS_PER_USER` (default 2)
 - `RATE_LIMIT_PER_MIN` (default 10), `MAX_CONCURRENT_DOWNLOADS` (default 4)

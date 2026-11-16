@@ -14,6 +14,7 @@ use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SCHEMA: &str = include_str!("../../../migrations/0001_init.sql");
+const MIGRATION_0002: &str = include_str!("../../../migrations/0002_user_search_source.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -52,6 +53,20 @@ impl Db {
             .map_err(db_err)?;
 
         sqlx::raw_sql(SCHEMA).execute(&pool).await.map_err(db_err)?;
+        // 0001 is IF NOT EXISTS and never touches an existing users table, so
+        // the new column is added here when missing.
+        let has_search_source: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'search_source'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(db_err)?;
+        if has_search_source == 0 {
+            sqlx::raw_sql(MIGRATION_0002)
+                .execute(&pool)
+                .await
+                .map_err(db_err)?;
+        }
 
         // Drop expired L2 search cache rows; they are cheap to recompute.
         let now = unix_now();
@@ -245,7 +260,7 @@ impl Db {
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-             RETURNING language, quality, banned",
+             RETURNING language, quality, banned, search_source",
         )
         .bind(id)
         .bind(fallback.code())
@@ -259,6 +274,10 @@ impl Db {
             lang: Lang::from_code(row.get::<String, _>("language").as_str()).unwrap_or(Lang::En),
             quality: u32::try_from(row.get::<i64, _>("quality")).unwrap_or(192),
             banned: row.get::<i64, _>("banned") != 0,
+            search_source: row
+                .get::<String, _>("search_source")
+                .parse::<Provider>()
+                .unwrap_or(Provider::YouTube),
         })
     }
 
@@ -277,6 +296,17 @@ impl Db {
         let quality = quality.clamp(64, 320) as i64;
         sqlx::query("UPDATE users SET quality = ?, last_seen_at = ? WHERE user_id = ?")
             .bind(quality)
+            .bind(unix_now())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn set_search_source(&self, id: i64, source: Provider) -> AppResult<()> {
+        sqlx::query("UPDATE users SET search_source = ?, last_seen_at = ? WHERE user_id = ?")
+            .bind(source.as_str())
             .bind(unix_now())
             .bind(id)
             .execute(&self.pool)
@@ -356,6 +386,12 @@ mod tests {
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert_eq!(user.quality, 320);
         assert_eq!(user.lang, Lang::En);
+        assert_eq!(user.search_source, Provider::YouTube);
+        db.set_search_source(42, Provider::Deezer)
+            .await
+            .expect("source");
+        let user = db.ensure_user(42, Lang::Uk).await.expect("user");
+        assert_eq!(user.search_source, Provider::Deezer);
 
         assert!(db.purge_track(&key).await.expect("purge"));
         assert!(db.get_track(&key, 192).await.expect("get").is_none());

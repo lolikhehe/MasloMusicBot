@@ -132,6 +132,29 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Inline/text search source per user (2026-11-16)
+
+`/settings` now offers a search-source row: **YouTube** (default), **SoundCloud**,
+**Deezer**. The value is stored per user (`users.search_source`, migration
+`0002_user_search_source.sql`, applied automatically at startup when the column is
+missing — 0001 is a no-op for existing databases). The choice applies to both inline
+search and private-chat text search.
+
+Implementation notes:
+- SoundCloud search goes through `yt-dlp "scsearchN:…"`; results are normal SoundCloud
+  URLs, so caching keys match direct links and the audio downloads directly from SoundCloud.
+- Deezer search uses the public `https://api.deezer.com/search` (no auth); results are
+  displayed with Deezer's own metadata/cover and the audio is matched on YouTube via the
+  same `ytsearch1:` path as single Deezer track links (cache key `deezer:track:<id>`).
+- **Spotify was intentionally not added**: there is no anonymous Spotify search API
+  (`open.spotify.com` has no public search endpoint; oEmbed only resolves known URLs; the
+  Web API requires OAuth client credentials). A "Spotify search" button would either be
+  broken or require storing user credentials — both are worse than not shipping it.
+- SEARCH_PROVIDERS default changed to `youtube,soundcloud,deezer` (operator allow-list,
+  per user setting falls back to the first allowed source). Restrict with
+  `SEARCH_PROVIDERS=youtube` to pin old behavior.
+- All search is still metadata-only; Spotify/DRM is never bypassed.
+
 ## Optimization pass decisions (2026-11-16)
 
 - `mmap_size` for SQLite was tried and **reverted**: on the tiny hot cache DB it consistently

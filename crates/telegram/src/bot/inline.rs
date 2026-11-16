@@ -68,16 +68,18 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
                 Vec::new()
             }
         },
-        ParsedInput::Search(query) => match state.manager.search(&query, 10).await {
-            Ok(results) => results
-                .into_iter()
-                .map(|result| result.into_request())
-                .collect(),
-            Err(error) => {
-                warn!(%error, "inline search failed");
-                Vec::new()
+        ParsedInput::Search(query) => {
+            match state.manager.search(&query, 10, user.search_source).await {
+                Ok(results) => results
+                    .into_iter()
+                    .map(|result| result.into_request())
+                    .collect(),
+                Err(error) => {
+                    warn!(%error, "inline search failed");
+                    Vec::new()
+                }
             }
-        },
+        }
         ParsedInput::Album(_) => Vec::new(),
         ParsedInput::Unsupported(reason) => {
             info!(%reason, "unsupported inline input");

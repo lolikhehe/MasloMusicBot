@@ -1,6 +1,6 @@
 //! All user-facing strings live here. English is the fallback language.
 
-use crate::domain::{Lang, Stats};
+use crate::domain::{Lang, Provider, Stats};
 use crate::error::DownloadError;
 
 fn pick(lang: Lang, en: &'static str, uk: &'static str) -> &'static str {
@@ -46,13 +46,15 @@ pub fn help(lang: Lang, is_admin: bool) -> String {
     }
 }
 
-pub fn settings_title(lang: Lang, quality: u32, language: Lang) -> String {
+pub fn settings_title(lang: Lang, quality: u32, language: Lang, search_source: Provider) -> String {
     let title = pick(lang, "<b>Settings</b>", "<b>Налаштування</b>");
     let q = pick(lang, "Quality", "Якість");
     let l = pick(lang, "Language", "Мова");
+    let s = pick(lang, "Search source (inline)", "Джерело пошуку (inline)");
     format!(
-        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>",
-        language_name(language)
+        "{title}\n\n{q}: <b>{quality} kbps</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>",
+        language_name(language),
+        search_source.display_name()
     )
 }
 

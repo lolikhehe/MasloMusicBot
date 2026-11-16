@@ -5,7 +5,7 @@
 //! here attempts to bypass DRM or paid access.
 
 use common::domain::{
-    Album, AlbumRef, DownloadTarget, Provider, TrackKey, TrackMeta, TrackRequest,
+    Album, AlbumRef, DownloadTarget, Provider, SearchResult, TrackKey, TrackMeta, TrackRequest,
 };
 use common::error::DownloadError;
 use serde::Deserialize;
@@ -160,6 +160,34 @@ impl ExternalResolver {
             duration_secs: track.duration,
             thumbnail_url,
         })
+    }
+
+    /// Public Deezer search API (no auth). Results carry enough metadata to
+    /// display inline; the audio itself is still matched on YouTube via the
+    /// search query, exactly like single Spotify/Deezer track links.
+    pub async fn deezer_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, DownloadError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 20).to_string();
+        let page: DeezerTrackList = self
+            .client
+            .get("https://api.deezer.com/search")
+            .query(&[("q", query), ("limit", limit.as_str())])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        Ok(deezer_results_from_page(page))
     }
 
     async fn deezer_album(&self, album: &AlbumRef, limit: usize) -> Result<Album, DownloadError> {
@@ -339,6 +367,41 @@ fn album_id_from_url(url: Option<&str>, host: &str, kinds: &[&str]) -> Option<St
         .map(|id| (*id).to_owned())
 }
 
+fn deezer_results_from_page(page: DeezerTrackList) -> Vec<SearchResult> {
+    let mut results = Vec::with_capacity(page.data.len());
+    for track in page.data {
+        let title = track.title.trim().to_owned();
+        if title.is_empty() {
+            continue;
+        }
+        let performer = track.artist.as_ref().map(|artist| artist.name.clone());
+        let album = track.album.as_ref().and_then(|album| album.title.clone());
+        let thumbnail_url = track
+            .album
+            .as_ref()
+            .and_then(|album| album.cover_xl.clone().or_else(|| album.cover_big.clone()))
+            .or_else(|| track.cover_xl.clone());
+        let meta = TrackMeta {
+            title,
+            performer,
+            album,
+            duration_secs: track.duration,
+            thumbnail_url,
+        };
+        let id = track.id.to_string();
+        let source_url = format!("https://www.deezer.com/track/{id}");
+        let target = DownloadTarget::Search(meta.search_query());
+        results.push(SearchResult {
+            key: TrackKey::new(format!("deezer:track:{id}")),
+            provider: Provider::Deezer,
+            source_url,
+            meta,
+            target,
+        });
+    }
+    results
+}
+
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
     if error.status() == Some(reqwest::StatusCode::NOT_FOUND) {
         DownloadError::NotFound
@@ -430,6 +493,53 @@ struct DeezerAlbum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_deezer_search_page() {
+        // Shape captured from GET https://api.deezer.com/search?q=...&limit=2
+        let json = r#"{
+            "data": [
+                {
+                    "id": 1900001,
+                    "title": "Metallica",
+                    "link": "https://www.deezer.com/track/1900001",
+                    "duration": 331,
+                    "artist": { "id": 119, "name": "Metallica" },
+                    "album": { "id": 256250622, "title": "Master Of Puppets",
+                               "cover_medium": "https://x/250.jpg",
+                               "cover_big": "https://x/500.jpg",
+                               "cover_xl": "https://x/1000.jpg" }
+                }
+            ],
+            "total": 1
+        }"#;
+        let page: DeezerTrackList = serde_json::from_str(json).expect("page");
+        let results = deezer_results_from_page(page);
+        assert_eq!(results.len(), 1);
+        let track = &results[0];
+        assert_eq!(track.key, TrackKey::new("deezer:track:1900001"));
+        assert_eq!(track.provider, Provider::Deezer);
+        assert_eq!(track.meta.performer.as_deref(), Some("Metallica"));
+        assert_eq!(track.meta.title, "Metallica");
+        assert_eq!(track.meta.duration_secs, Some(331));
+        assert_eq!(track.meta.album.as_deref(), Some("Master Of Puppets"));
+        assert_eq!(
+            track.meta.thumbnail_url.as_deref(),
+            Some("https://x/1000.jpg")
+        );
+        assert_eq!(
+            track.target,
+            DownloadTarget::Search("Metallica Metallica".to_owned())
+        );
+        assert_eq!(track.source_url, "https://www.deezer.com/track/1900001");
+    }
+
+    #[test]
+    fn skips_empty_deezer_titles() {
+        let json = r#"{ "data": [ { "id": 1, "title": "   " } ] }"#;
+        let page: DeezerTrackList = serde_json::from_str(json).expect("page");
+        assert!(deezer_results_from_page(page).is_empty());
+    }
 
     #[test]
     fn strips_spotify_suffix() {
