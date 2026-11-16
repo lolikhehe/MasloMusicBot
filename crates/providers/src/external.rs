@@ -5,7 +5,8 @@
 //! here attempts to bypass DRM or paid access.
 
 use common::domain::{
-    Album, AlbumRef, DownloadTarget, Provider, SearchResult, TrackKey, TrackMeta, TrackRequest,
+    Album, AlbumRef, AlbumSearchResult, DownloadTarget, Provider, SearchResult, TrackKey,
+    TrackMeta, TrackRequest,
 };
 use common::error::DownloadError;
 use serde::Deserialize;
@@ -191,6 +192,65 @@ impl ExternalResolver {
             .await
             .map_err(map_reqwest)?;
         Ok(deezer_results_from_page(page))
+    }
+
+    /// Public Deezer album search (no auth). Used by `/alb <name>`.
+    pub async fn deezer_album_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<AlbumSearchResult>, DownloadError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 10).to_string();
+        let page: DeezerAlbumList = self
+            .client
+            .get("https://api.deezer.com/search/album")
+            .query(&[("q", query), ("limit", limit.as_str())])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        Ok(deezer_albums_from_page(page))
+    }
+
+    /// Public iTunes Search API, `entity=album` (no auth). Used by `/alb <name>`;
+    /// chosen collections resolve through the same lookup path as Apple Music
+    /// album links.
+    pub async fn apple_album_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<AlbumSearchResult>, DownloadError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 10).to_string();
+        let body: ItunesResponse = self
+            .client
+            .get("https://itunes.apple.com/search")
+            .query(&[
+                ("term", query),
+                ("entity", "album"),
+                ("country", "US"),
+                ("limit", limit.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        Ok(apple_albums_from_response(body))
     }
 
     /// Public iTunes Search API (no auth), used only when the user opted into
@@ -430,6 +490,49 @@ fn album_id_from_url(url: Option<&str>, host: &str, kinds: &[&str]) -> Option<St
         .map(|id| (*id).to_owned())
 }
 
+fn deezer_albums_from_page(page: DeezerAlbumList) -> Vec<AlbumSearchResult> {
+    let mut results = Vec::with_capacity(page.data.len());
+    for item in page.data {
+        let title = item.title.trim().to_owned();
+        if title.is_empty() {
+            continue;
+        }
+        results.push(AlbumSearchResult {
+            provider: Provider::Deezer,
+            url: format!("https://www.deezer.com/album/{}", item.id),
+            title,
+            artist: item.artist.map(|artist| artist.name),
+            track_count: item.nb_tracks,
+        });
+    }
+    results
+}
+
+fn apple_albums_from_response(body: ItunesResponse) -> Vec<AlbumSearchResult> {
+    let mut results = Vec::with_capacity(body.results.len());
+    for track in body.results {
+        if track.wrapper_type.as_deref() != Some("collection") {
+            continue;
+        }
+        let (Some(collection_id), Some(title)) = (track.collection_id, track.collection_name)
+        else {
+            continue;
+        };
+        let title = title.trim().to_owned();
+        if title.is_empty() {
+            continue;
+        }
+        results.push(AlbumSearchResult {
+            provider: Provider::AppleMusic,
+            url: format!("https://music.apple.com/us/album/{collection_id}"),
+            title,
+            artist: track.artist_name,
+            track_count: track.track_count,
+        });
+    }
+    results
+}
+
 fn deezer_results_from_page(page: DeezerTrackList) -> Vec<SearchResult> {
     let mut results = Vec::with_capacity(page.data.len());
     for track in page.data {
@@ -508,6 +611,10 @@ struct ItunesTrack {
     artwork_url100: Option<String>,
     #[serde(default)]
     primary_genre_name: Option<String>,
+    #[serde(default)]
+    collection_id: Option<u64>,
+    #[serde(default)]
+    track_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -543,6 +650,22 @@ struct DeezerTrack {
 struct DeezerTrackList {
     #[serde(default)]
     data: Vec<DeezerTrack>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeezerAlbumList {
+    #[serde(default)]
+    data: Vec<DeezerAlbumItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeezerAlbumItem {
+    id: u64,
+    title: String,
+    #[serde(default)]
+    nb_tracks: Option<u32>,
+    #[serde(default)]
+    artist: Option<DeezerArtist>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -619,6 +742,64 @@ mod tests {
             upgrade_artwork("https://x/100x100bb.jpg".into()),
             "https://x/600x600bb.jpg"
         );
+    }
+
+    #[test]
+    fn parses_deezer_album_search_page() {
+        // Shape captured from GET https://api.deezer.com/search/album?q=...&limit=2
+        let json = r#"{
+            "data": [
+                {
+                    "id": 256250622,
+                    "title": "Master Of Puppets",
+                    "nb_tracks": 8,
+                    "artist": { "id": 119, "name": "Metallica" }
+                },
+                { "id": 1, "title": "   " }
+            ],
+            "total": 1
+        }"#;
+        let page: DeezerAlbumList = serde_json::from_str(json).expect("page");
+        let results = deezer_albums_from_page(page);
+        assert_eq!(results.len(), 1);
+        let album = &results[0];
+        assert_eq!(album.provider, Provider::Deezer);
+        assert_eq!(album.url, "https://www.deezer.com/album/256250622");
+        assert_eq!(album.title, "Master Of Puppets");
+        assert_eq!(album.artist.as_deref(), Some("Metallica"));
+        assert_eq!(album.track_count, Some(8));
+        assert_eq!(
+            album.into_album_ref().url.as_deref(),
+            Some("https://www.deezer.com/album/256250622")
+        );
+    }
+
+    #[test]
+    fn parses_apple_album_search_response() {
+        // Shape captured from GET https://itunes.apple.com/search?term=...&entity=album
+        let json = r#"{
+            "resultCount": 2,
+            "results": [
+                {
+                    "wrapperType": "collection",
+                    "collectionId": 1440848697,
+                    "collectionName": "Master Of Puppets",
+                    "artistName": "Metallica",
+                    "trackCount": 10,
+                    "artworkUrl100": "https://x/100x100bb.jpg"
+                },
+                { "wrapperType": "track", "trackId": 1, "trackName": "Skipped" }
+            ]
+        }"#;
+        let body: ItunesResponse = serde_json::from_str(json).expect("response");
+        let results = apple_albums_from_response(body);
+        assert_eq!(results.len(), 1);
+        let album = &results[0];
+        assert_eq!(album.provider, Provider::AppleMusic);
+        assert_eq!(album.url, "https://music.apple.com/us/album/1440848697");
+        assert_eq!(album.title, "Master Of Puppets");
+        assert_eq!(album.artist.as_deref(), Some("Metallica"));
+        assert_eq!(album.track_count, Some(10));
     }
 
     #[test]

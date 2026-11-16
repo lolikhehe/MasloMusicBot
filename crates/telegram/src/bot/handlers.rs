@@ -240,15 +240,29 @@ async fn handle_album(
     album_ref: common::domain::AlbumRef,
 ) -> HandlerResult {
     let progress = send::send_html(bot, chat, i18n::album_loading(lang)).await?;
-    let album = match state.manager.resolve_album(&album_ref).await {
+    ask_album_confirmation(state, bot, chat, progress.id, lang, &album_ref).await
+}
+
+/// Fetch a collection and ask the user to confirm the download. `progress` is
+/// edited in place: either the "loading" placeholder (PM links) or the
+/// `/alb` candidate list message.
+pub async fn ask_album_confirmation(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    progress: MessageId,
+    lang: Lang,
+    album_ref: &common::domain::AlbumRef,
+) -> HandlerResult {
+    let album = match state.manager.resolve_album(album_ref).await {
         Ok(album) => album,
         Err(error) => {
-            let _ = edit_html(bot, chat, progress.id, i18n::error(lang, &error)).await;
+            let _ = edit_html(bot, chat, progress, i18n::error(lang, &error)).await;
             return Ok(());
         }
     };
     if album.tracks.is_empty() {
-        let _ = edit_html(bot, chat, progress.id, i18n::album_empty(lang)).await;
+        let _ = edit_html(bot, chat, progress, i18n::album_empty(lang)).await;
         return Ok(());
     }
 
@@ -276,7 +290,7 @@ async fn handle_album(
             format!("alx:{selection_id}"),
         ),
     ]]);
-    bot.edit_message_text(chat, progress.id, i18n::album_confirm(lang, &title, count))
+    bot.edit_message_text(chat, progress, i18n::album_confirm(lang, &title, count))
         .parse_mode(ParseMode::Html)
         .reply_markup(keyboard)
         .await?;

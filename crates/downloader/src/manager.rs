@@ -4,14 +4,14 @@
 use audio;
 use common::config::Config;
 use common::domain::{
-    Album, AlbumRef, CachedTrack, DownloadTarget, Provider, SearchResult, TrackKey, TrackMeta,
-    TrackRequest,
+    Album, AlbumRef, AlbumSearchResult, CachedTrack, DownloadTarget, Provider, SearchResult,
+    TrackKey, TrackMeta, TrackRequest,
 };
 use common::error::{AppResult, DownloadError};
 use moka::future::Cache;
 use providers::external::ExternalResolver;
 use providers::ytdlp::YtDlp;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -47,6 +47,7 @@ pub struct DownloadManager {
     inflight: Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>>,
     user_semaphores: Cache<i64, Arc<Semaphore>>,
     search_cache: Cache<String, Vec<SearchResult>>,
+    album_search_cache: Cache<String, Vec<AlbumSearchResult>>,
 }
 
 impl DownloadManager {
@@ -57,6 +58,10 @@ impl DownloadManager {
             .build()
             .unwrap_or_default();
         let search_cache = Cache::builder()
+            .max_capacity(1_000)
+            .time_to_live(Duration::from_secs(600))
+            .build();
+        let album_search_cache = Cache::builder()
             .max_capacity(1_000)
             .time_to_live(Duration::from_secs(600))
             .build();
@@ -71,6 +76,7 @@ impl DownloadManager {
             inflight: Mutex::new(HashMap::new()),
             user_semaphores,
             search_cache,
+            album_search_cache,
         }
     }
 
@@ -180,6 +186,57 @@ impl DownloadManager {
                 .await;
         }
         Ok(results)
+    }
+
+    /// Search public album catalogs (Deezer + Apple Music) for `/alb <name>`.
+    /// Failures on one source don't sink the other; both failing surfaces an
+    /// error so the user knows the catalogs are unreachable, not empty.
+    /// Candidates are deduplicated by (artist, title) and capped at `limit`.
+    pub async fn search_albums(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<AlbumSearchResult>, DownloadError> {
+        let normalized = query.trim().to_lowercase();
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(cached) = self.album_search_cache.get(&normalized).await {
+            return Ok(cached);
+        }
+        let limit = limit.clamp(1, 20);
+        let (deezer, apple) = tokio::join!(
+            self.external.deezer_album_search(query, limit),
+            self.external.apple_album_search(query, limit),
+        );
+        let mut last_error = None;
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for entry in [deezer, apple] {
+            match entry {
+                Ok(results) => {
+                    for result in results {
+                        if seen.insert(result.dedupe_key()) {
+                            out.push(result);
+                        }
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "album catalog search failed");
+                    last_error = Some(error);
+                }
+            }
+        }
+        if out.is_empty()
+            && let Some(error) = last_error
+        {
+            return Err(error);
+        }
+        out.truncate(limit);
+        self.album_search_cache
+            .insert(normalized, out.clone())
+            .await;
+        Ok(out)
     }
 
     /// iTunes tag lookup for the per-user album/genre tags feature; one

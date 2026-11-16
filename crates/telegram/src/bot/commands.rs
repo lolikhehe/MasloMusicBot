@@ -21,6 +21,9 @@ pub enum Command {
     Purge(Option<String>),
     /// `/lastfm` — show status; `/lastfm <nick>` — connect; `/lastfm off` — disconnect.
     LastFm(Option<String>),
+    /// `/alb <name>` — search public album catalogs (Deezer / Apple Music) and
+    /// download the chosen album track by track.
+    AlbumSearch(Option<String>),
     Unknown(String),
 }
 
@@ -47,6 +50,7 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "settings" => Command::Settings,
         "stats" => Command::Stats,
         "lastfm" => Command::LastFm((!args.is_empty()).then_some(args)),
+        "alb" => Command::AlbumSearch((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
         "purge" => Command::Purge((!args.is_empty()).then_some(args)),
@@ -270,6 +274,64 @@ pub async fn handle_command(
                 }
             }
         }
+        Command::AlbumSearch(query) => {
+            if !msg.chat.is_private() {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            let Some(query) = query
+                .as_deref()
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+            else {
+                send_plain(bot, msg.chat.id, i18n::album_search_usage(lang)).await?;
+                return Ok(());
+            };
+            let progress = bot
+                .send_message(msg.chat.id, i18n::album_searching(lang))
+                .await?;
+            let candidates = match state.manager.search_albums(query, 6).await {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    let _ = bot.delete_message(msg.chat.id, progress.id).await;
+                    warn!(%error, "/alb catalog search failed");
+                    send_plain(bot, msg.chat.id, i18n::error(lang, &error)).await?;
+                    return Ok(());
+                }
+            };
+            if candidates.is_empty() {
+                bot.edit_message_text(msg.chat.id, progress.id, i18n::no_albums_found(lang))
+                    .await?;
+                return Ok(());
+            }
+            let mut rows = Vec::with_capacity(candidates.len());
+            for candidate in &candidates {
+                let selection_id = state.new_selection_id();
+                state
+                    .album_ref_selections
+                    .insert(selection_id.clone(), candidate.into_album_ref())
+                    .await;
+                rows.push(vec![InlineKeyboardButton::callback(
+                    album_button_label(lang, candidate),
+                    format!("alq:{selection_id}"),
+                )]);
+            }
+            let keyboard = InlineKeyboardMarkup::new(rows);
+            let header =
+                i18n::album_search_results(lang, &crate::bot::handlers::escape_html(query));
+            let edited = bot
+                .edit_message_text(msg.chat.id, progress.id, header.clone())
+                .parse_mode(ParseMode::Html)
+                .reply_markup(keyboard.clone())
+                .await;
+            if edited.is_err() {
+                let _ = bot.delete_message(msg.chat.id, progress.id).await;
+                bot.send_message(msg.chat.id, header)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(keyboard)
+                    .await?;
+            }
+        }
         Command::Purge(input) => {
             if !is_admin {
                 send_plain(bot, msg.chat.id, i18n::admin_only(lang)).await?;
@@ -290,6 +352,25 @@ pub async fn handle_command(
         }
     }
     Ok(())
+}
+
+/// Button label for an `/alb` candidate: "Artist — Title · N tracks · Deezer".
+fn album_button_label(lang: Lang, candidate: &common::domain::AlbumSearchResult) -> String {
+    let artist = candidate
+        .artist
+        .as_deref()
+        .map(str::trim)
+        .filter(|artist| !artist.is_empty());
+    let mut label = match artist {
+        Some(artist) => format!("{artist} — {}", candidate.title),
+        None => candidate.title.clone(),
+    };
+    if let Some(count) = candidate.track_count {
+        label.push_str(&i18n::album_tracks_count(lang, count));
+    }
+    label.push_str(" · ");
+    label.push_str(candidate.provider.display_name());
+    crate::bot::handlers::truncate(&label, 60)
 }
 
 /// Last.fm usernames: 2–15 chars, latin letters/digits/`_`/`-`.
@@ -349,6 +430,14 @@ mod tests {
         assert_eq!(
             parse_command("/purge youtube:abc", "bot"),
             Some(Command::Purge(Some("youtube:abc".into())))
+        );
+        assert_eq!(
+            parse_command("/alb master of puppets", "bot"),
+            Some(Command::AlbumSearch(Some("master of puppets".into())))
+        );
+        assert_eq!(
+            parse_command("/alb", "bot"),
+            Some(Command::AlbumSearch(None))
         );
     }
 }

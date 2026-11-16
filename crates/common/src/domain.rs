@@ -273,6 +273,34 @@ pub struct Album {
     pub source_url: Option<String>,
 }
 
+/// A public-catalog album candidate for `/alb <name>`. Deezer and Apple Music
+/// are searched in parallel; candidates are shown as a keyboard and the
+/// chosen one is resolved through the regular album pipeline.
+#[derive(Debug, Clone)]
+pub struct AlbumSearchResult {
+    pub provider: Provider,
+    pub url: String,
+    pub title: String,
+    pub artist: Option<String>,
+    pub track_count: Option<u32>,
+}
+
+impl AlbumSearchResult {
+    /// Normalized identity of the album, used to merge Deezer/Apple listings.
+    pub fn dedupe_key(&self) -> String {
+        let artist = self.artist.as_deref().unwrap_or("").trim().to_lowercase();
+        format!("{artist}|{}", self.title.trim().to_lowercase())
+    }
+
+    pub fn into_album_ref(&self) -> AlbumRef {
+        AlbumRef {
+            provider: self.provider,
+            url: Some(self.url.clone()),
+            title: Some(self.title.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct UserRecord {
     pub lang: Lang,

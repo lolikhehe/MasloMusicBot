@@ -34,8 +34,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality, source and tags\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість, джерело і теги\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality, source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість, джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)",
     );
     if is_admin {
         format!(
@@ -353,6 +353,41 @@ pub fn album_empty(lang: Lang) -> &'static str {
         "This album or playlist has no downloadable tracks.",
         "У цьому альбомі або плейлисті немає треків для завантаження.",
     )
+}
+
+pub fn album_search_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: /alb &lt;album name&gt;\nExample: /alb Master of Puppets",
+        "Використання: /alb &lt;назва альбому&gt;\nПриклад: /alb Master of Puppets",
+    )
+}
+
+pub fn album_searching(lang: Lang) -> &'static str {
+    pick(lang, "🔎 Searching albums…", "🔎 Шукаю альбоми…")
+}
+
+pub fn album_search_results(lang: Lang, query: &str) -> String {
+    match lang {
+        Lang::En => format!("<b>Albums for</b> «{query}»\nPick one:"),
+        Lang::Uk => format!("<b>Альбоми за запитом</b> «{query}»\nОбери альбом:"),
+    }
+}
+
+pub fn no_albums_found(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "No albums found. Try a different artist or album title.",
+        "Альбоми не знайдені. Спробуй уточнити артиста або назву.",
+    )
+}
+
+/// Short count suffix for album candidate buttons.
+pub fn album_tracks_count(lang: Lang, count: u32) -> String {
+    match lang {
+        Lang::En => format!(" · {count} tracks"),
+        Lang::Uk => format!(" · {count} треків"),
+    }
 }
 
 pub fn stats(lang: Lang, stats: &Stats, uptime: &str) -> String {

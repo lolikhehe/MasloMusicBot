@@ -2,7 +2,7 @@
 
 use crate::rate_limit::RateLimiter;
 use common::config::Config;
-use common::domain::{Album, TrackRequest};
+use common::domain::{Album, AlbumRef, TrackRequest};
 use downloader::DownloadManager;
 use moka::future::Cache;
 use std::sync::Arc;
@@ -18,6 +18,9 @@ pub struct AppState {
     /// Album/playlist selections awaiting the user's confirmation
     /// (spec: collections require a confirmation step before downloading).
     pub album_selections: Cache<String, Album>,
+    /// Album candidates from `/alb <name>`; the user picks one, which becomes
+    /// an `AlbumRef` resolved through the regular collection confirmation flow.
+    pub album_ref_selections: Cache<String, AlbumRef>,
     pub limiter: Arc<RateLimiter>,
     /// Separate, much looser limiter for inline queries: Telegram emits one
     /// query per keystroke, so the regular budget is exhausted almost
@@ -58,6 +61,10 @@ impl AppState {
             .max_capacity(1_000)
             .time_to_live(Duration::from_secs(30 * 60))
             .build();
+        let album_ref_selections = Cache::builder()
+            .max_capacity(1_000)
+            .time_to_live(Duration::from_secs(30 * 60))
+            .build();
         let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
         let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
         let inline_generations = Cache::builder()
@@ -74,6 +81,7 @@ impl AppState {
             manager,
             selections,
             album_selections,
+            album_ref_selections,
             limiter,
             inline_limiter,
             bot_username,

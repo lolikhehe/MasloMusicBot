@@ -1,7 +1,9 @@
 //! Inline keyboard callbacks: search choices and per-user settings.
 
 use crate::bot::commands::settings_keyboard;
-use crate::bot::handlers::{deliver_album, deliver_track, edit_html, error_text, escape_html};
+use crate::bot::handlers::{
+    ask_album_confirmation, deliver_album, deliver_track, edit_html, error_text, escape_html,
+};
 use crate::state::AppState;
 use common::error::HandlerResult;
 use common::i18n;
@@ -42,6 +44,8 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             user.hq_cover,
         )
         .await?;
+    } else if let Some(id) = data.strip_prefix("alq:") {
+        handle_album_pick(&state, &bot, &query, id, user.lang).await?;
     } else if let Some(id) = data.strip_prefix("alc:") {
         handle_album_confirm(
             &state,
@@ -235,6 +239,37 @@ async fn handle_selection(
         }
     }
     Ok(())
+}
+
+/// User picked one of the `/alb` album candidates; resolve it through the
+/// regular collection pipeline (the candidate list message is edited in
+/// place into the confirmation keyboard).
+async fn handle_album_pick(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    selection_id: &str,
+    lang: common::domain::Lang,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    let chat = message.chat.id;
+    let message_id = message.id;
+
+    let Some(album_ref) = state.album_ref_selections.get(selection_id).await else {
+        let _ = edit_html(bot, chat, message_id, i18n::selection_expired(lang)).await;
+        return Ok(());
+    };
+    state.album_ref_selections.invalidate(selection_id).await;
+    info!(
+        selection_id,
+        provider = %album_ref.provider,
+        "album candidate picked; resolving"
+    );
+    let _ = edit_html(bot, chat, message_id, i18n::album_loading(lang)).await;
+    ask_album_confirmation(state, bot, chat, message_id, lang, &album_ref).await
 }
 
 /// User confirmed a collection: start downloading it with limited parallelism.

@@ -196,6 +196,20 @@ Directives:
   fallback only finds copies that catalogs themselves serve openly (SoundCloud
   artist uploads, official Topic channels, etc.).
 
+## /alb: album search by name (2026-11-16)
+
+`/alb <name>` searches public album catalogs in parallel — Deezer
+(`api.deezer.com/search/album`) and Apple Music (iTunes Search API,
+`entity=album`) — both anonymous, no keys, metadata only. Candidates are merged
+(Deezer first), deduplicated by normalized `artist|title`, capped at 6, and
+cached in memory for 10 min. The user picks one from an inline keyboard
+(`alq:<id>`), which resolves through the same path as an album link
+(`resolve_album`) and asks for confirmation before downloading any tracks —
+collections never download silently. Audio still comes from the usual open
+sources; Spotify remains unsupported (no anonymous API). Private chats only,
+per-message rate limiting applies like for any command. Failures on one catalog
+do not sink the other; both failing surfaces an error instead of "not found".
+
 ## /settings: HQ cover toggle (2026-11-16)
 
 Albums/playlists were already supported (YouTube Music / YouTube playlist / SoundCloud

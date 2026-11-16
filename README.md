@@ -42,6 +42,7 @@ not be editable into messages.
 | `/start` | everyone | Disclaimer and quick intro |
 | `/help` | everyone | How to use the bot |
 | `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px) |
+| `/alb <name>` | everyone | Find an album by name (Deezer + Apple Music catalogs) and download it track by track |
 | `/stats` | admins | Tracks cached, users seen, uptime |
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |
@@ -53,6 +54,9 @@ In a private chat:
 - Send an album/playlist link — the bot first asks with an inline keyboard
   ("Download all N tracks? ✅/✖", cap `MAX_COLLECTION_TRACKS`, default 25) and then downloads
   with 2–3 parallel tasks, editing one progress message at most once per 2 s
+- Or search by name: `/alb <album name>` — candidates from Deezer + Apple Music are shown
+  as a keyboard ("Artist — Title · N tracks · source"), picking one leads to the same
+  confirmation flow; metadata only, audio still resolves via the usual sources
 - Tap a search result to download
 
 In any chat, `@your_bot Artist — Title` offers candidates inline; picking one posts the audio in that
