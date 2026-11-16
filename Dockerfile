@@ -23,14 +23,22 @@ FROM debian:bookworm-slim
 
 ARG YTDLP_VERSION=2026.10.26
 ARG YTDLP_SHA256=767ba9dce7052aa196f8b12652f433d76de128ba168966fa84b6394d5e6c6795
+ARG DENO_VERSION=2.9.8
+ARG DENO_SHA256=e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg tini \
+ && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg tini unzip \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" \
       -o /usr/local/bin/yt-dlp \
  && echo "${YTDLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c - \
  && chmod 755 /usr/local/bin/yt-dlp \
+ && curl -fSL "https://github.com/denoland/deno/releases/download/v${DENO_VERSION}/deno-x86_64-unknown-linux-gnu.zip" \
+      -o /tmp/deno.zip \
+ && echo "${DENO_SHA256}  /tmp/deno.zip" | sha256sum -c - \
+ && unzip /tmp/deno.zip -d /usr/local/bin \
+ && chmod 755 /usr/local/bin/deno \
+ && rm /tmp/deno.zip \
  && useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin bot
 
 WORKDIR /app
@@ -42,6 +50,8 @@ ENV DATABASE_URL=sqlite:///data/bot.db \
     TMPDIR=/data/tmp \
     YTDLP_PATH=/usr/local/bin/yt-dlp \
     FFMPEG_PATH=/usr/bin/ffmpeg \
+    # deno's cache must live on the writable volume: the container root fs is read-only
+    DENO_DIR=/data/tmp/deno \
     METRICS_ADDR=0.0.0.0:9090 \
     LOG_LEVEL=info
 

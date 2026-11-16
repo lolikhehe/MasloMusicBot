@@ -57,3 +57,10 @@ S1/S2/S3/S4 remain **NOT MEASURED** end-to-end until the operator (or user) exer
 real sources post-fix; re-check `/metrics` exports then and update the table above. Honest framing:
 the database is demonstrably sub-millisecond; network-to-Telegram upload dominates wall-clock and is
 the number to watch.
+
+## Addendum (2026-11-16, post-deno)
+
+Cold-path yt-dlp download verified inside the container after the deno fix (same flags as the
+downloader: `-f bestaudio[ext=m4a]/bestaudio -N 4 --no-playlist --ignore-config`): fetched a
+19 s YouTube test clip as a valid M4A with no EJS warning. End-to-end via Telegram still
+awaits operator traffic; S2 remains NOT MEASURED until then.

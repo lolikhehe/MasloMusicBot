@@ -14,6 +14,9 @@ services:
       # to a temp dir; the filesystem must allow mmap/exec. The /tmp tmpfs
       # mount is noexec, so Python's tempdir must point at the ext4 volume.
       TMPDIR: /data/tmp
+      # deno (yt-dlp's JS runtime for YouTube EJS challenges) caches compiled
+      # scripts; the root fs is read-only, so keep the cache on the volume.
+      DENO_DIR: /data/tmp/deno
       METRICS_ADDR: 0.0.0.0:9090
       # TELEGRAM_API_URL is read from .env. Unset => cloud API.
       # For local bot-api set TELEGRAM_API_URL=http://bot-api:8081/ in .env.

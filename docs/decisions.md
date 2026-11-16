@@ -131,3 +131,22 @@ it was still transferring the context. Image build now runs in seconds.
 Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded ~0.46 s avg
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
+
+## Ops (2026-11-16): deno pinned as yt-dlp JS runtime (EJS)
+
+Symptom: yt-dlp 2026.10.26 warns `No supported JavaScript runtime could be found`; YouTube
+extraction without a JS runtime is deprecated and formats may go missing.
+
+Fix:
+- `Dockerfile`: pinned `deno` v2.9.8 (`deno-x86_64-unknown-linux-gnu.zip`, sha256-verified,
+  same pattern as yt-dlp) into `/usr/local/bin`. `unzip` added to the apt install line.
+- `DENO_DIR=/data/tmp/deno` in `Dockerfile` and `docker-compose.yml`: deno caches compiled
+  scripts; the container root fs is `read_only`, so the cache must live on the `bot-data`
+  volume. It is NOT swept by the temp janitor (only `track-*` directories are), so the
+  cache persists across downloads.
+- yt-dlp discovers deno in PATH by default (no `--js-runtimes` flag needed).
+
+Confirmed: image rebuilt, container recreated healthy, bot reconnected to Telegram,
+`yt-dlp --skip-download` on a YouTube URL now prints the title with no EJS warning, and a
+full `bestaudio[ext=m4a]/bestaudio` download inside the container succeeds (valid M4A,
+`DENO_DIR` cache created on the volume).
