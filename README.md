@@ -118,6 +118,18 @@ Hub image; verified 2026-11-16). The entrypoint maps `TELEGRAM_API_ID`/`TELEGRAM
 
 4. Health is visible via `/metrics` on port 9090 — the `/healthz` endpoint confirms the process and SQLite.
 
+   From now on always start both with the profile:
+
+   ```sh
+   docker compose --profile local up -d
+   ```
+
+   Without `--profile local` the `bot-api` service stays stopped, and the bot
+   (which reads `TELEGRAM_API_URL` from `.env`) waits for `bot-api:8081`, logs a
+   warning and exits — a restart loop until the profile is used again. To go
+   back to the cloud API, remove the three `TELEGRAM_API_*` lines from `.env`
+   and run `docker compose up -d --force-recreate bot`.
+
 If you skip all this, `docker compose up -d` runs the bot against the public API and everything works
 except uploads larger than 50 MB.
 
