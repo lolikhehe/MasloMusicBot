@@ -45,7 +45,7 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             .await?;
         return Ok(());
     }
-    if !state.limiter.allow(user_id).await {
+    if !state.inline_limiter.allow(user_id).await {
         bot.answer_inline_query(query.id.clone(), Vec::new())
             .await?;
         return Ok(());

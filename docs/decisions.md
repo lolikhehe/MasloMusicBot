@@ -132,6 +132,15 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Inline rate budget (2026-11-16)
+
+After `answerInlineQuery` stopped using a shared server cache (correct, but it
+removes Telegram's shield), every keystroke reached the bot and the regular
+per-user limiter (10/min) was exhausted in seconds — inline then answered with
+an empty result list ("інлайн пошук ліг"). Fix: a dedicated, much looser
+inline limiter (`RATE_LIMIT_INLINE_PER_MIN`, default 120, 0 = unlimited) used
+only by inline handlers; the download/callback budget is unchanged.
+
 ## Alternative-source fallback chain (2026-11-16)
 
 Cold downloads now iterate open catalogs on "this catalog can't serve it" failures:

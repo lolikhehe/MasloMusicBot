@@ -24,6 +24,8 @@ pub struct Config {
     /// Per-user cap on concurrently active downloads (spec: e.g. 2).
     pub max_active_downloads_per_user: usize,
     pub rate_limit_per_min: u32,
+    /// Inline queries fire once per keystroke; a separate (looser) budget.
+    pub rate_limit_inline_per_min: u32,
     pub max_concurrent_downloads: usize,
     pub admins: HashSet<i64>,
     pub default_lang: Lang,
@@ -139,6 +141,7 @@ impl Config {
             max_collection_tracks,
             max_active_downloads_per_user,
             rate_limit_per_min: env_parse("RATE_LIMIT_PER_MIN", 10u32)?,
+            rate_limit_inline_per_min: env_parse("RATE_LIMIT_INLINE_PER_MIN", 120u32)?,
             max_concurrent_downloads,
             admins,
             storage_chat_id,

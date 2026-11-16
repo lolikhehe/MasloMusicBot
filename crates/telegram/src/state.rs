@@ -19,6 +19,10 @@ pub struct AppState {
     /// (spec: collections require a confirmation step before downloading).
     pub album_selections: Cache<String, Album>,
     pub limiter: Arc<RateLimiter>,
+    /// Separate, much looser limiter for inline queries: Telegram emits one
+    /// query per keystroke, so the regular budget is exhausted almost
+    /// instantly while the user is typing. Default 120/min.
+    pub inline_limiter: Arc<RateLimiter>,
     pub bot_username: String,
     pub started_at: Instant,
     /// Per-user generation counter for inline queries; a new query cancels the
@@ -43,6 +47,7 @@ impl AppState {
             .time_to_live(Duration::from_secs(30 * 60))
             .build();
         let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
+        let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
         let inline_generations = Cache::builder()
             .max_capacity(10_000)
             .time_to_idle(Duration::from_secs(600))
@@ -54,6 +59,7 @@ impl AppState {
             selections,
             album_selections,
             limiter,
+            inline_limiter,
             bot_username,
             started_at: Instant::now(),
             inline_generations,

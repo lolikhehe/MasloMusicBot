@@ -66,7 +66,7 @@ All settings come from environment variables (see `.env.example`). Highlights:
 - `SEARCH_PROVIDERS` — `youtube,soundcloud,deezer` (anonymous search allowed for the bot; restrict e.g. to `youtube` to pin old behavior). Order is irrelevant; per-user choice wins. Search is two-tier cached (moka L1 + SQLite `search_cache` L2) keyed per source, and inline results carry no new file uploads.
 - `MAX_DURATION_SECS` (default 1200), `MAX_FILE_MB` (default 100, up to 2000)
 - `MAX_COLLECTION_TRACKS` (default 25), `MAX_ACTIVE_DOWNLOADS_PER_USER` (default 2)
-- `RATE_LIMIT_PER_MIN` (default 10), `MAX_CONCURRENT_DOWNLOADS` (default 4)
+- `RATE_LIMIT_PER_MIN` (default 10) — user request budget, `RATE_LIMIT_INLINE_PER_MIN` (default 120) — inline queries (one per keystroke), `MAX_CONCURRENT_DOWNLOADS` (default 4)
 - `METRICS_ADDR` — serves `/metrics` and `/healthz` (Prometheus format; empty or `off` disables)
 - `STORAGE_CHAT_ID` — optional chat used to cache inline `file_id`s (see below)
 - `DEFAULT_LANG` — `en` (default) or `uk`; without it, new users inherit Telegram `language_code`
