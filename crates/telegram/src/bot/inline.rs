@@ -102,8 +102,13 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             .map(|meta| meta.display_title())
             .unwrap_or_else(|| "Audio".to_owned());
 
-        // Cached tracks answer instantly with the stored file_id.
-        if let Some(cached) = state.manager.get_cached(&request.key, user.quality).await? {
+        // Cached tracks answer instantly with the stored file_id — unless the
+        // user opted into the album/genre tags caption, because CachedAudio
+        // results can't carry a caption; those answers go out as an article so
+        // the file_id edit shows the caption.
+        if let Some(cached) = state.manager.get_cached(&request.key, user.quality).await?
+            && !user.tags_enabled
+        {
             let audio = InlineQueryResultCachedAudio::new(
                 selection_id.clone(),
                 FileId(cached.file_id.clone()),
@@ -220,7 +225,9 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         let Some(inline_message_id) = result.inline_message_id.clone() else {
             return Ok(());
         };
-        let caption = tags_caption(&cached.meta, user.tags_enabled);
+        let mut caption_meta = cached.meta.clone();
+        enrich_tags(&state, &mut caption_meta, user.tags_enabled).await;
+        let caption = tags_caption(&caption_meta, user.tags_enabled);
         match bot
             .edit_message_media_inline(inline_message_id, cached_media(&cached, caption))
             .await

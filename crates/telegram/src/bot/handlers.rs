@@ -379,7 +379,11 @@ async fn try_cache_send(
     let Some(cached) = state.manager.get_cached(key, quality).await? else {
         return Ok(false);
     };
-    let caption = tags_caption(&cached.meta, tags_enabled);
+    // Legacy cache entries (and sources with no genre info) may lack genres;
+    // fill it on demand when the user opted into the tags caption.
+    let mut caption_meta = cached.meta.clone();
+    enrich_tags(state, &mut caption_meta, tags_enabled).await;
+    let caption = tags_caption(&caption_meta, tags_enabled);
     match send::send_cached(bot, chat, &cached, caption).await {
         Ok(_) => {
             state.manager.touch_cached(key, quality).await;

@@ -132,6 +132,21 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Album/genre tags: cold vs cached sends (2026-11-16)
+
+- Cached inline answers are served by Telegram from the `file_id` with no bot
+  involvement and carry **no caption** — so with the tags toggle on, inline
+  results are now answered as Articles (not CachedAudio) and the placeholder is
+  edited to the audio with the tags caption on pick. Cost: one fast file_id edit
+  instead of native streaming.
+- Cache-hit sends (PM, album flow, inline edit path) now enrich legacy cache
+  entries on demand when tags are on and the cached meta has no genres: one
+  public iTunes call on the caption path only (genres persisted on cold sends
+  in `tracks.genres`; rows written before the feature have `[]` and are filled
+  lazily).
+- Note: live cache rows live in `/data/bot.db-wal` (WAL, 2+ MB) — backup/copy of
+  `bot.db` alone shows a stale empty snapshot; always copy `bot.db*` together.
+
 ## Inline search personalization fix + tags feature (2026-11-16)
 
 - `answerInlineQuery` was sent with `cache_time=30` and `is_personal=false`, so Telegram
