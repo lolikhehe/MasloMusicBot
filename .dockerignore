@@ -9,3 +9,5 @@ data/
 .env.example
 docs/
 *.md
+# Exception: compiled into the binary as the user-facing changelog.
+!PATCH_NOTES.md

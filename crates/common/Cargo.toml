@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+html-escape.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 serde.workspace = true

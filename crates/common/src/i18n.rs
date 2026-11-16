@@ -443,6 +443,20 @@ pub fn stats(lang: Lang, stats: &Stats, uptime: &str) -> String {
     }
 }
 
+/// Short release-notes PM sent once per version at startup.
+/// `notes` is plain text from PATCH_NOTES.md and is escaped here before HTML.
+pub fn update_notice(lang: Lang, notes: &str) -> String {
+    let notes = html_escape::encode_text(notes.trim());
+    match lang {
+        Lang::En => {
+            format!("🆕 <b>Bot update</b>\n\n{notes}\n\n💬 Developer channel: @maslougazIA")
+        }
+        Lang::Uk => {
+            format!("🆕 <b>Оновлення бота</b>\n\n{notes}\n\n💬 Канал розробника: @maslougazIA")
+        }
+    }
+}
+
 pub fn purge_ok(lang: Lang, key: &str) -> String {
     match lang {
         Lang::En => format!("🗑 Purged <code>{key}</code> from cache."),

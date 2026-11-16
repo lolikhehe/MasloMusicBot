@@ -6,6 +6,7 @@ use crate::state::AppState;
 use common::domain::{Lang, TrackKey, TrackMeta, TrackRequest};
 use common::error::{AppError, DownloadError, HandlerResult};
 use common::i18n;
+use common::version::DEV_CHANNEL_LINE;
 use downloader::PreparedAudio;
 use providers::{ParsedInput, parse_input};
 use std::time::Instant;
@@ -478,13 +479,27 @@ pub async fn enrich_tags(state: &AppState, meta: &mut TrackMeta, tags_enabled: b
     }
 }
 
-/// Caption for a sent track (`/settings` tags toggle); language neutral.
+/// Caption for a sent track. The developer-channel line always goes out (that
+/// is the point — every track carries it); the optional album/genre tags sit
+/// above it. Telegram caps audio captions at 1024 characters, so long tags are
+/// trimmed and a little room is left for the FLAC-fallback note.
 pub fn tags_caption(meta: &TrackMeta, tags_enabled: bool) -> Option<String> {
-    if tags_enabled {
-        meta.tags_caption()
+    const MAX_CAPTION_CHARS: usize = 1024;
+    const RESERVED_FOR_NOTES: usize = 80;
+    let body = if tags_enabled {
+        meta.tags_caption().unwrap_or_default()
     } else {
-        None
+        String::new()
+    };
+    if body.is_empty() {
+        return Some(DEV_CHANNEL_LINE.to_owned());
     }
+    let max_body =
+        MAX_CAPTION_CHARS.saturating_sub(DEV_CHANNEL_LINE.chars().count() + 1 + RESERVED_FOR_NOTES);
+    let mut caption: String = body.chars().take(max_body).collect();
+    caption.push('\n');
+    caption.push_str(DEV_CHANNEL_LINE);
+    Some(caption)
 }
 
 /// Serve a cache entry if possible. A stale `file_id` is purged so the caller
@@ -641,4 +656,43 @@ pub fn truncate(value: &str, max: usize) -> String {
         result.push(ch);
     }
     result
+}
+
+#[cfg(test)]
+mod caption_tests {
+    use super::tags_caption;
+    use common::domain::TrackMeta;
+    use common::version::DEV_CHANNEL_LINE;
+
+    #[test]
+    fn every_track_caption_carries_the_developer_channel() {
+        let bare = TrackMeta::default();
+        assert_eq!(
+            tags_caption(&bare, false).as_deref(),
+            Some(DEV_CHANNEL_LINE)
+        );
+
+        let tagged = TrackMeta {
+            album: Some("Album".to_owned()),
+            genres: vec!["Rock".to_owned()],
+            ..Default::default()
+        };
+        let caption = tags_caption(&tagged, true).expect("caption");
+        assert!(caption.contains("Album"), "tags must be kept: {caption}");
+        assert!(
+            caption.contains(DEV_CHANNEL_LINE),
+            "channel missing: {caption}"
+        );
+    }
+
+    #[test]
+    fn caption_stays_within_telegram_audio_limit() {
+        let meta = TrackMeta {
+            album: Some("x".repeat(2000)),
+            ..Default::default()
+        };
+        let caption = tags_caption(&meta, true).expect("caption");
+        assert!(caption.chars().count() <= 1024);
+        assert!(caption.ends_with(DEV_CHANNEL_LINE));
+    }
 }

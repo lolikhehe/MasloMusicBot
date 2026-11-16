@@ -56,6 +56,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(bot_username = %bot_username, "connected to Telegram");
 
     let state = AppState::new(config.clone(), db, manager, bot_username);
+    // Best-effort, once per version: never block startup if Telegram refuses a PM.
+    if let Err(error) = telegram::bot::announce::announce_update(&bot, &state).await {
+        tracing::warn!(%error, "could not broadcast update notice");
+    }
     telegram::bot::run(bot, state).await
 }
 

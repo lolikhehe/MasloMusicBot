@@ -1,5 +1,22 @@
 # Decisions & known limitations
 
+## Release notices & developer channel (2026-11-16, v1.1.0)
+
+`common::version::VERSION` + root `PATCH_NOTES.md` are the single source of
+release identity. Bump both in the same commit as any user-visible change.
+On startup (after `getMe`, before the dispatcher) `bot::announce::announce_update`
+compares VERSION with `meta.announced_version` (new table, migration 0006); on a
+change it PMs the escaped changelog to every non-banned user from `users`, with
+an 80 ms gap between sends, then records the version. Restarts with the same
+build are silent; a blocked/unreachable user is logged and skipped, not fatal.
+
+Every delivered track caption now ends with `канал розробника - @maslougazIA`
+(`DEV_CHANNEL_LINE`). `tags_caption()` always returns `Some`, including cached
+sends and inline `editMessageMedia`; the body is trimmed to fit Telegram's 1024
+character audio-caption limit with room reserved for the FLAC-fallback note.
+Inline `CachedAudio` results still cannot carry captions (Telegram limitation),
+so those results remain article answers.
+
 ## Spec truncation (original) — now resolved
 
 The Markdown spec at `C:\Users\pylyp\Downloads\Telegram-бот для завантаження музики на Rust технічне завдання для агента.md`

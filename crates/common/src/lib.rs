@@ -4,5 +4,6 @@ pub mod error;
 pub mod i18n;
 pub mod metrics;
 pub mod shutdown;
+pub mod version;
 
 pub use error::{AppError, AppResult};

@@ -1,5 +1,6 @@
 //! Telegram layer.
 
+pub mod announce;
 pub mod callbacks;
 pub mod commands;
 pub mod handlers;

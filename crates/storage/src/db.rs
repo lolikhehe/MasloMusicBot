@@ -17,6 +17,7 @@ const SCHEMA: &str = include_str!("../../../migrations/0001_init.sql");
 const MIGRATION_0002: &str = include_str!("../../../migrations/0002_user_search_source.sql");
 const MIGRATION_0004: &str = include_str!("../../../migrations/0004_lastfm.sql");
 const MIGRATION_0005: &str = include_str!("../../../migrations/0005_hq_cover.sql");
+const MIGRATION_0006: &str = include_str!("../../../migrations/0006_meta.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -120,6 +121,11 @@ impl Db {
                 .await
                 .map_err(db_err)?;
         }
+        // 0006: key/value store for the once-per-version update notice.
+        sqlx::raw_sql(MIGRATION_0006)
+            .execute(&pool)
+            .await
+            .map_err(db_err)?;
 
         // Drop expired L2 search cache rows; they are cheap to recompute.
         let now = unix_now();
@@ -423,6 +429,47 @@ impl Db {
             .map_err(db_err)?;
         Ok(result.rows_affected() > 0)
     }
+
+    /// Recipients of the release notice: everyone who has used the bot and is
+    /// not banned, most recently seen first.
+    pub async fn active_user_ids(&self) -> AppResult<Vec<(i64, Lang)>> {
+        let rows = sqlx::query(
+            "SELECT user_id, language FROM users WHERE banned = 0 ORDER BY last_seen_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let lang =
+                    Lang::from_code(row.get::<String, _>("language").as_str()).unwrap_or(Lang::En);
+                (row.get::<i64, _>("user_id"), lang)
+            })
+            .collect())
+    }
+
+    pub async fn get_meta(&self, key: &str) -> AppResult<Option<String>> {
+        let value = sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(value)
+    }
+
+    pub async fn set_meta(&self, key: &str, value: &str) -> AppResult<()> {
+        sqlx::query(
+            "INSERT INTO meta (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
 }
 
 fn unix_now() -> i64 {
@@ -536,5 +583,34 @@ mod tests {
     async fn ping_works() {
         let db = test_db().await;
         assert!(db.ping().await);
+    }
+
+    #[tokio::test]
+    async fn meta_and_announcement_recipients() {
+        let db = test_db().await;
+        assert!(
+            db.get_meta("announced_version")
+                .await
+                .expect("get")
+                .is_none()
+        );
+        db.ensure_user(7, Lang::Uk).await.expect("user 7");
+        db.ensure_user(8, Lang::En).await.expect("user 8");
+        db.set_banned(8, true).await.expect("ban");
+        let recipients = db.active_user_ids().await.expect("recipients");
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients[0].0, 7);
+        assert!(matches!(recipients[0].1, Lang::Uk));
+
+        db.set_meta("announced_version", "1.1.0")
+            .await
+            .expect("set");
+        assert_eq!(
+            db.get_meta("announced_version")
+                .await
+                .expect("get")
+                .as_deref(),
+            Some("1.1.0")
+        );
     }
 }
