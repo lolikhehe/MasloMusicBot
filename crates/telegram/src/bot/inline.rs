@@ -59,31 +59,43 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
     }
 
     let generation = state.bump_inline_generation(user_id).await;
+    let mut generation_rx = state.subscribe_inline_generation(user_id).await;
 
-    let requests: Vec<TrackRequest> = match parse_input(text) {
-        ParsedInput::Track(request) => match state.manager.describe(request).await {
-            Ok(request) => vec![request],
-            Err(error) => {
-                warn!(%error, "inline metadata resolution failed");
-                Vec::new()
-            }
-        },
-        ParsedInput::Search(query) => {
-            match state.manager.search(&query, 10, user.search_source).await {
-                Ok(results) => results
-                    .into_iter()
-                    .map(|result| result.into_request())
-                    .collect(),
+    // If the user keeps typing, the next keystroke wakes this branch and the
+    // in-flight search (a yt-dlp subprocess or an HTTP call) is dropped here
+    // instead of running to completion and being discarded.
+    let requests: Vec<TrackRequest> = tokio::select! {
+        result = async {
+            match parse_input(text) {
+            ParsedInput::Track(request) => match state.manager.describe(request).await {
+                Ok(request) => vec![request],
                 Err(error) => {
-                    warn!(%error, "inline search failed");
+                    warn!(%error, "inline metadata resolution failed");
                     Vec::new()
                 }
+            },
+            ParsedInput::Search(query) => {
+                match state.manager.search(&query, 10, user.search_source).await {
+                    Ok(results) => results
+                        .into_iter()
+                        .map(|result| result.into_request())
+                        .collect(),
+                    Err(error) => {
+                        warn!(%error, "inline search failed");
+                        Vec::new()
+                    }
+                }
             }
-        }
-        ParsedInput::Album(_) => Vec::new(),
-        ParsedInput::Unsupported(reason) => {
-            info!(%reason, "unsupported inline input");
-            Vec::new()
+            ParsedInput::Album(_) => Vec::new(),
+            ParsedInput::Unsupported(reason) => {
+                info!(%reason, "unsupported inline input");
+                Vec::new()
+            }
+            }
+        } => result,
+        _ = generation_rx.changed() => {
+            info!("inline query superseded; dropping in-flight search");
+            return Ok(());
         }
     };
 

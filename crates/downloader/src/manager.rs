@@ -79,9 +79,15 @@ impl DownloadManager {
     }
 
     pub async fn touch_cached(&self, key: &TrackKey, quality: u32) {
-        if let Err(error) = self.db.touch_track(key, quality).await {
-            warn!(%error, key = %key, "could not touch cache entry");
-        }
+        // The reply to the user must not wait for this bookkeeping write:
+        // it can take as long as an SQLite roundtrip takes on a busy disk.
+        let db = self.db.clone();
+        let key = key.clone();
+        tokio::spawn(async move {
+            if let Err(error) = db.touch_track(&key, quality).await {
+                warn!(%error, key = %key, "could not touch cache entry");
+            }
+        });
     }
 
     pub async fn purge(&self, key: &TrackKey) -> AppResult<bool> {
@@ -177,17 +183,27 @@ impl DownloadManager {
     }
 
     /// iTunes tag lookup for the per-user album/genre tags feature; one
-    /// public API call, metadata only. Returns None on any failure so the
-    /// track still sends without tags.
+    /// public API call, metadata only. Bounded to 5 s so a slow API never
+    /// holds the send. Returns None on any failure so the track still
+    /// sends without tags.
     pub async fn itunes_tags(
         &self,
         query: &str,
         duration_secs: Option<u32>,
     ) -> Option<(String, Option<String>)> {
-        match self.external.itunes_tags(query, duration_secs).await {
-            Ok(value) => value,
-            Err(error) => {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            self.external.itunes_tags(query, duration_secs),
+        )
+        .await
+        {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
                 warn!(%error, "iTunes tag lookup failed");
+                None
+            }
+            Err(_) => {
+                warn!("iTunes tag lookup timed out");
                 None
             }
         }
@@ -338,6 +354,21 @@ impl DownloadManager {
                 DownloadError::Internal(format!("cannot create temp directory: {error}"))
             })?;
 
+        // Overlap the cover download+resize with the audio download when the
+        // thumbnail URL is already known (search picks always carry one).
+        let cover_task = request
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.thumbnail_url.clone())
+            .map(|url| {
+                let client = self.cover_client.clone();
+                let ffmpeg = self.config.ffmpeg_path.clone();
+                let dir_path = dir.path().to_owned();
+                tokio::spawn(async move {
+                    audio::prepare_cover(&client, &ffmpeg, Some(&url), &dir_path).await
+                })
+            });
+
         info!(key = %request.key, target = ?request.target, "starting download");
         // Fallback chain: the same track on other openly available catalogs.
         // A bare restricted link with no metadata gives us nothing to search
@@ -389,13 +420,24 @@ impl DownloadManager {
                 actual: u64::from(duration),
             });
         }
-        let cover_path = audio::prepare_cover(
-            &self.cover_client,
-            &self.config.ffmpeg_path,
-            merged_meta.thumbnail_url.as_deref(),
-            dir.path(),
-        )
-        .await;
+        let cover_path = match cover_task {
+            // Never let a stuck cover delay the audio: 8 s is generous for a
+            // sub-10 MB image on any real network.
+            Some(task) => tokio::time::timeout(std::time::Duration::from_secs(8), task)
+                .await
+                .ok()
+                .and_then(|join| join.ok())
+                .flatten(),
+            None => {
+                audio::prepare_cover(
+                    &self.cover_client,
+                    &self.config.ffmpeg_path,
+                    merged_meta.thumbnail_url.as_deref(),
+                    dir.path(),
+                )
+                .await
+            }
+        };
 
         let audio_path = downloaded.audio_path.clone();
         audio::tag_audio(audio_path.clone(), merged_meta.clone(), cover_path.clone()).await;

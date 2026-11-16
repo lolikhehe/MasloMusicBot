@@ -29,6 +29,11 @@ pub struct AppState {
     /// answer of a stale one (Telegram sends `inline_query` on every keystroke).
     /// Bounded and self-expiring so the map can't grow without limit.
     pub inline_generations: Cache<i64, u64>,
+    /// Watch channel per user, fired on every inline generation bump.
+    /// Lets in-flight searches abort instantly when the user keeps typing
+    /// instead of running a yt-dlp subprocess to the end and discarding its
+    /// output.
+    pub inline_generation_tx: Cache<i64, tokio::sync::watch::Sender<u64>>,
 }
 
 impl AppState {
@@ -52,6 +57,10 @@ impl AppState {
             .max_capacity(10_000)
             .time_to_idle(Duration::from_secs(600))
             .build();
+        let inline_generation_tx = Cache::builder()
+            .max_capacity(10_000)
+            .time_to_idle(Duration::from_secs(600))
+            .build();
         Self {
             config,
             db,
@@ -63,6 +72,7 @@ impl AppState {
             bot_username,
             started_at: Instant::now(),
             inline_generations,
+            inline_generation_tx,
         }
     }
 
@@ -72,13 +82,35 @@ impl AppState {
 
     /// Bump the per-user inline generation counter; returns the new value.
     /// Atomic per key (concurrent bumps are serialized) and bounded in size.
+    /// Wakes any in-flight search for this user so it can abort early.
     pub async fn bump_inline_generation(&self, user_id: i64) -> u64 {
         let entry = self
             .inline_generations
             .entry(user_id)
             .and_upsert_with(|old| async move { old.map(|entry| *entry.value()).unwrap_or(0) + 1 })
             .await;
-        *entry.value()
+        let generation = *entry.value();
+        let tx = self
+            .inline_generation_tx
+            .get_with(user_id, async { tokio::sync::watch::channel(generation).0 })
+            .await;
+        let _ = tx.send_replace(generation);
+        generation
+    }
+
+    /// Subscribe to inline_generation bumps for a user (created if missing).
+    pub async fn subscribe_inline_generation(
+        &self,
+        user_id: i64,
+    ) -> tokio::sync::watch::Receiver<u64> {
+        let current = self.inline_generation(user_id).await;
+        self.inline_generation_tx
+            .get_with(
+                user_id,
+                async move { tokio::sync::watch::channel(current).0 },
+            )
+            .await
+            .subscribe()
     }
 
     /// Current generation for the user (0 if unknown).

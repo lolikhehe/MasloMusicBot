@@ -132,6 +132,23 @@ Also: `music_bot_requests_total` was 2 and `music_bot_request_seconds` recorded 
 on the first two user messages (pre-fix, downloads failing fast). Real counter data only appears
 after traffic; `/metrics` renders counters lazily — a fresh container shows none of them.
 
+## Response-time pass (2026-11-16, round 2)
+
+- Inline search/describe now races the in-flight work against a per-user
+  `tokio::sync::watch` generation channel: the moment the user keeps typing,
+  the next keystroke aborts the running yt-dlp/HTTP search instead of letting
+  it finish and discarding its output. Saves ~1-3 s of CPU per stale keystroke.
+- `touch_track` (cache-hit bookkeeping) is spawned fire-and-forget; the user
+  no longer waits for an extra SQLite WRITE before the reply.
+- Cover download+resize now overlaps the audio download when the thumbnail URL
+  is already known (search picks always carry one) instead of running after
+  yt-dlp; capped at 8 s so a stuck cover never delays the send.
+- iTunes genre lookup (tags feature) bounded at 5 s; earlier it could stall a
+  send on a slow API.
+- End-to-end cold-path latency is dominated by yt-dlp's network fetch and
+  Telegram's upload; the above removes the remaining avoidable waits on the
+  bot side. Warm-path remains SQLite (~30 µs) + one Telegram API call.
+
 ## Inline rate budget (2026-11-16)
 
 After `answerInlineQuery` stopped using a shared server cache (correct, but it
