@@ -233,12 +233,7 @@ impl TrackMeta {
         {
             lines.push(format!("💿 {album}"));
         }
-        let tags: Vec<String> = self
-            .genres
-            .iter()
-            .take(8)
-            .filter_map(|genre| genre_hashtag(genre))
-            .collect();
+        let tags = self.hashtags(8);
         if !tags.is_empty() {
             lines.push(tags.join(" "));
         }
@@ -247,6 +242,16 @@ impl TrackMeta {
         } else {
             Some(lines.join("\n"))
         }
+    }
+
+    /// Up to `max` genre hashtags, in source order. Shared by the full tags
+    /// caption and the compact inline caption.
+    pub fn hashtags(&self, max: usize) -> Vec<String> {
+        self.genres
+            .iter()
+            .take(max)
+            .filter_map(|genre| genre_hashtag(genre))
+            .collect()
     }
 }
 
@@ -411,6 +416,8 @@ pub struct UserRecord {
     pub lastfm_user: Option<String>,
     /// Per-user switch for high-quality audio covers (1000px, JPEG q2).
     pub hq_cover: bool,
+    /// Per-user switch for Last.fm scrobble stats (/profile, /collage).
+    pub lastfm_stats: bool,
 }
 
 #[derive(Debug, Clone)]

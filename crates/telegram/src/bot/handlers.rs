@@ -35,6 +35,11 @@ fn entity_url(msg: &Message) -> Option<String> {
 }
 
 pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerResult {
+    // Playlist files: CSV/TXT/JSON exports from Spotify transfer tools.
+    let document = msg.document().cloned();
+    if let Some(document) = document {
+        return crate::bot::import::handle_document(state, bot, msg, &document).await;
+    }
     let Some(text) = msg.text() else {
         return Ok(());
     };
@@ -268,11 +273,24 @@ pub async fn ask_album_confirmation(
         return Ok(());
     }
 
+    confirm_album(state, bot, chat, progress, lang, &album).await
+}
+
+/// Store a resolved collection and ask for confirmation. Shared by album links,
+/// `/alb` picks and imported playlists.
+pub async fn confirm_album(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    progress: MessageId,
+    lang: Lang,
+    album: &common::domain::Album,
+) -> HandlerResult {
     tracing::info!(
         provider = %album.provider,
         source_url = album.source_url.as_deref().unwrap_or("<none>"),
         tracks = album.tracks.len(),
-        "resolved album; awaiting user confirmation"
+        "resolved collection; awaiting user confirmation"
     );
 
     let selection_id = state.new_selection_id();
@@ -471,36 +489,42 @@ pub async fn enrich_tags(state: &AppState, meta: &mut TrackMeta, tags_enabled: b
     if !tags_enabled || meta.genres.len() >= 8 {
         return;
     }
+    let tags = fetch_genres(state, meta).await;
+    merge_genres(meta, tags);
+}
+
+/// Fetch genres only (no mutation) so callers can overlap this HTTP work with
+/// the audio download. Results are cached in memory for 24 hours.
+pub async fn fetch_genres(state: &AppState, meta: &TrackMeta) -> Vec<String> {
     let clean = meta.without_artist_prefix();
     let cache_key = clean.search_query().to_lowercase();
-    let fetched = if let Some(cached) = state.genre_cache.get(&cache_key).await {
-        cached
-    } else {
-        let mut tags: Vec<String> = Vec::new();
-        let artist = clean.performer.as_deref().unwrap_or("");
-        if let Some(lastfm) = &state.lastfm {
-            match lastfm.track_tags(artist, &clean.title).await {
-                Ok(found) => tags = found,
-                Err(error) => debug!(%error, "last.fm genre lookup failed; trying iTunes"),
-            }
+    if let Some(cached) = state.genre_cache.get(&cache_key).await {
+        return cached;
+    }
+    let mut tags: Vec<String> = Vec::new();
+    let artist = clean.performer.as_deref().unwrap_or("");
+    if let Some(lastfm) = &state.lastfm {
+        match lastfm.track_tags(artist, &clean.title).await {
+            Ok(found) => tags = found,
+            Err(error) => debug!(%error, "last.fm genre lookup failed; trying iTunes"),
         }
-        if tags.is_empty() {
-            if let Some((genre, album)) = state
-                .manager
-                .itunes_tags(&clean.search_query(), clean.duration_secs)
-                .await
-            {
-                tags.push(genre);
-                if meta.album.is_none() {
-                    meta.album = album;
-                }
-            }
-        }
-        let tags = clean_genres(tags, 8);
-        state.genre_cache.insert(cache_key, tags.clone()).await;
-        tags
-    };
-    for tag in fetched {
+    }
+    if tags.is_empty()
+        && let Some((genre, _album)) = state
+            .manager
+            .itunes_tags(&clean.search_query(), clean.duration_secs)
+            .await
+    {
+        tags.push(genre);
+    }
+    let tags = clean_genres(tags, 8);
+    state.genre_cache.insert(cache_key, tags.clone()).await;
+    tags
+}
+
+/// Merge fetched genres into a track's metadata, keeping at most 8 unique tags.
+pub fn merge_genres(meta: &mut TrackMeta, tags: Vec<String>) {
+    for tag in tags {
         if !meta
             .genres
             .iter()
@@ -586,6 +610,23 @@ pub async fn deliver_track(
 
     metrics::counter!("music_bot_downloads_total").increment(1);
     let download_started = Instant::now();
+    // Genre lookups are HTTP requests too; start them against the metadata we
+    // already have from search so they overlap the (usually slower) audio
+    // download instead of adding latency after it.
+    let genre_task = if tags_enabled
+        && request
+            .meta
+            .as_ref()
+            .is_some_and(|meta| meta.genres.len() < 8)
+    {
+        let state = state.clone();
+        let seed = request.meta.clone().unwrap_or_default();
+        Some(tokio::spawn(
+            async move { fetch_genres(&state, &seed).await },
+        ))
+    } else {
+        None
+    };
     let (prepared, flac_fell_back) =
         match prepare_with_flac_fallback(state, &request, quality, user_id, hq_cover).await {
             Ok(value) => value,
@@ -596,7 +637,13 @@ pub async fn deliver_track(
             }
         };
     let mut prepared = prepared;
-    enrich_tags(state, &mut prepared.meta, tags_enabled).await;
+    match genre_task {
+        Some(task) => match task.await {
+            Ok(tags) => merge_genres(&mut prepared.meta, tags),
+            Err(error) => warn!(%error, "parallel genre lookup failed"),
+        },
+        None => enrich_tags(state, &mut prepared.meta, tags_enabled).await,
+    }
     metrics::histogram!("music_bot_download_seconds")
         .record(download_started.elapsed().as_secs_f64());
 

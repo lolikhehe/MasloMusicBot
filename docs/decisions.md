@@ -1,5 +1,31 @@
 # Decisions & known limitations
 
+## v2.0.0 — compact inline, stats, collages, playlist import (2026-11-17)
+
+- Inline: teloxide's `InlineQueryResultCachedAudio` DOES support `caption`
+  (verified in teloxide-core 0.13), so cached results now carry the compact
+  caption directly — no article + `editMessageMedia` round trip, which also
+  removes a class of `MESSAGE_ID_INVALID` failures and saves requests. Format:
+  artist in parentheses, up to 8 genre hashtags, `@bot | maslougazIA`.
+- Network: no new on-disk caches (operator chose none). Instead genre lookups
+  are fetched concurrently with the audio download using the metadata already
+  known from search (`fetch_genres` / `merge_genres`), and the in-memory 24 h
+  genre cache prevents repeat HTTP calls. yt-dlp already uses `-N 4` concurrent
+  fragments; that was left unchanged.
+- Spotify playlists are NOT fetched through Spotify (track lists require API
+  credentials). `/import` accepts the outputs of transfer tools instead:
+  `Artist – Title` lines, Spotify privacy-export CSV, or TuneMyMusic/Soundiiz
+  JSON. Each row is matched through the normal public search providers, one at
+  a time (gentle on the network), capped at 60, then delivered through the
+  existing collection confirmation flow.
+- Last.fm stats: optional `users.lastfm_stats` toggle (migration 0007) and a
+  public nickname from `/lastfm`. `/profile` uses `user.getInfo` +
+  `user.getTopTracks`; Last.fm returns tag counts as strings, handled by a
+  custom deserializer. Verified endpoints live for tracks/albums/artists.
+- Collages: new `collage` crate renders PNGs with pure Rust (`image` +
+  `ab_glyph`) and an embedded DejaVuSans font, so no ImageMagick/system font
+  dependency. Grid 3x3..10x10, each cell shows rank, name/artist and playcount.
+
 ## Release notices & developer channel (2026-11-16, v1.1.0)
 
 `common::version::VERSION` + root `PATCH_NOTES.md` are the single source of

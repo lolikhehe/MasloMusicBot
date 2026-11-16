@@ -24,6 +24,12 @@ pub enum Command {
     /// `/alb <name>` — search public album catalogs (Deezer / Apple Music) and
     /// download the chosen album track by track.
     AlbumSearch(Option<String>),
+    /// `/profile` / `/lastfmstats [period]` — Last.fm scrobble summary.
+    Profile(Option<String>),
+    /// `/collage <tracks|albums|artists> [NxN] [period]` — PNG chart.
+    Collage(Option<String>),
+    /// `/import <playlist text>` or an uploaded CSV/TXT/JSON document.
+    Import(Option<String>),
     Unknown(String),
 }
 
@@ -51,6 +57,9 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "stats" => Command::Stats,
         "lastfm" => Command::LastFm((!args.is_empty()).then_some(args)),
         "alb" => Command::AlbumSearch((!args.is_empty()).then_some(args)),
+        "profile" | "lastfmstats" => Command::Profile((!args.is_empty()).then_some(args)),
+        "collage" => Command::Collage((!args.is_empty()).then_some(args)),
+        "import" => Command::Import((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
         "purge" => Command::Purge((!args.is_empty()).then_some(args)),
@@ -65,6 +74,7 @@ pub fn settings_keyboard(
     search_source: Provider,
     tags_enabled: bool,
     hq_cover: bool,
+    lastfm_stats: bool,
 ) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = [128u32, 192, 256, 320]
         .chunks(2)
@@ -121,6 +131,14 @@ pub fn settings_keyboard(
         ),
         format!("s:hq:{}", u8::from(!hq_cover)),
     )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{}{}",
+            if lastfm_stats { "✓ " } else { "" },
+            i18n::lastfm_stats_label(lang)
+        ),
+        format!("s:lstats:{}", u8::from(!lastfm_stats)),
+    )]);
     rows.push(
         [Lang::En, Lang::Uk]
             .into_iter()
@@ -175,6 +193,7 @@ pub async fn handle_command(
                 user_record.tags_enabled,
                 user_record.lastfm_user.as_deref(),
                 user_record.hq_cover,
+                user_record.lastfm_stats,
             );
             if !state
                 .config
@@ -192,6 +211,7 @@ pub async fn handle_command(
                     user_record.search_source,
                     user_record.tags_enabled,
                     user_record.hq_cover,
+                    user_record.lastfm_stats,
                 ))
                 .await?;
         }
@@ -281,6 +301,28 @@ pub async fn handle_command(
                     }
                 }
             }
+        }
+        Command::Profile(period) => {
+            if !msg.chat.is_private() {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            crate::bot::stats::handle_profile(state, bot, msg, period.as_deref(), lang).await?;
+        }
+        Command::Collage(args) => {
+            if !msg.chat.is_private() {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            crate::bot::stats::handle_collage(state, bot, msg, args.as_deref(), lang).await?;
+        }
+        Command::Import(content) => {
+            if !msg.chat.is_private() {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            crate::bot::import::handle_import_args(state, bot, msg, content.as_deref(), lang)
+                .await?;
         }
         Command::AlbumSearch(query) => {
             if !msg.chat.is_private() {

@@ -102,6 +102,27 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 .text(i18n::settings_saved(user.lang))
                 .await;
         }
+    } else if let Some(value) = data.strip_prefix("s:lstats:") {
+        if let Some(enabled) = parse_bool(value) {
+            state.db.set_lastfm_stats(user_id, enabled).await?;
+            let user = state.db.ensure_user(user_id, preferred).await?;
+            refresh_settings(
+                &state,
+                &bot,
+                &query,
+                user.lang,
+                user.quality,
+                user.search_source,
+                user.tags_enabled,
+                user.lastfm_user.as_deref(),
+                user.hq_cover,
+            )
+            .await?;
+            let _ = bot
+                .answer_callback_query(query.id.clone())
+                .text(i18n::settings_saved(user.lang))
+                .await;
+        }
     } else if let Some(value) = data.strip_prefix("s:q:") {
         if let Ok(quality) = value.parse::<u32>() {
             state.db.set_quality(user_id, quality).await?;
@@ -163,6 +184,22 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                 .answer_callback_query(query.id.clone())
                 .text(i18n::settings_saved(lang))
                 .await;
+        }
+    } else if let Some(payload) = data.strip_prefix("lf:c:") {
+        let parts: Vec<&str> = payload.split(':').collect();
+        if parts.len() == 3
+            && let (Some(kind), Some(period), Ok(grid)) = (
+                providers::lastfm::StatsKind::parse(parts[0]),
+                providers::lastfm::StatsPeriod::parse(parts[2]),
+                parts[1].parse::<u8>(),
+            )
+            && (3..=10).contains(&grid)
+        {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            crate::bot::stats::handle_collage_callback(&state, &bot, &query, kind, grid, period)
+                .await?;
+        } else {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
         }
     } else {
         let _ = bot.answer_callback_query(query.id.clone()).await;
@@ -353,6 +390,7 @@ async fn refresh_settings(
     let Some(message) = query.regular_message() else {
         return Ok(());
     };
+    let current = state.db.ensure_user(query.from.id.0 as i64, lang).await?;
     let mut body = i18n::settings_title(
         lang,
         quality,
@@ -361,6 +399,7 @@ async fn refresh_settings(
         tags_enabled,
         lastfm_user,
         hq_cover,
+        current.lastfm_stats,
     );
     if !state.config.search_providers.contains(&search_source) {
         body.push_str("\n\n");
@@ -374,6 +413,7 @@ async fn refresh_settings(
             search_source,
             tags_enabled,
             hq_cover,
+            current.lastfm_stats,
         ))
         .await?;
     Ok(())

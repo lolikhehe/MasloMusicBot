@@ -10,10 +10,12 @@ description = "Telegram music downloader bot on Rust (teloxide + yt-dlp)"
 license = "MIT"
 
 [workspace.dependencies]
+ab_glyph = "0.2"
 anyhow = "1"
 dotenvy = "0.15"
 futures = "0.3"
 html-escape = "0.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
 lofty = "0.25"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
@@ -46,6 +48,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 
+collage = { path = "crates/collage" }
 common = { path = "crates/common" }
 storage = { path = "crates/storage" }
 providers = { path = "crates/providers" }

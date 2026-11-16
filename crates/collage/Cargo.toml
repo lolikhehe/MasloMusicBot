@@ -1,0 +1,14 @@
+[package]
+name = "collage"
+description = "Pure-Rust PNG collages for Last.fm scrobble charts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+ab_glyph.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

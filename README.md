@@ -43,6 +43,9 @@ not be editable into messages.
 | `/help` | everyone | How to use the bot |
 | `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps, or **FLAC** lossless), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px) |
 | `/alb <name>` | everyone | Find an album by name (Deezer + Apple Music catalogs) and download it track by track |
+| `/import` / playlist file | everyone | Import a playlist from Spotify/TuneMyMusic/Soundiiz exports (CSV/TXT/JSON) or pasted `Artist – Title` lines |
+| `/profile` / `/lastfmstats [period]` | everyone | Last.fm scrobble stats (enable **Last.fm stats** in `/settings` and connect `/lastfm <nick>`) |
+| `/collage <tracks\|albums\|artists> [3x3..10x10] [period]` | everyone | PNG collage of your most played tracks/albums/artists with playcounts |
 | `/stats` | admins | Tracks cached, users seen, uptime |
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |

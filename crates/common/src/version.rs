@@ -6,7 +6,7 @@
 //! version — a restart with the same build never spams anyone twice.
 
 /// Current release. Bump on every deploy users should hear about.
-pub const VERSION: &str = "1.2.0";
+pub const VERSION: &str = "2.0.0";
 
 /// Plain-text changelog shown to users when VERSION changes. Escaped to HTML
 /// before sending; kept at the repo root so releases are easy to edit.
@@ -14,6 +14,8 @@ pub const PATCH_NOTES: &str = include_str!("../../../PATCH_NOTES.md");
 
 /// Appended to the caption of every delivered track.
 pub const DEV_CHANNEL_LINE: &str = "канал розробника - @maslougazIA";
+/// Short handle for compact inline captions: `@bot | channel`.
+pub const DEV_CHANNEL_HANDLE: &str = "maslougazIA";
 
 #[cfg(test)]
 mod tests {

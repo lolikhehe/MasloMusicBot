@@ -4,8 +4,10 @@ pub mod announce;
 pub mod callbacks;
 pub mod commands;
 pub mod handlers;
+pub mod import;
 pub mod inline;
 pub mod send;
+pub mod stats;
 
 use crate::state::AppState;
 use common::error::HandlerResult;

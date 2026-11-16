@@ -2,6 +2,7 @@
 
 use crate::domain::{Lang, Provider, Stats};
 use crate::error::DownloadError;
+use crate::version::DEV_CHANNEL_HANDLE;
 
 fn pick(lang: Lang, en: &'static str, uk: &'static str) -> &'static str {
     match lang {
@@ -34,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage <tracks|albums|artists> [3x3..10x10] [period] — PNG chart of your most played items",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage <tracks|albums|artists> [3x3..10x10] [період] — PNG-колаж найбільш прослуханих",
     );
     if is_admin {
         format!(
@@ -54,6 +55,7 @@ pub fn settings_title(
     tags_enabled: bool,
     lastfm_user: Option<&str>,
     hq_cover: bool,
+    lastfm_stats: bool,
 ) -> String {
     let title = pick(lang, "<b>Settings</b>", "<b>Налаштування</b>");
     let q = pick(lang, "Quality", "Якість");
@@ -77,9 +79,15 @@ pub fn settings_title(
         pick(lang, "off", "вимк.")
     };
     let hql = pick(lang, "HQ cover (1000px)", "Обкладинка HQ (1000px)");
+    let stats_state = if lastfm_stats {
+        pick(lang, "on", "увімк.")
+    } else {
+        pick(lang, "off", "вимк.")
+    };
+    let sl = pick(lang, "Last.fm stats", "Статистика Last.fm");
     let q_display = quality_display(lang, quality);
     format!(
-        "{title}\n\n{q}: <b>{q_display}</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>\n{hql}: <b>{hq}</b>",
+        "{title}\n\n{q}: <b>{q_display}</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>\n{hql}: <b>{hq}</b>\n{sl}: <b>{stats_state}</b>",
         language_name(language),
         search_source.display_name(),
         state
@@ -88,6 +96,14 @@ pub fn settings_title(
 
 pub fn tags_label(lang: Lang) -> &'static str {
     pick(lang, "🏷 Tags: album + genre", "🏷 Теги: альбом і жанри")
+}
+
+pub fn lastfm_stats_label(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "📊 Last.fm stats + collages",
+        "📊 Статистика Last.fm + колажі",
+    )
 }
 
 pub fn lastfm_disabled(lang: Lang) -> &'static str {
@@ -533,6 +549,145 @@ pub fn sent_to_private(lang: Lang) -> &'static str {
 
 pub fn preparing_inline(lang: Lang) -> &'static str {
     pick(lang, "⏳ Preparing the track…", "⏳ Готую трек…")
+}
+
+pub fn import_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Send /import followed by a playlist (Artist – Title lines), or upload a CSV/TXT/JSON playlist file from Spotify export, TuneMyMusic or Soundiiz.",
+        "Надішли /import і список треків («Виконавець – Назва»), або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz.",
+    )
+}
+
+pub fn import_progress(lang: Lang, count: usize) -> String {
+    match lang {
+        Lang::En => format!("🔎 Matching {count} imported tracks…"),
+        Lang::Uk => format!("🔎 Шукаю {count} імпортованих треків…"),
+    }
+}
+
+pub fn import_no_tracks(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "No tracks found in that playlist.",
+        "У цьому плейлисті не знайдено треків.",
+    )
+}
+
+pub fn import_too_many(lang: Lang, max: usize) -> String {
+    match lang {
+        Lang::En => format!("Too many tracks; import at most {max} at a time."),
+        Lang::Uk => format!("Занадто багато треків; імпортуй не більше {max} за раз."),
+    }
+}
+
+pub fn import_failed(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Could not read that playlist file.",
+        "Не вдалося прочитати файл плейлиста.",
+    )
+}
+
+pub fn lastfm_stats_disabled(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "📊 Enable Last.fm stats in /settings first.",
+        "📊 Спочатку увімкни статистику Last.fm у /settings.",
+    )
+}
+
+pub fn lastfm_not_connected(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Connect your public Last.fm nickname with /lastfm <nick> first.",
+        "Підключи публічний нік Last.fm через /lastfm <нік>.",
+    )
+}
+
+pub fn profile_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: /profile [7d|1m|3m|6m|1y|all]",
+        "Використання: /profile [7d|1m|3m|6m|1y|all]",
+    )
+}
+
+pub fn collage_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: /collage <tracks|albums|artists> [3x3..10x10] [7d|1m|3m|6m|1y|all]",
+        "Використання: /collage <tracks|albums|artists> [3x3..10x10] [7d|1m|3m|6m|1y|all]",
+    )
+}
+
+pub fn profile_summary(
+    lang: Lang,
+    name: &str,
+    playcount: u64,
+    tracks: u64,
+    albums: u64,
+    artists: u64,
+    country: Option<&str>,
+    period_label: &str,
+    top_lines: &[String],
+) -> String {
+    let name = html_escape::encode_text(name);
+    let period = html_escape::encode_text(period_label);
+    let mut body = match lang {
+        Lang::En => format!(
+            "📊 <b>Last.fm: {name}</b>\nPeriod: <b>{period}</b>\nScrobbles: <b>{playcount}</b>\nLibrary: {tracks} tracks · {albums} albums · {artists} artists"
+        ),
+        Lang::Uk => format!(
+            "📊 <b>Last.fm: {name}</b>\nПеріод: <b>{period}</b>\nПрослуховувань: <b>{playcount}</b>\nБібліотека: {tracks} треків · {albums} альбомів · {artists} виконавців"
+        ),
+    };
+    if let Some(country) = country.filter(|value| !value.is_empty()) {
+        let country = html_escape::encode_text(country);
+        let line = match lang {
+            Lang::En => format!("\nCountry: {country}"),
+            Lang::Uk => format!("\nКраїна: {country}"),
+        };
+        body.push_str(&line);
+    }
+    if !top_lines.is_empty() {
+        body.push_str(match lang {
+            Lang::En => "\n\n<b>Top tracks:</b>",
+            Lang::Uk => "\n\n<b>Топ треків:</b>",
+        });
+        for line in top_lines {
+            body.push_str("\n• ");
+            body.push_str(line);
+        }
+    }
+    body
+}
+
+pub fn collage_generating(lang: Lang) -> &'static str {
+    pick(lang, "🎨 Generating collage…", "🎨 Generating колаж…")
+}
+
+pub fn collage_failed(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Could not build the collage (Last.fm returned no data).",
+        "Не вдалося створити колаж (Last.fm повернув порожні дані).",
+    )
+}
+
+/// Compact caption for inline-delivered audio. Telegram already renders the
+/// track title above the audio, so only the source/artist in parentheses,
+/// genre hashtags and the bot/channel signature go in the caption.
+pub fn inline_caption(performer: Option<&str>, hashtags: &[String], bot_username: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    if let Some(name) = performer.map(str::trim).filter(|name| !name.is_empty()) {
+        lines.push(format!("({name})"));
+    }
+    if !hashtags.is_empty() {
+        lines.push(hashtags.join(" "));
+    }
+    lines.push(format!("@{bot_username} | {DEV_CHANNEL_HANDLE}"));
+    lines.join("\n")
 }
 
 pub fn downloading_track(lang: Lang, track: &str) -> String {

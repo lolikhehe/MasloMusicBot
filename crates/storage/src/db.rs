@@ -18,6 +18,7 @@ const MIGRATION_0002: &str = include_str!("../../../migrations/0002_user_search_
 const MIGRATION_0004: &str = include_str!("../../../migrations/0004_lastfm.sql");
 const MIGRATION_0005: &str = include_str!("../../../migrations/0005_hq_cover.sql");
 const MIGRATION_0006: &str = include_str!("../../../migrations/0006_meta.sql");
+const MIGRATION_0007: &str = include_str!("../../../migrations/0007_lastfm_stats.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -126,6 +127,18 @@ impl Db {
             .execute(&pool)
             .await
             .map_err(db_err)?;
+        let has_lastfm_stats: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'lastfm_stats'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(db_err)?;
+        if has_lastfm_stats == 0 {
+            sqlx::raw_sql(MIGRATION_0007)
+                .execute(&pool)
+                .await
+                .map_err(db_err)?;
+        }
 
         // Drop expired L2 search cache rows; they are cheap to recompute.
         let now = unix_now();
@@ -324,7 +337,7 @@ impl Db {
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user, hq_cover",
+             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user, hq_cover, lastfm_stats",
         )
         .bind(id)
         .bind(fallback.code())
@@ -345,6 +358,7 @@ impl Db {
             tags_enabled: row.get::<i64, _>("tags_enabled") != 0,
             lastfm_user: row.get::<Option<String>, _>("lastfm_user"),
             hq_cover: row.get::<i64, _>("hq_cover") != 0,
+            lastfm_stats: row.get::<i64, _>("lastfm_stats") != 0,
         })
     }
 
@@ -400,6 +414,17 @@ impl Db {
 
     pub async fn set_hq_cover(&self, id: i64, enabled: bool) -> AppResult<()> {
         sqlx::query("UPDATE users SET hq_cover = ?, last_seen_at = ? WHERE user_id = ?")
+            .bind(i64::from(enabled))
+            .bind(unix_now())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn set_lastfm_stats(&self, id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query("UPDATE users SET lastfm_stats = ?, last_seen_at = ? WHERE user_id = ?")
             .bind(i64::from(enabled))
             .bind(unix_now())
             .bind(id)

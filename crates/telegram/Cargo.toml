@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+collage.workspace = true
 common.workspace = true
 downloader.workspace = true
 html-escape.workspace = true
@@ -16,6 +17,7 @@ moka.workspace = true
 providers.workspace = true
 reqwest.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 storage.workspace = true
 teloxide.workspace = true
 tokio.workspace = true

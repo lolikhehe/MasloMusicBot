@@ -16,12 +16,13 @@
 //! answer of a stale query is silently dropped (generation counter).
 
 use crate::bot::handlers::{
-    caption_with_flac_fallback, deliver_track, enrich_tags, prepare_with_flac_fallback,
-    tags_caption, truncate,
+    caption_with_flac_fallback, deliver_track, enrich_tags, prepare_with_flac_fallback, truncate,
 };
 use crate::bot::send;
 use crate::state::AppState;
-use common::domain::{CachedTrack, DownloadTarget, Lang, Provider, TrackKey, TrackRequest};
+use common::domain::{
+    CachedTrack, DownloadTarget, Lang, Provider, TrackKey, TrackMeta, TrackRequest,
+};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::{ParsedInput, parse_input};
@@ -100,17 +101,15 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             .map(|meta| meta.display_title())
             .unwrap_or_else(|| "Audio".to_owned());
 
-        // Cached tracks answer instantly with the stored file_id — unless the
-        // user opted into the album/genre tags caption, because CachedAudio
-        // results can't carry a caption; those answers go out as an article so
-        // the file_id edit shows the caption.
-        if let Some(cached) = state.manager.get_cached(&request.key, user.quality).await?
-            && !user.tags_enabled
-        {
+        // Cached tracks answer instantly with the stored file_id. teloxide's
+        // CachedAudio does support a caption, so the compact signature goes out
+        // here too — no article + editMessageMedia round trip needed.
+        if let Some(cached) = state.manager.get_cached(&request.key, user.quality).await? {
             let audio = InlineQueryResultCachedAudio::new(
                 selection_id.clone(),
                 FileId(cached.file_id.clone()),
-            );
+            )
+            .caption(compact_caption(&state, request.meta.as_ref()));
             state.selections.insert(selection_id, request).await;
             results.push(InlineQueryResult::CachedAudio(audio));
             continue;
@@ -175,6 +174,19 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
     Ok(())
 }
 
+/// Telegram shows the audio title itself; keep the caption to a few short
+/// lines so inline results stay compact even with many genre tags.
+fn compact_caption(state: &AppState, meta: Option<&TrackMeta>) -> String {
+    match meta {
+        Some(meta) => i18n::inline_caption(
+            meta.performer.as_deref(),
+            &meta.hashtags(8),
+            &state.bot_username,
+        ),
+        None => i18n::inline_caption(None, &[], &state.bot_username),
+    }
+}
+
 fn inline_keyboard(state: &AppState, lang: Lang) -> InlineKeyboardMarkup {
     let url = if state.bot_username.is_empty() {
         reqwest::Url::parse("https://t.me").expect("static Telegram URL is valid")
@@ -226,9 +238,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         let Some(inline_message_id) = result.inline_message_id.clone() else {
             return Ok(());
         };
-        let mut caption_meta = cached.meta.clone();
-        enrich_tags(&state, &mut caption_meta, user.tags_enabled).await;
-        let caption = tags_caption(&caption_meta, user.tags_enabled);
+        let caption = Some(compact_caption(&state, Some(&cached.meta)));
         match bot
             .edit_message_media_inline(inline_message_id, cached_media(&cached, caption))
             .await
@@ -286,7 +296,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     .into_iter()
     .flatten();
     let caption = caption_with_flac_fallback(
-        tags_caption(&prepared.meta, user.tags_enabled),
+        Some(compact_caption(&state, Some(&prepared.meta))),
         flac_fell_back,
     );
     let mut minted: Option<(String, String)> = None;

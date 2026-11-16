@@ -6,9 +6,111 @@
 //! Disabled entirely when LASTFM_API_KEY is not set (no key in the URL, the
 //! API refuses every call, so nothing is fetched at all).
 
-use common::domain::TrackMeta;
+use common::domain::{Lang, TrackMeta};
 use common::error::DownloadError;
 use serde::Deserialize;
+
+/// Period accepted by Last.fm chart endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsPeriod {
+    Week,
+    Month,
+    ThreeMonths,
+    SixMonths,
+    Year,
+    Overall,
+}
+
+impl StatsPeriod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Week => "7day",
+            Self::Month => "1month",
+            Self::ThreeMonths => "3month",
+            Self::SixMonths => "6month",
+            Self::Year => "12month",
+            Self::Overall => "overall",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "7day" | "week" | "7d" => Some(Self::Week),
+            "1month" | "month" | "1m" => Some(Self::Month),
+            "3month" | "3m" => Some(Self::ThreeMonths),
+            "6month" | "6m" => Some(Self::SixMonths),
+            "12month" | "year" | "1y" | "overall" => Some(Self::Year),
+            "all" => Some(Self::Overall),
+            _ => None,
+        }
+    }
+
+    pub fn label(self, lang: Lang) -> &'static str {
+        match (self, lang) {
+            (Self::Week, Lang::En) => "7 days",
+            (Self::Week, Lang::Uk) => "7 днів",
+            (Self::Month, Lang::En) => "1 month",
+            (Self::Month, Lang::Uk) => "1 місяць",
+            (Self::ThreeMonths, Lang::En) => "3 months",
+            (Self::ThreeMonths, Lang::Uk) => "3 місяці",
+            (Self::SixMonths, Lang::En) => "6 months",
+            (Self::SixMonths, Lang::Uk) => "6 місяців",
+            (Self::Year, Lang::En) => "12 months",
+            (Self::Year, Lang::Uk) => "12 місяців",
+            (Self::Overall, Lang::En) => "all time",
+            (Self::Overall, Lang::Uk) => "весь час",
+        }
+    }
+}
+
+/// Which chart to fetch for a Last.fm profile / collage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsKind {
+    Tracks,
+    Albums,
+    Artists,
+}
+
+impl StatsKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tracks => "tracks",
+            Self::Albums => "albums",
+            Self::Artists => "artists",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "track" | "tracks" | "trek" | "треки" | "т" => Some(Self::Tracks),
+            "album" | "albums" | "альбом" | "альбоми" | "а" => Some(Self::Albums),
+            "artist" | "artists" | "виконавець" | "виконавці" | "в" => {
+                Some(Self::Artists)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// One row of a Last.fm chart. `secondary` is the artist for tracks/albums.
+#[derive(Debug, Clone)]
+pub struct ScrobbleItem {
+    pub name: String,
+    pub secondary: Option<String>,
+    pub playcount: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfileSummary {
+    pub name: String,
+    pub playcount: u64,
+    pub tracks: u64,
+    pub albums: u64,
+    pub artists: u64,
+    pub country: Option<String>,
+}
+
+const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 
 #[derive(Clone)]
 pub struct LastFmClient {
@@ -141,6 +243,124 @@ impl LastFmClient {
             .map_err(map_reqwest)?;
         Ok(top.toptags.map(TagList::into_names).unwrap_or_default())
     }
+
+    /// Public profile totals: scrobbles, library size and country.
+    pub async fn profile(&self, user: &str) -> Result<ProfileSummary, DownloadError> {
+        let body: UserInfoResponse = self
+            .client
+            .get(API_URL)
+            .query(&[
+                ("method", "user.getInfo"),
+                ("user", user),
+                ("api_key", &self.api_key),
+                ("format", "json"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        let info = body
+            .user
+            .ok_or_else(|| DownloadError::SourceUnavailable("Last.fm user not found".to_owned()))?;
+        Ok(ProfileSummary {
+            name: info.name,
+            playcount: u64::from(info.playcount.unwrap_or(0)),
+            tracks: u64::from(info.track_count.unwrap_or(0)),
+            albums: u64::from(info.album_count.unwrap_or(0)),
+            artists: u64::from(info.artist_count.unwrap_or(0)),
+            country: info.country.filter(|value| !value.is_empty()),
+        })
+    }
+
+    /// Top tracks / albums / artists for a user in the given period, ordered by
+    /// playcount as returned by Last.fm. `limit` is clamped to 100.
+    pub async fn top_items(
+        &self,
+        user: &str,
+        period: StatsPeriod,
+        kind: StatsKind,
+        limit: usize,
+    ) -> Result<Vec<ScrobbleItem>, DownloadError> {
+        let method = match kind {
+            StatsKind::Tracks => "user.getTopTracks",
+            StatsKind::Albums => "user.getTopAlbums",
+            StatsKind::Artists => "user.getTopArtists",
+        };
+        let limit = limit.clamp(1, 100).to_string();
+        let response = self
+            .client
+            .get(API_URL)
+            .query(&[
+                ("method", method),
+                ("user", user),
+                ("period", period.as_str()),
+                ("limit", limit.as_str()),
+                ("api_key", &self.api_key),
+                ("format", "json"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json::<serde_json::Value>()
+            .await
+            .map_err(map_reqwest)?;
+        let root_key = match kind {
+            StatsKind::Tracks => "toptracks",
+            StatsKind::Albums => "topalbums",
+            StatsKind::Artists => "topartists",
+        };
+        let row_key = match kind {
+            StatsKind::Tracks => "track",
+            StatsKind::Albums => "album",
+            StatsKind::Artists => "artist",
+        };
+        let mut items: Vec<ScrobbleItem> = response
+            .get(root_key)
+            .and_then(|page| page.get(row_key))
+            .and_then(|rows| rows.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|row| {
+                let name = row.get("name")?.as_str()?.trim().to_owned();
+                if name.is_empty() {
+                    return None;
+                }
+                let secondary = row
+                    .get("artist")
+                    .and_then(|artist| {
+                        artist
+                            .get("name")
+                            .and_then(|name| name.as_str())
+                            .or_else(|| artist.as_str())
+                    })
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned);
+                let playcount = row
+                    .get("playcount")
+                    .and_then(|value| {
+                        value
+                            .as_str()
+                            .and_then(|text| text.parse::<u64>().ok())
+                            .or_else(|| value.as_u64())
+                    })
+                    .unwrap_or(0);
+                Some(ScrobbleItem {
+                    name,
+                    secondary,
+                    playcount,
+                })
+            })
+            .collect();
+        items.sort_by(|left, right| right.playcount.cmp(&left.playcount));
+        Ok(items)
+    }
 }
 
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
@@ -165,6 +385,40 @@ where
         Some(OneOrMany::Many(values)) => values,
         None => Vec::new(),
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct UserInfoResponse {
+    #[serde(default)]
+    user: Option<UserInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserInfo {
+    #[serde(default)]
+    name: String,
+    #[serde(default, deserialize_with = "optional_number_string")]
+    playcount: Option<u32>,
+    #[serde(
+        default,
+        rename = "track_count",
+        deserialize_with = "optional_number_string"
+    )]
+    track_count: Option<u32>,
+    #[serde(
+        default,
+        rename = "album_count",
+        deserialize_with = "optional_number_string"
+    )]
+    album_count: Option<u32>,
+    #[serde(
+        default,
+        rename = "artist_count",
+        deserialize_with = "optional_number_string"
+    )]
+    artist_count: Option<u32>,
+    #[serde(default)]
+    country: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
