@@ -6,6 +6,7 @@ use crate::state::AppState;
 use common::domain::{Lang, TrackKey, TrackMeta, TrackRequest};
 use common::error::{AppError, DownloadError, HandlerResult};
 use common::i18n;
+use downloader::PreparedAudio;
 use providers::{ParsedInput, parse_input};
 use std::time::Instant;
 use teloxide::prelude::*;
@@ -409,6 +410,55 @@ pub async fn deliver_album(
     Ok(())
 }
 
+/// Note appended to the caption when a FLAC render exceeded Telegram's size
+/// limit and the track was re-sent as m4a 320 kbps. Language-neutral on
+/// purpose (same style as the tags caption).
+const FLAC_FALLBACK_NOTE: &str = "⚠ FLAC exceeded Telegram's 50 MB limit — sent as 320 kbps";
+
+/// Download with one automatic downgrade: if quality 0 (FLAC) produces a file
+/// above Telegram's 50 MB ceiling, retry once as 320 kbps and report it, so
+/// the user always gets audio (and knows what they got). Returns the prepared
+/// audio and whether the fallback happened.
+pub async fn prepare_with_flac_fallback(
+    state: &AppState,
+    request: &TrackRequest,
+    quality: u32,
+    user_id: i64,
+    hq_cover: bool,
+) -> Result<(PreparedAudio, bool), DownloadError> {
+    match state
+        .manager
+        .prepare(request.clone(), quality, user_id, hq_cover)
+        .await
+    {
+        Ok(prepared) => Ok((prepared, false)),
+        Err(error)
+            if quality == 0 && matches!(error, common::error::DownloadError::TooLarge { .. }) =>
+        {
+            warn!(
+                key = %request.key,
+                "FLAC render too large for Telegram; resending as 320 kbps"
+            );
+            metrics::counter!("music_bot_flac_fallback_total").increment(1);
+            let prepared = state
+                .manager
+                .prepare(request.clone(), 320, user_id, hq_cover)
+                .await?;
+            Ok((prepared, true))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Append the FLAC-fallback note to an optional tags caption.
+pub fn caption_with_flac_fallback(caption: Option<String>, fell_back: bool) -> Option<String> {
+    match (fell_back, caption) {
+        (false, caption) => caption,
+        (true, Some(caption)) => Some(format!("{caption}\n{FLAC_FALLBACK_NOTE}")),
+        (true, None) => Some(FLAC_FALLBACK_NOTE.to_owned()),
+    }
+}
+
 /// Best-effort genre/album enrichment when the user opted into tags and the
 /// source had no genres: one public iTunes Search API call for metadata
 /// only; failures are silent so the track still sends without tags.
@@ -488,18 +538,15 @@ pub async fn deliver_track(
 
     metrics::counter!("music_bot_downloads_total").increment(1);
     let download_started = Instant::now();
-    let prepared = match state
-        .manager
-        .prepare(request.clone(), quality, user_id, hq_cover)
-        .await
-    {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            metrics::counter!("music_bot_download_errors_total").increment(1);
-            warn!(key = %request.key, %error, "track preparation failed");
-            return Err(error.into());
-        }
-    };
+    let (prepared, flac_fell_back) =
+        match prepare_with_flac_fallback(state, &request, quality, user_id, hq_cover).await {
+            Ok(value) => value,
+            Err(error) => {
+                metrics::counter!("music_bot_download_errors_total").increment(1);
+                warn!(key = %request.key, %error, "track preparation failed");
+                return Err(error.into());
+            }
+        };
     let mut prepared = prepared;
     enrich_tags(state, &mut prepared.meta, tags_enabled).await;
     metrics::histogram!("music_bot_download_seconds")
@@ -511,7 +558,8 @@ pub async fn deliver_track(
     }
 
     metrics::counter!("music_bot_uploads_total").increment(1);
-    let caption = tags_caption(&prepared.meta, tags_enabled);
+    let caption =
+        caption_with_flac_fallback(tags_caption(&prepared.meta, tags_enabled), flac_fell_back);
     let upload_started = Instant::now();
     let message = match send::send_prepared(bot, chat, &prepared, caption).await {
         Ok(message) => message,
@@ -529,6 +577,8 @@ pub async fn deliver_track(
         .await
         .ok()
         .map(|meta| meta.len() as i64);
+    // Cache under the quality that was actually sent (FLAC fallback sends 320).
+    let sent_quality = if flac_fell_back { 320 } else { quality };
     if let Err(error) = state
         .manager
         .record(
@@ -536,7 +586,7 @@ pub async fn deliver_track(
             &prepared.meta,
             file_id,
             file_unique_id,
-            quality,
+            sent_quality,
             size_bytes,
         )
         .await

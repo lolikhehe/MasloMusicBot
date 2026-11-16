@@ -233,7 +233,10 @@ extension from the produced file, so .flac files keep .flac names. Cache key is
 YouTube never serves true lossless, so for most YouTube downloads this is a
 format choice (decode best source → FLAC, no generational re-encode quality
 settings), not hi-res; Bandcamp/SoundCloud may genuinely benefit. FLAC files
-run ~3–4× the m4a size, capped by MAX_FILE_MB (default 100 MB).
+run ~3–4× the m4a size. Telegram's hosted Bot API rejects audio uploads above
+50 MB, so `MAX_FILE_MB` is clamped to an effective 49 MB regardless of the env
+value; a FLAC render that still exceeds it auto-downgrades to m4a 320 kbps and
+the caption says so.
 
 ## yt-dlp auto-refresh at container start (experimental branch, 2026-11-16)
 

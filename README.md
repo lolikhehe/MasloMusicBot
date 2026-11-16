@@ -70,7 +70,7 @@ All settings come from environment variables (see `.env.example`). Highlights:
 - `ENABLED_PROVIDERS` — comma-separated, or `all` (`youtube,youtube_music,soundcloud,bandcamp,spotify,apple_music,deezer`)
 - `SEARCH_PROVIDERS` — `youtube,soundcloud,deezer` (anonymous search allowed for the bot; restrict e.g. to `youtube` to pin old behavior). Order is irrelevant; per-user choice wins. Search is two-tier cached (moka L1 + SQLite `search_cache` L2) keyed per source, and inline results carry no new file uploads.
 - `LASTFM_API_KEY` — optional; enables the Last.fm inline "now playing" proposal and `/lastfm`. Users connect with `/lastfm <public nickname>` (never a password; the recent-tracks feed is public). With no key set, inline empty query stays empty and `/lastfm` reports it is not configured.
-- `MAX_DURATION_SECS` (default 1200), `MAX_FILE_MB` (default 100, up to 2000)
+- `MAX_DURATION_SECS` (default 1200), `MAX_FILE_MB` (default 100 in code, but always clamped to the Telegram Bot API 50 MB upload limit — effective audio ceiling ≈49 MB)
 - `MAX_COLLECTION_TRACKS` (default 25), `MAX_ACTIVE_DOWNLOADS_PER_USER` (default 2)
 - `YTDLP_AUTO_UPDATE` (default `true`) — the container entrypoint downloads the latest yt-dlp into `/data/tmp/bin` on every start and uses it (pinned binary as fallback). Set `false` to keep the pinned build. A long-running container does not update itself; restart it regularly (e.g. weekly) to stay current. See `docs/yt-dlp-alternatives.md` for why there is no maintenance-free YouTube downloader.
 - `RATE_LIMIT_PER_MIN` (default 10) — user request budget, `RATE_LIMIT_INLINE_PER_MIN` (default 120) — inline queries (one per keystroke), `MAX_CONCURRENT_DOWNLOADS` (default 4)

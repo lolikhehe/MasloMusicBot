@@ -8,7 +8,7 @@ These defaults were taken where the spec leaves room, per the agent rule in §13
 | 1 | Public or private bot | **Public**, with per-user limits (`RATE_LIMIT_PER_MIN`, `MAX_ACTIVE_DOWNLOADS_PER_USER`, ban list) | Add an allowlist gate in `handle_message`/`handle_inline` or set `ENABLED_PROVIDERS=` empty to disable downloads |
 | 2 | Platforms in first release | **YouTube, YouTube Music, SoundCloud, Bandcamp** (direct). Spotify/Apple Music/Deezer single tracks via metadata match on YouTube | `ENABLED_PROVIDERS` / `SEARCH_PROVIDERS` env — comma-separated or `all` |
 | 3 | Matchers in first release | **No** (deferred to M5); single external tracks are already matched by title via `ytsearch1:` | Implement duration ±3 s + similarity scoring; record in this file |
-| 4 | Max track duration / file size | **20 min / 100 MB** (`MAX_DURATION_SECS=1200`, `MAX_FILE_MB=100`) | env; `MAX_FILE_MB` caps at 2000 (local Bot API limit) |
+| 4 | Max track duration / file size | **20 min / 49 MB effective** (`MAX_DURATION_SECS=1200`, `MAX_FILE_MB` clamped to Telegram's 50 MB upload limit) | env; `MAX_FILE_MB` is clamped to 49 MB in `max_file_bytes()` — a bigger file simply cannot be uploaded by the hosted Bot API |
 | 5 | Deployment & resources | 2–4 vCPU / 2–4 GB assumed; compose caps `mem_limit: 2g`, `pids_limit: 512`, `read_only` rootfs, `tmpfs /tmp` | adjust compose; tmpfs can be replaced by an SSD volume |
 | 6 | Languages | **Ukrainian + English** (`/settings`), default from Telegram `language_code` | `DEFAULT_LANG=en|uk`; `ru`/`be` clients receive Ukrainian as the closest supported language |
 | 7 | Admin panel beyond commands | **No**; `/stats`, `/ban`, `/unban`, `/purge` only | add commands in `crates/telegram/src/bot/commands.rs` |

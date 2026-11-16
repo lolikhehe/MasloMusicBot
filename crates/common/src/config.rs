@@ -176,7 +176,10 @@ impl Config {
     }
 
     pub fn max_file_bytes(&self) -> u64 {
-        self.max_file_mb.saturating_mul(1_000_000)
+        // Telegram's hosted Bot API rejects uploads above 50 MB, so the env
+        // ceiling (MAX_FILE_MB, default 100) can never be reached by audio.
+        // Clamp to 49 MB — past this, a ready file is undeliverable.
+        self.max_file_mb.saturating_mul(1_000_000).min(49_000_000)
     }
 }
 

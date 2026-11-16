@@ -15,7 +15,10 @@
 //! `inline_query` fires on every keystroke, so results are per-user and the
 //! answer of a stale query is silently dropped (generation counter).
 
-use crate::bot::handlers::{deliver_track, enrich_tags, tags_caption, truncate};
+use crate::bot::handlers::{
+    caption_with_flac_fallback, deliver_track, enrich_tags, prepare_with_flac_fallback,
+    tags_caption, truncate,
+};
 use crate::bot::send;
 use crate::state::AppState;
 use common::domain::{CachedTrack, DownloadTarget, Lang, Provider, TrackKey, TrackRequest};
@@ -243,22 +246,21 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     }
 
     metrics::counter!("music_bot_downloads_total").increment(1);
-    let prepared = match state
-        .manager
-        .prepare(request.clone(), user.quality, user_id, user.hq_cover)
-        .await
-    {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            metrics::counter!("music_bot_download_errors_total").increment(1);
-            if let Some(inline_message_id) = result.inline_message_id.clone() {
-                let _ = bot
-                    .edit_message_text_inline(inline_message_id, i18n::error(lang, &error))
-                    .await;
+    let (prepared, flac_fell_back) =
+        match prepare_with_flac_fallback(&state, &request, user.quality, user_id, user.hq_cover)
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                metrics::counter!("music_bot_download_errors_total").increment(1);
+                if let Some(inline_message_id) = result.inline_message_id.clone() {
+                    let _ = bot
+                        .edit_message_text_inline(inline_message_id, i18n::error(lang, &error))
+                        .await;
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-    };
+        };
 
     let mut prepared = prepared;
     enrich_tags(&state, &mut prepared.meta, user.tags_enabled).await;
@@ -283,7 +285,10 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     ]
     .into_iter()
     .flatten();
-    let caption = tags_caption(&prepared.meta, user.tags_enabled);
+    let caption = caption_with_flac_fallback(
+        tags_caption(&prepared.meta, user.tags_enabled),
+        flac_fell_back,
+    );
     let mut minted: Option<(String, String)> = None;
     for chat in upload_targets {
         match send::send_prepared(&bot, chat, &prepared, caption.clone()).await {
@@ -325,7 +330,8 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
             &prepared.meta,
             file_id.clone(),
             file_unique_id.clone(),
-            user.quality,
+            // Cache what was actually sent (320 m4a after a FLAC size fallback).
+            if flac_fell_back { 320 } else { user.quality },
             size_bytes,
         )
         .await
