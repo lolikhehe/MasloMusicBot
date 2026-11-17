@@ -10,6 +10,9 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # ---------- Build ----------
 FROM chef AS builder
+# Compile-time SQL: the checked query metadata in .sqlx is committed, so the
+# build never needs a live database or DATABASE_URL.
+ENV SQLX_OFFLINE=true
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -47,10 +50,7 @@ COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod 755 /usr/local/bin/docker-entrypoint \
  && mkdir -p /data && chown -R bot:bot /data
 
-# Compile-time SQL: the checked query metadata in .sqlx is committed, so the
-# build never needs a live database.
-ENV SQLX_OFFLINE=true \
-    DATABASE_URL=postgresql://musicbot:devpass@postgres:5432/musicbot \
+ENV DATABASE_URL=postgresql://musicbot:devpass@postgres:5432/musicbot \
     TMP_DIR=/data/tmp \
     TMPDIR=/data/tmp \
     # yt-dlp keeps a small cache; container root fs is read-only, keep it on the volume
