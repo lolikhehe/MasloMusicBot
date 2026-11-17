@@ -1,21 +1,25 @@
-//! Microbenchmark for the cache layer: measures SQLite roundtrips for
-//! `get_track` (the hot path for a cache hit) and `touch_track`.
+//! Microbenchmark for the cache layer: measures Postgres roundtrips for
+//! `get_track` (the hot path for a cache hit), `touch_track` and `ensure_user`.
 //!
 //! This is *only* the database component of S1 from docs/perf.md. It does NOT
 //! measure the Telegram sendAudio roundtrip; that needs live traffic and is
-//! tracked separately.
+//! tracked separately. Run against a throwaway database:
+//!
+//! ```sh
+//! DATABASE_URL=postgresql://musicbot:devpass@127.0.0.1:55432/bench \
+//!   cargo run --release -p storage --example cache_bench
+//! ```
 
-use common::domain::{CachedTrack, Provider, TrackKey, TrackMeta};
+use common::domain::{CachedTrack, Lang, Provider, TrackKey, TrackMeta};
 use std::time::Instant;
 use storage::Db;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = tempfile::tempdir()?;
-    let db = Db::connect(&format!(
-        "sqlite://{}",
-        dir.path().join("bench.db").display()
-    ))
+    let db = Db::connect(
+        &std::env::var("DATABASE_URL")
+            .map_err(|_| "DATABASE_URL must point at a throwaway Postgres database")?,
+    )
     .await?;
 
     const N: usize = 100;
@@ -53,12 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         db.touch_track(&key, 192).await?;
         touch_samples.push(t.elapsed());
 
-        // Every incoming update resolves the user record; measure the hot
-        // path (existing row) rather than the one-time insert.
         let t = Instant::now();
-        let _ = db
-            .ensure_user(i as i64 % 50, common::domain::Lang::En)
-            .await?;
+        let _ = db.ensure_user(i as i64 % 50, Lang::En).await?;
         user_samples.push(t.elapsed());
     }
 

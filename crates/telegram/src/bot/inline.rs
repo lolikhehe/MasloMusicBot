@@ -49,7 +49,7 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             .await?;
         return Ok(());
     }
-    if !state.inline_limiter.allow(user_id) {
+    if !state.inline_limiter.allow(user_id).await? {
         bot.answer_inline_query(query.id.clone(), Vec::new())
             .await?;
         return Ok(());
@@ -110,7 +110,14 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
                 FileId(cached.file_id.clone()),
             )
             .caption(compact_caption(&state, request.meta.as_ref()));
-            state.selections.insert(selection_id, request).await;
+            state
+                .put_selection(
+                    &selection_id,
+                    crate::state::selection::TRACK,
+                    user_id,
+                    &request,
+                )
+                .await?;
             results.push(InlineQueryResult::CachedAudio(audio));
             continue;
         }
@@ -159,7 +166,14 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             article = article.url(source);
         }
         article = article.reply_markup(inline_keyboard(&state, lang));
-        state.selections.insert(selection_id, request).await;
+        state
+            .put_selection(
+                &selection_id,
+                crate::state::selection::TRACK,
+                user_id,
+                &request,
+            )
+            .await?;
         results.push(InlineQueryResult::Article(article));
     }
 
@@ -218,7 +232,13 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         return Ok(());
     }
 
-    let Some(request) = state.selections.get(&result.result_id).await else {
+    let Some(request) = state
+        .get_selection::<common::domain::TrackRequest>(
+            &result.result_id,
+            crate::state::selection::TRACK,
+        )
+        .await?
+    else {
         // Cached results never need a message edit (Telegram streams the file
         // itself), and expired selections simply cannot be resolved anymore.
         if let Some(inline_message_id) = result.inline_message_id.clone() {
@@ -472,7 +492,13 @@ async fn fallback_private(
     {
         warn!(%error, "could not edit inline placeholder to point at private chat");
     }
-    let Some(request) = state.selections.get(&result.result_id).await else {
+    let Ok(Some(request)) = state
+        .get_selection::<common::domain::TrackRequest>(
+            &result.result_id,
+            crate::state::selection::TRACK,
+        )
+        .await
+    else {
         return;
     };
     let chat = ChatId(result.from.id.0 as i64);

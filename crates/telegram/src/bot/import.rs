@@ -327,7 +327,12 @@ async fn process(
         tracks,
         source_url: None,
     };
-    confirm_album(state, bot, msg.chat.id, progress.id, lang, &album).await
+    let user_id = msg
+        .from
+        .as_ref()
+        .map(|user| user.id.0 as i64)
+        .unwrap_or_default();
+    confirm_album(state, bot, msg.chat.id, progress.id, lang, &album, user_id).await
 }
 
 #[cfg(test)]

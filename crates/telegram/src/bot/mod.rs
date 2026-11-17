@@ -14,8 +14,10 @@ use crate::state::AppState;
 use common::error::HandlerResult;
 use common::shutdown;
 use teloxide::dispatching::Dispatcher;
+use teloxide::error_handlers::LoggingErrorHandler;
 use teloxide::prelude::*;
 use teloxide::types::{Update, UpdateKind};
+use teloxide::update_listeners::webhooks::{Options, axum_to_router};
 use tracing::{error, info, warn};
 
 async fn handle_update(bot: Bot, update: Update, state: AppState) -> HandlerResult {
@@ -30,22 +32,67 @@ async fn handle_update(bot: Bot, update: Update, state: AppState) -> HandlerResu
 
 pub async fn run(bot: Bot, state: AppState) -> anyhow::Result<()> {
     let handler = teloxide::dptree::entry().endpoint(handle_update);
-    let mut dispatcher = Dispatcher::builder(bot, handler)
-        .dependencies(teloxide::dptree::deps![state])
-        .build();
-    let shutdown_token = dispatcher.shutdown_token();
-    let mut dispatcher_task = tokio::spawn(async move {
-        dispatcher.dispatch().await;
-    });
+    let dependencies = teloxide::dptree::deps![state.clone()];
 
+    if let Some(url) = state.config.webhook_url.clone() {
+        info!(%url, "starting webhook listener");
+        let mut options = Options::new(state.config.webhook_addr, url)
+            .max_connections(state.config.webhook_max_connections);
+        if let Some(secret) = state.config.webhook_secret.clone() {
+            options = options.secret_token(secret);
+        }
+        let address = state.config.webhook_addr;
+        let path = options.path.clone();
+        let (listener, _stop_future, router) = axum_to_router(bot.clone(), options).await?;
+        let server = tokio::spawn(async move {
+            let tcp = tokio::net::TcpListener::bind(address)
+                .await
+                .expect("webhook bind failed");
+            axum::serve(tcp, router)
+                .await
+                .expect("webhook server failed");
+        });
+        info!(%address, %path, "webhook HTTP server listening");
+
+        let mut dispatcher = Dispatcher::builder(bot, handler)
+            .dependencies(dependencies)
+            .build();
+        let shutdown_token = dispatcher.shutdown_token();
+        let mut dispatcher_task = tokio::spawn(async move {
+            dispatcher
+                .dispatch_with_listener(
+                    listener,
+                    LoggingErrorHandler::with_custom_text("webhook listener error"),
+                )
+                .await;
+        });
+        await_shutdown(shutdown_token, &mut dispatcher_task).await;
+        server.abort();
+    } else {
+        info!("starting polling listener");
+        let mut dispatcher = Dispatcher::builder(bot, handler)
+            .dependencies(dependencies)
+            .build();
+        let shutdown_token = dispatcher.shutdown_token();
+        let mut dispatcher_task = tokio::spawn(async move {
+            dispatcher.dispatch().await;
+        });
+        await_shutdown(shutdown_token, &mut dispatcher_task).await;
+    }
+    Ok(())
+}
+
+async fn await_shutdown(
+    shutdown_token: teloxide::dispatching::ShutdownToken,
+    dispatcher_task: &mut tokio::task::JoinHandle<()>,
+) {
     shutdown::wait_for_shutdown().await;
     info!("shutdown requested");
     match shutdown_token.shutdown() {
         Ok(future) => future.await,
         Err(error) => warn!(%error, "dispatcher was already idle"),
     }
-
-    match tokio::time::timeout(std::time::Duration::from_secs(20), &mut dispatcher_task).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(20), &mut *dispatcher_task).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) if !error.is_cancelled() => error!(%error, "dispatcher task failed"),
         Ok(Err(_)) => {}
@@ -55,5 +102,4 @@ pub async fn run(bot: Bot, state: AppState) -> anyhow::Result<()> {
             let _ = dispatcher_task.await;
         }
     }
-    Ok(())
 }

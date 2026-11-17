@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tracks SET last_used_at = $1, uses = uses + 1\n             WHERE track_key = $2 AND quality = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8ed2f04bd96111ff3f4ddb450caec31f975677d57587019b5559f75d4d454e7f"
+}

@@ -1,6 +1,24 @@
 services:
+  # Shared Postgres. Required by the bot: selections, rate limits and the
+  # search cache live here so several replicas can serve webhook callbacks.
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: musicbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpass}
+      POSTGRES_DB: musicbot
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U musicbot -d musicbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   # Default: bot against the CLOUD Telegram Bot API (TELOXIDE_TOKEN in .env,
-  # no api_id/api_hash needed). `docker compose up -d` is all you need.
+  # no api_id/api_hash needed). Set WEBHOOK_URL in .env to switch from long
+  # polling to webhooks; several replicas can then sit behind a proxy.
   bot:
     build: .
     image: maslomusicbot:latest
@@ -8,7 +26,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: sqlite:///data/bot.db
+      DATABASE_URL: postgresql://musicbot:${POSTGRES_PASSWORD:-devpass}@postgres:5432/musicbot
       TMP_DIR: /data/tmp
       # yt-dlp (PyInstaller onefile) unpacks itself and its shared libraries
       # to a temp dir; the filesystem must allow mmap/exec. The /tmp tmpfs
@@ -18,12 +36,17 @@ services:
       # scripts; the root fs is read-only, so keep the cache on the volume.
       DENO_DIR: /data/tmp/deno
       METRICS_ADDR: 0.0.0.0:9090
+      # WEBHOOK_URL / WEBHOOK_SECRET / WEBHOOK_ADDR come from .env when set.
       # TELEGRAM_API_URL is read from .env. Unset => cloud API.
       # For local bot-api set TELEGRAM_API_URL=http://bot-api:8081/ in .env.
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
       - bot-data:/data
     ports:
       - "9090:9090"
+      - "8080:8080"
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=512m
@@ -63,3 +86,4 @@ services:
 volumes:
   bot-data:
   botapi:
+  pg-data:

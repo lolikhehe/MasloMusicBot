@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+axum.workspace = true
 collage.workspace = true
 common.workspace = true
 downloader.workspace = true

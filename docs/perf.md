@@ -147,3 +147,60 @@ Notes:
   because the 5-minute throttle removes nearly all write transactions from the loop.
 - End-to-end S1–S4 remain **NOT MEASURED** until post-deploy traffic; re-check
   `music_bot_*` histograms and update the scenario table above.
+
+## v2.1 (experimental): Postgres, compile-time SQL, webhooks, /lyrics
+
+Structural changes that affect the measurement story:
+
+- The L2 cache, user rows, `file_id`s and the once-per-version marker now live in
+  Postgres. Static SQL is compile-time checked (`sqlx::query!`, `.sqlx` metadata
+  committed, `SQLX_OFFLINE=true` in Docker/CI); only the data-dependent genre
+  upsert is built at runtime. See `docs/scaling.md`.
+- Selections and rate limits are shared in Postgres, so a webhook callback can
+  be served by any replica and a per-user budget cannot be multiplied by the
+  number of replicas.
+- `/lyrics` calls public LRCLIB / lyrics.ovh APIs with a 512 KB body cap and a
+  24-hour in-memory cache (positive **and** negative results). No text is
+  written to disk.
+
+Local verification (Windows x64, dev Postgres 17 container, `cargo test --workspace`):
+all 8 `storage` tests pass against isolated `#[sqlx::test]` databases; the full
+workspace suite passes. This is a correctness signal, **not** a latency number.
+
+S1–S4 are still **NOT MEASURED** against real Telegram traffic. The e2e/load
+harness under `crates/e2e` runs against mocks and records its own percentiles
+separately; do not copy them into the production table. To measure for real,
+repeat the steps in "How to measure after deploy" above after deploying this
+branch to a staging bot and scraping `/metrics`.
+
+Local mock e2e/load harness (`cargo test -p app --test e2e`,
+`cargo test -p app --test e2e -- --ignored`) — real bot binary, mock Bot API,
+mock LRCLIB/lyrics.ovh, local Postgres 17 container:
+
+| Scenario | Requests | p50 | p95 | p99 |
+|---|---|---|---|---|
+| `/help` burst, all injected at once | 200 | 235.86 ms | 236.15 ms | 236.18 ms |
+
+Database microbenchmark (`cargo run --release -p storage --example cache_bench`,
+1000 iterations against a throwaway local Postgres 17 container, Windows x64,
+`synchronous_commit=off`):
+
+| Operation | avg | p50 | p95 |
+|---|---|---|---|
+| `get_track` | 856.81 µs | 748.00 µs | 1.39 ms |
+| `touch_track` | 853.58 µs | 745.70 µs | 1.39 ms |
+| `ensure_user` | 907.23 µs | 751.70 µs | 1.63 ms |
+
+Honest comparison: the old embedded SQLite build measured ~33–34 µs average for
+`get_track`. A networked Postgres round trip is cheaper than SQLite only when
+many processes share state; a single-process deployment would get *slower*
+database calls. With `synchronous_commit=off` the write paths dropped from
+~4.8 ms / ~1.2 ms to well under 1 ms on this machine. None of these numbers
+are S1, which includes the Telegram send round trip.
+
+These percentiles measure the whole mocked stack under a simultaneous 200-update
+burst (including first-contact Postgres writes for 200 distinct mock users).
+They are **local mock numbers, NOT S1–S4** and must not be compared to the
+production targets. The raw summary is written to `target/e2e-load.json`.
+Other e2e scenarios verify `/help`, `/lyrics` (mock LRCLIB) and a cached-track
+send via mock Telegram `sendAudio`, all against a real running binary.

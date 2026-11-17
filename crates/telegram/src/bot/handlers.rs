@@ -80,7 +80,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
         return Ok(());
     }
 
-    if !state.limiter.allow(user_id) {
+    if !state.limiter.allow(user_id).await? {
         send::send_html(
             &bot,
             msg.chat.id,
@@ -115,7 +115,16 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
             .await
         }
         ParsedInput::Album(album) => {
-            handle_album(&state, &bot, msg.chat.id, lang, user.quality, album).await
+            handle_album(
+                &state,
+                &bot,
+                msg.chat.id,
+                lang,
+                user.quality,
+                album,
+                user_id,
+            )
+            .await
         }
         ParsedInput::Search(query) => {
             let query = query.trim();
@@ -123,7 +132,16 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
                 send::send_html(&bot, msg.chat.id, i18n::no_results(lang)).await?;
                 Ok(())
             } else {
-                handle_search(&state, &bot, msg.chat.id, lang, query, user.search_source).await
+                handle_search(
+                    &state,
+                    &bot,
+                    msg.chat.id,
+                    lang,
+                    query,
+                    user.search_source,
+                    user_id,
+                )
+                .await
             }
         }
         ParsedInput::Unsupported(reason) => {
@@ -204,6 +222,7 @@ async fn handle_search(
     lang: Lang,
     query: &str,
     search_source: common::domain::Provider,
+    user_id: i64,
 ) -> HandlerResult {
     let query: String = query.chars().take(200).collect();
     let progress = send::send_html(bot, chat, i18n::searching(lang)).await?;
@@ -226,9 +245,13 @@ async fn handle_search(
         let title = result.meta.display_title();
         let button_text = format!("{}. {}", index + 1, truncate(&title, 60));
         state
-            .selections
-            .insert(selection_id.clone(), result.into_request())
-            .await;
+            .put_selection(
+                &selection_id,
+                crate::state::selection::TRACK,
+                user_id,
+                &result.into_request(),
+            )
+            .await?;
         rows.push(vec![InlineKeyboardButton::callback(
             button_text,
             format!("q:{selection_id}"),
@@ -261,9 +284,10 @@ async fn handle_album(
     lang: Lang,
     _quality: u32,
     album_ref: common::domain::AlbumRef,
+    user_id: i64,
 ) -> HandlerResult {
     let progress = send::send_html(bot, chat, i18n::album_loading(lang)).await?;
-    ask_album_confirmation(state, bot, chat, progress.id, lang, &album_ref).await
+    ask_album_confirmation(state, bot, chat, progress.id, lang, &album_ref, user_id).await
 }
 
 /// Fetch a collection and ask the user to confirm the download. `progress` is
@@ -276,6 +300,7 @@ pub async fn ask_album_confirmation(
     progress: MessageId,
     lang: Lang,
     album_ref: &common::domain::AlbumRef,
+    user_id: i64,
 ) -> HandlerResult {
     let album = match state.manager.resolve_album(album_ref).await {
         Ok(album) => album,
@@ -289,7 +314,7 @@ pub async fn ask_album_confirmation(
         return Ok(());
     }
 
-    confirm_album(state, bot, chat, progress, lang, &album).await
+    confirm_album(state, bot, chat, progress, lang, &album, user_id).await
 }
 
 /// Store a resolved collection and ask for confirmation. Shared by album links,
@@ -301,6 +326,7 @@ pub async fn confirm_album(
     progress: MessageId,
     lang: Lang,
     album: &common::domain::Album,
+    user_id: i64,
 ) -> HandlerResult {
     tracing::info!(
         provider = %album.provider,
@@ -312,9 +338,13 @@ pub async fn confirm_album(
     let selection_id = state.new_selection_id();
     let count = album.tracks.len();
     state
-        .album_selections
-        .insert(selection_id.clone(), album.clone())
-        .await;
+        .put_selection(
+            &selection_id,
+            crate::state::selection::ALBUM,
+            user_id,
+            album,
+        )
+        .await?;
     let title = escape_html(&album.title);
     let keyboard = InlineKeyboardMarkup::new(vec![vec![
         InlineKeyboardButton::callback(

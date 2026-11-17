@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO user_genre_tracks (user_id, track_key, created_at)\n             SELECT $1, $2, $3\n             WHERE EXISTS (SELECT 1 FROM users WHERE user_id = $4 AND genre_analysis = 1)\n             ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "21b7d715585d03e8e5ed6078ec909be1ddf2534350c384eae23ebab5bc129214"
+}

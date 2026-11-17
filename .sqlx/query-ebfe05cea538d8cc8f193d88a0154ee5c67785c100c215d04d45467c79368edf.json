@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,\n                    hq_cover, lastfm_stats, genre_analysis\n             FROM users WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "language",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "language"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "quality",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "quality"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "banned",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "banned"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "search_source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "search_source"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "tags_enabled",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "tags_enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "lastfm_user",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "lastfm_user"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "hq_cover",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "hq_cover"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "lastfm_stats",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "lastfm_stats"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "genre_analysis",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "genre_analysis"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ebfe05cea538d8cc8f193d88a0154ee5c67785c100c215d04d45467c79368edf"
+}

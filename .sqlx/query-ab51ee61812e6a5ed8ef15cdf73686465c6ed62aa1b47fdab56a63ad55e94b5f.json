@@ -1,0 +1,173 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,\n                    performer, album, duration_secs, size_bytes, thumbnail_url, genres\n             FROM tracks WHERE track_key = $1 AND quality = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "track_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "quality",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "quality"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "file_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "file_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "file_unique_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "file_unique_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "performer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "performer"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "album",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "album"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "duration_secs",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "duration_secs"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "thumbnail_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "thumbnail_url"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "genres",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "genres"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "ab51ee61812e6a5ed8ef15cdf73686465c6ed62aa1b47fdab56a63ad55e94b5f"
+}

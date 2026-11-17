@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT meta_value FROM meta WHERE meta_key = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "meta_value",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "meta",
+            "name": "meta_value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c10cad084dbab470d03ff395c8f044fff23135c376a7d5d511431920b322246b"
+}

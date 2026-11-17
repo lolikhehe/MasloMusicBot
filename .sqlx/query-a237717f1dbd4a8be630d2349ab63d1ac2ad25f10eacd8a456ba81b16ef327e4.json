@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                 (SELECT COUNT(*) FROM tracks) AS tracks,\n                 (SELECT COUNT(*) FROM users) AS users,\n                 (SELECT COALESCE(SUM(uses), 0)::BIGINT FROM tracks) AS sends",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tracks",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "users",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "sends",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "a237717f1dbd4a8be630d2349ab63d1ac2ad25f10eacd8a456ba81b16ef327e4"
+}

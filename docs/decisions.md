@@ -1,5 +1,33 @@
 # Decisions & known limitations
 
+## v2.1 — lyrics, Postgres, compile-time SQL, webhooks (experimental branch)
+
+- `lyricsgenius` was rejected: it is a Python scraper of Genius HTML, and the
+  official Genius API returns links rather than full text. Instead `/lyrics`
+  uses LRCLIB (`/api/get`, then `/api/search?q=…`) with lyrics.ovh as a fallback.
+  Both are public, token-free JSON APIs; there is no scraping and no
+  DRM/paywall circumvention. Bodies are capped at 512 KB by the shared
+  `fetch_bytes` helper, LRC timestamps are stripped, and output is capped to
+  3 500 characters so it fits a Telegram message. Cache is in memory only
+  (24 h TTL, 2 000 entries); no lyrics are written to disk.
+- The single-process SQLite design cannot scale horizontally: WAL is local to
+  one filesystem and in-process `moka` selections/rate limits differ per
+  replica. The experimental branch migrates to Postgres 17 and adds a webhook
+  listener (teloxide `webhooks-axum`). Long polling remains the default when
+  `WEBHOOK_URL` is unset. See `docs/scaling.md` for the full mapping.
+- Compile-time `sqlx::query!` and a multi-backend abstraction are mutually
+  exclusive here, so Postgres becomes the only backend on this branch. The
+  `.sqlx` metadata is committed and `SQLX_OFFLINE=true` is set in Docker/CI;
+  regenerate it with `cargo sqlx prepare` after any SQL/schema edit.
+- Selections moved from `moka` to a `selections` JSONB table with `kind`,
+  `user_id` and a TTL. Rate limits use one atomic `INSERT … ON CONFLICT …`
+  statement returning the current hit count, so several replicas share one
+  fixed-window budget.
+- The remaining in-process state (`last_tracks` for argument-less `/lyrics`,
+  inline generation watches, lyrics/genre/artwork caches) is intentionally
+  local: it only affects one user's current interaction and is cheap to
+  rebuild. No audio or cover bytes are cached on disk.
+
 ## v2.0.2 — real collage covers, no rank overlays, genre analyzer (2026-11-17)
 
 - Last.fm's top tracks/artists frequently return its grey-star placeholder

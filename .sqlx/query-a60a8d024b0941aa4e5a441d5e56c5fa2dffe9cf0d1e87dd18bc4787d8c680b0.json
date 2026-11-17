@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM tracks WHERE track_key = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a60a8d024b0941aa4e5a441d5e56c5fa2dffe9cf0d1e87dd18bc4787d8c680b0"
+}

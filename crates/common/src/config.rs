@@ -44,6 +44,15 @@ pub struct Config {
     /// Public lyrics APIs (no token, no scraping). Overridable for local mocks.
     pub lrclib_base_url: String,
     pub lyrics_ovh_base_url: String,
+    /// When set, the bot receives updates via webhook instead of long polling.
+    /// Required for running more than one replica behind a load balancer.
+    pub webhook_url: Option<url::Url>,
+    /// Local address the webhook HTTP server binds to (default 0.0.0.0:8080).
+    pub webhook_addr: SocketAddr,
+    /// Optional secret token; when unset teloxide generates one.
+    pub webhook_secret: Option<String>,
+    /// Max simultaneous HTTPS connections Telegram opens to the webhook (1-100).
+    pub webhook_max_connections: u8,
 }
 
 impl Config {
@@ -130,6 +139,28 @@ impl Config {
 
         let lastfm_api_key = env_optional("LASTFM_API_KEY");
 
+        let webhook_url = env_optional("WEBHOOK_URL")
+            .map(|value| url::Url::parse(&value).with_context(|| format!("WEBHOOK_URL: {value}")))
+            .transpose()?;
+        if let Some(url) = &webhook_url
+            && !matches!(url.scheme(), "https" | "http")
+        {
+            bail!("WEBHOOK_URL must be http(s)");
+        }
+        let webhook_secret = env_optional("WEBHOOK_SECRET");
+        if let Some(secret) = &webhook_secret
+            && (!(1..=256).contains(&secret.len())
+                || !secret
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-'))
+        {
+            bail!("WEBHOOK_SECRET must be 1-256 chars of [A-Za-z0-9_-]");
+        }
+        let webhook_max_connections = env_parse("WEBHOOK_MAX_CONNECTIONS", 40u8)?;
+        if !(1..=100).contains(&webhook_max_connections) {
+            bail!("WEBHOOK_MAX_CONNECTIONS must be between 1 and 100");
+        }
+
         let mut tmp_dir =
             PathBuf::from(env_optional("TMP_DIR").unwrap_or_else(|| "./data/tmp".to_owned()));
         if tmp_dir.as_os_str().is_empty() {
@@ -175,6 +206,10 @@ impl Config {
                 .unwrap_or_else(|| "https://api.lyrics.ovh/v1".to_owned())
                 .trim_end_matches('/')
                 .to_owned(),
+            webhook_url,
+            webhook_addr: env_parse("WEBHOOK_ADDR", "0.0.0.0:8080".parse::<SocketAddr>()?)?,
+            webhook_secret,
+            webhook_max_connections,
         })
     }
 

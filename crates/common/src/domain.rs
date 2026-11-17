@@ -365,7 +365,9 @@ impl DownloadTarget {
 }
 
 /// A fully resolved request for one track. `key` is stable across restarts.
-#[derive(Debug, Clone)]
+/// Serialization lets selections live in Postgres so webhook callbacks can be
+/// handled by any replica.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackRequest {
     pub key: TrackKey,
     pub provider: Provider,
@@ -375,7 +377,7 @@ pub struct TrackRequest {
 }
 
 /// A playlist/album input that still needs to be expanded into tracks.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlbumRef {
     pub provider: Provider,
     pub url: Option<String>,
@@ -383,7 +385,7 @@ pub struct AlbumRef {
 }
 
 /// Expanded album. Tracks are downloaded one by one to keep memory bounded.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Album {
     pub title: String,
     pub provider: Provider,

@@ -129,7 +129,7 @@ async fn handle_selection(
     let message_id = message.id;
     let user_id = query.from.id.0 as i64;
 
-    if !state.limiter.allow(user_id) {
+    if !state.limiter.allow(user_id).await? {
         let _ = edit_html(
             bot,
             chat,
@@ -140,7 +140,10 @@ async fn handle_selection(
         return Ok(());
     }
 
-    let Some(request) = state.selections.get(selection_id).await else {
+    let Some(request) = state
+        .get_selection::<common::domain::TrackRequest>(selection_id, crate::state::selection::TRACK)
+        .await?
+    else {
         let _ = edit_html(bot, chat, message_id, i18n::selection_expired(lang)).await;
         return Ok(());
     };
@@ -200,18 +203,30 @@ async fn handle_album_pick(
     let chat = message.chat.id;
     let message_id = message.id;
 
-    let Some(album_ref) = state.album_ref_selections.get(selection_id).await else {
+    let Some(album_ref) = state
+        .get_selection::<common::domain::AlbumRef>(selection_id, crate::state::selection::ALBUM_REF)
+        .await?
+    else {
         let _ = edit_html(bot, chat, message_id, i18n::selection_expired(lang)).await;
         return Ok(());
     };
-    state.album_ref_selections.invalidate(selection_id).await;
+    state.delete_selection(selection_id).await?;
     info!(
         selection_id,
         provider = %album_ref.provider,
         "album candidate picked; resolving"
     );
     let _ = edit_html(bot, chat, message_id, i18n::album_loading(lang)).await;
-    ask_album_confirmation(state, bot, chat, message_id, lang, &album_ref).await
+    ask_album_confirmation(
+        state,
+        bot,
+        chat,
+        message_id,
+        lang,
+        &album_ref,
+        query.from.id.0 as i64,
+    )
+    .await
 }
 
 /// User confirmed a collection: start downloading it with limited parallelism.
@@ -235,11 +250,14 @@ async fn handle_album_confirm(
     let message_id = message.id;
     let user_id = query.from.id.0 as i64;
 
-    let Some(album) = state.album_selections.get(selection_id).await else {
+    let Some(album) = state
+        .get_selection::<common::domain::Album>(selection_id, crate::state::selection::ALBUM)
+        .await?
+    else {
         let _ = edit_html(bot, chat, message_id, i18n::selection_expired(lang)).await;
         return Ok(());
     };
-    state.album_selections.invalidate(selection_id).await;
+    state.delete_selection(selection_id).await?;
     info!(
         selection_id,
         tracks = album.tracks.len(),
@@ -279,7 +297,7 @@ async fn handle_album_cancel(
         )
         .await;
     }
-    state.album_selections.invalidate(selection_id).await;
+    state.delete_selection(selection_id).await?;
     info!(selection_id, "album download cancelled");
     Ok(())
 }

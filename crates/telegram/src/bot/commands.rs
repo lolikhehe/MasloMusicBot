@@ -394,9 +394,13 @@ pub async fn handle_command(
             for candidate in &candidates {
                 let selection_id = state.new_selection_id();
                 state
-                    .album_ref_selections
-                    .insert(selection_id.clone(), candidate.into_album_ref())
-                    .await;
+                    .put_selection(
+                        &selection_id,
+                        crate::state::selection::ALBUM_REF,
+                        user_id,
+                        &candidate.into_album_ref(),
+                    )
+                    .await?;
                 rows.push(vec![InlineKeyboardButton::callback(
                     album_button_label(lang, candidate),
                     format!("alq:{selection_id}"),

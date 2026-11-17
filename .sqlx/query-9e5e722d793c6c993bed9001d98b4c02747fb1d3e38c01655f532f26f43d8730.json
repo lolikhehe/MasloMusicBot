@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tracks\n                (track_key, quality, file_id, file_unique_id, source_url, provider, title, performer,\n                 album, duration_secs, size_bytes, thumbnail_url, genres, created_at, last_used_at, uses)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 1)\n             ON CONFLICT(track_key, quality) DO UPDATE SET\n                file_id = excluded.file_id,\n                file_unique_id = excluded.file_unique_id,\n                source_url = excluded.source_url,\n                provider = excluded.provider,\n                title = excluded.title,\n                performer = excluded.performer,\n                album = excluded.album,\n                duration_secs = excluded.duration_secs,\n                size_bytes = excluded.size_bytes,\n                thumbnail_url = excluded.thumbnail_url,\n                genres = excluded.genres,\n                last_used_at = excluded.last_used_at,\n                uses = tracks.uses + 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9e5e722d793c6c993bed9001d98b4c02747fb1d3e38c01655f532f26f43d8730"
+}

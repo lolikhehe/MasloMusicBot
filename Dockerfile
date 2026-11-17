@@ -47,7 +47,10 @@ COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod 755 /usr/local/bin/docker-entrypoint \
  && mkdir -p /data && chown -R bot:bot /data
 
-ENV DATABASE_URL=sqlite:///data/bot.db \
+# Compile-time SQL: the checked query metadata in .sqlx is committed, so the
+# build never needs a live database.
+ENV SQLX_OFFLINE=true \
+    DATABASE_URL=postgresql://musicbot:devpass@postgres:5432/musicbot \
     TMP_DIR=/data/tmp \
     TMPDIR=/data/tmp \
     # yt-dlp keeps a small cache; container root fs is read-only, keep it on the volume
@@ -60,10 +63,11 @@ ENV DATABASE_URL=sqlite:///data/bot.db \
     # deno's cache must live on the writable volume: the container root fs is read-only
     DENO_DIR=/data/tmp/deno \
     METRICS_ADDR=0.0.0.0:9090 \
+    WEBHOOK_ADDR=0.0.0.0:8080 \
     LOG_LEVEL=info
 
 VOLUME ["/data"]
-EXPOSE 9090
+EXPOSE 9090 8080
 
 USER bot
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint", "music-bot"]

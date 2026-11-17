@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO selections (id, kind, user_id, payload, expires_at)\n             VALUES ($1, $2, $3, $4, $5)\n             ON CONFLICT(id) DO UPDATE SET\n                kind = excluded.kind,\n                user_id = excluded.user_id,\n                payload = excluded.payload,\n                expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Jsonb",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7f88eac1faac9cc8b139eab525375dba9989ccd8a6b2a8dd79930981f4f98fec"
+}

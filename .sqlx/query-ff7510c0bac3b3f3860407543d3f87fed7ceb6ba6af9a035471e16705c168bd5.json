@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET last_seen_at = 0 WHERE user_id = 5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ff7510c0bac3b3f3860407543d3f87fed7ceb6ba6af9a035471e16705c168bd5"
+}

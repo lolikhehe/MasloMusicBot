@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET lastfm_user = $1, last_seen_at = $2 WHERE user_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "16f071e38d0ecc6fe1ff684908a99668a3228caf2fb5655a3672e82a18cea974"
+}

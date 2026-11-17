@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO search_cache (provider, query, result, expires_at)\n             VALUES ($1, $2, $3, $4)\n             ON CONFLICT(provider, query) DO UPDATE SET\n                result = excluded.result,\n                expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e933220930b3f4dce209bb9c8932e1e8cfec8939e3361c6c229010815af9e840"
+}

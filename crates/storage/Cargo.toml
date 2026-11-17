@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 common.workspace = true
+serde.workspace = true
 sqlx.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

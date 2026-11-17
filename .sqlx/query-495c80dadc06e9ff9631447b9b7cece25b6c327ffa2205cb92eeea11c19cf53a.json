@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rate_limits (user_id, window_start, hits) VALUES ($1, $2, 1)\n             ON CONFLICT (user_id) DO UPDATE SET\n                window_start = CASE\n                    WHEN rate_limits.window_start < $2 THEN $2\n                    ELSE rate_limits.window_start END,\n                hits = CASE\n                    WHEN rate_limits.window_start < $2 THEN 1\n                    ELSE rate_limits.hits + 1 END\n             RETURNING hits",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hits",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rate_limits",
+            "name": "hits"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "495c80dadc06e9ff9631447b9b7cece25b6c327ffa2205cb92eeea11c19cf53a"
+}

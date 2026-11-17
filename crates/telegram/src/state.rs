@@ -1,10 +1,12 @@
 //! Shared state injected into every teloxide handler.
 
-use crate::rate_limit::RateLimiter;
 use common::config::Config;
-use common::domain::{Album, AlbumRef, Provider, TrackKey, TrackMeta, TrackRequest};
+use common::domain::{Provider, TrackKey, TrackMeta};
+use common::error::AppResult;
 use downloader::DownloadManager;
 use moka::future::Cache;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use storage::Db;
@@ -19,23 +21,30 @@ pub struct LastTrack {
     pub provider: Provider,
 }
 
+/// Postgres-backed fixed-window limiter. Every replica decrements the same
+/// counter, so a webhook farm cannot be bypassed by hopping between instances.
+#[derive(Clone)]
+pub struct SharedLimiter {
+    db: Db,
+    limit: i64,
+}
+
+impl SharedLimiter {
+    pub async fn allow(&self, user_id: i64) -> AppResult<bool> {
+        self.db.allow(user_id, self.limit).await
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: Db,
     pub manager: Arc<DownloadManager>,
-    pub selections: Cache<String, TrackRequest>,
-    /// Album/playlist selections awaiting the user's confirmation
-    /// (spec: collections require a confirmation step before downloading).
-    pub album_selections: Cache<String, Album>,
-    /// Album candidates from `/alb <name>`; the user picks one, which becomes
-    /// an `AlbumRef` resolved through the regular collection confirmation flow.
-    pub album_ref_selections: Cache<String, AlbumRef>,
-    pub limiter: Arc<RateLimiter>,
+    pub limiter: SharedLimiter,
     /// Separate, much looser limiter for inline queries: Telegram emits one
     /// query per keystroke, so the regular budget is exhausted almost
     /// instantly while the user is typing. Default 120/min.
-    pub inline_limiter: Arc<RateLimiter>,
+    pub inline_limiter: SharedLimiter,
     pub bot_username: String,
     pub started_at: Instant,
     /// Per-user generation counter for inline queries; a new query cancels the
@@ -70,6 +79,16 @@ pub struct AppState {
     /// Last track sent to each user, kept in memory for the duration of a
     /// session. Bounded and expiring; lets `/lyrics` work without an argument.
     pub last_tracks: Cache<i64, LastTrack>,
+    /// Callback selections live in Postgres (not in this process) so a webhook
+    /// callback delivered to another replica still resolves.
+    pub selection_ttl: Duration,
+}
+
+/// Selection kinds stored in the `selections` table.
+pub mod selection {
+    pub const TRACK: &str = "track";
+    pub const ALBUM: &str = "album";
+    pub const ALBUM_REF: &str = "album_ref";
 }
 
 impl AppState {
@@ -79,22 +98,10 @@ impl AppState {
         manager: Arc<DownloadManager>,
         bot_username: String,
     ) -> Self {
-        let selections = Cache::builder()
-            .max_capacity(10_000)
-            .time_to_live(Duration::from_secs(30 * 60))
-            .build();
         let lastfm = config
             .lastfm_api_key
             .clone()
             .map(providers::lastfm::LastFmClient::new);
-        let album_selections = Cache::builder()
-            .max_capacity(1_000)
-            .time_to_live(Duration::from_secs(30 * 60))
-            .build();
-        let album_ref_selections = Cache::builder()
-            .max_capacity(1_000)
-            .time_to_live(Duration::from_secs(30 * 60))
-            .build();
         let genre_cache = Cache::builder()
             .max_capacity(5_000)
             .time_to_live(Duration::from_secs(24 * 60 * 60))
@@ -119,8 +126,14 @@ impl AppState {
             .max_capacity(10_000)
             .time_to_live(Duration::from_secs(30 * 60))
             .build();
-        let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
-        let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
+        let limiter = SharedLimiter {
+            db: db.clone(),
+            limit: i64::from(config.rate_limit_per_min),
+        };
+        let inline_limiter = SharedLimiter {
+            db: db.clone(),
+            limit: i64::from(config.rate_limit_inline_per_min),
+        };
         let inline_generations = Cache::builder()
             .max_capacity(10_000)
             .time_to_idle(Duration::from_secs(600))
@@ -133,9 +146,6 @@ impl AppState {
             config,
             db,
             manager,
-            selections,
-            album_selections,
-            album_ref_selections,
             limiter,
             inline_limiter,
             bot_username,
@@ -149,7 +159,35 @@ impl AppState {
             lyrics,
             lyrics_cache,
             last_tracks,
+            selection_ttl: Duration::from_secs(30 * 60),
         }
+    }
+
+    /// Persist a callback payload so any replica can resolve the button press.
+    pub async fn put_selection<T: Serialize>(
+        &self,
+        id: &str,
+        kind: &str,
+        user_id: i64,
+        payload: &T,
+    ) -> AppResult<()> {
+        let value = serde_json::to_value(payload)
+            .map_err(|error| common::error::AppError::Other(error.into()))?;
+        self.db
+            .put_selection(id, kind, user_id, value, self.selection_ttl)
+            .await
+    }
+
+    pub async fn get_selection<T: DeserializeOwned>(
+        &self,
+        id: &str,
+        kind: &str,
+    ) -> AppResult<Option<T>> {
+        self.db.get_selection(id, kind).await
+    }
+
+    pub async fn delete_selection(&self, id: &str) -> AppResult<()> {
+        self.db.delete_selection(id).await
     }
 
     /// Remember a successfully sent track for argument-less `/lyrics`.
