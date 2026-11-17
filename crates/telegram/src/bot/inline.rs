@@ -243,7 +243,18 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
             .edit_message_media_inline(inline_message_id, cached_media(&cached, caption))
             .await
         {
-            Ok(_) => return Ok(()),
+            Ok(_) => {
+                // Analytics only uses genres already stored with the cache
+                // entry: an HTTP lookup here would delay the inline answer.
+                if user.genre_analysis && !cached.meta.genres.is_empty() {
+                    let track_key = request.key.to_string();
+                    let _ = state
+                        .db
+                        .record_genres(user_id, &track_key, &cached.meta.genres)
+                        .await;
+                }
+                return Ok(());
+            }
             Err(error) if send::is_invalid_file_id(&error) => {
                 warn!(%error, "inline cached file id rejected; purging");
                 state.manager.purge(&request.key).await?;
@@ -273,7 +284,12 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         };
 
     let mut prepared = prepared;
-    enrich_tags(&state, &mut prepared.meta, user.tags_enabled).await;
+    enrich_tags(
+        &state,
+        &mut prepared.meta,
+        user.tags_enabled || user.genre_analysis,
+    )
+    .await;
     let size_bytes = tokio::fs::metadata(&prepared.audio_path)
         .await
         .ok()
@@ -328,6 +344,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
             lang,
             user.tags_enabled,
             user.hq_cover,
+            user.genre_analysis,
         )
         .await;
         return Ok(());
@@ -347,6 +364,16 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         .await
     {
         warn!(%error, "could not record inline file_id in cache");
+    }
+    if user.genre_analysis {
+        let track_key = request.key.to_string();
+        if let Err(error) = state
+            .db
+            .record_genres(user_id, &track_key, &prepared.meta.genres)
+            .await
+        {
+            warn!(%error, "could not record genres for inline upload");
+        }
     }
     metrics::counter!("music_bot_uploads_total").increment(1);
     if let Some(inline_message_id) = result.inline_message_id.clone() {
@@ -383,6 +410,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         user_id,
         user.tags_enabled,
         user.hq_cover,
+        user.genre_analysis,
     )
     .await;
     Ok(())
@@ -424,6 +452,7 @@ fn file_id_media(
     InputMedia::Audio(media)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fallback_private(
     state: &AppState,
     bot: &Bot,
@@ -432,6 +461,7 @@ async fn fallback_private(
     lang: Lang,
     tags_enabled: bool,
     hq_cover: bool,
+    genre_analysis: bool,
 ) {
     // Fix the inline placeholder so the chat doesn't keep a stale
     // "Downloading…" message; the audio arrives in private chat instead.
@@ -458,6 +488,7 @@ async fn fallback_private(
         user_id,
         tags_enabled,
         hq_cover,
+        genre_analysis,
     )
     .await;
 }

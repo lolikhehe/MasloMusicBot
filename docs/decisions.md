@@ -1,5 +1,30 @@
 # Decisions & known limitations
 
+## v2.0.2 — real collage covers, no rank overlays, genre analyzer (2026-11-17)
+
+- Last.fm's top tracks/artists frequently return its grey-star placeholder
+  (`2a96cbd8b46e442fc41c2b86b821562f`) as the "largest" image, so collages were
+  full of identical stars. `providers::lastfm::is_placeholder_image` filters the
+  known placeholder hashes out of `ScrobbleItem.image_url`; when a row has no
+  real Last.fm image, the public Deezer catalog is queried (`deezer_artwork`,
+  track/album/artist) for the actual cover. Resolved URLs live in the in-memory
+  `AppState.artwork_cache` for 24 h; image bytes are still re-downloaded per
+  collage because the operator explicitly chose no on-disk image cache.
+  Resolution and downloads share one semaphore (6 permits), so a 10x10 collage
+  does not burst the network.
+- The `#N` rank overlay was removed from collage cells. The grid order already
+  conveys rank; the overlay covered artwork and looked broken over real covers.
+- Genre analyzer (opt-in, `users.genre_analysis`, migration 0008):
+  `user_genre_tracks` de-duplicates by `track_key` so repeats and cache hits do
+  not inflate counts, `user_genres` keeps the aggregate. One track with several
+  genres counts once in each genre. Genres are recorded on every delivery path
+  — cold upload, cache hit, album batch and inline (cached or uploaded) — and
+  enrichment runs when `tags_enabled || genre_analysis` so the analyzer works
+  without publishing hashtags in captions.
+- `/genres [5..20]` renders a PNG bar chart with the pure-Rust `collage` crate
+  (`render_bars`); `/settings` has the toggle plus a chart button, and the chart
+  buttons re-render for 5/8/10/12/15/20 bars. No new external tool or fonts.
+
 ## v2.0.0 — compact inline, stats, collages, playlist import (2026-11-17)
 
 - Inline: teloxide's `InlineQueryResultCachedAudio` DOES support `caption`

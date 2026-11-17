@@ -421,6 +421,8 @@ pub struct UserRecord {
     pub hq_cover: bool,
     /// Per-user switch for Last.fm scrobble stats (/profile, /collage).
     pub lastfm_stats: bool,
+    /// Per-user switch for the genre analyzer (/genres).
+    pub genre_analysis: bool,
 }
 
 #[derive(Debug, Clone)]

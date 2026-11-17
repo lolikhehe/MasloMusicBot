@@ -35,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)",
     );
     if is_admin {
         format!(
@@ -56,6 +56,7 @@ pub fn settings_title(
     lastfm_user: Option<&str>,
     hq_cover: bool,
     lastfm_stats: bool,
+    genre_analysis: bool,
 ) -> String {
     let title = pick(lang, "<b>Settings</b>", "<b>Налаштування</b>");
     let q = pick(lang, "Quality", "Якість");
@@ -85,9 +86,15 @@ pub fn settings_title(
         pick(lang, "off", "вимк.")
     };
     let sl = pick(lang, "Last.fm stats", "Статистика Last.fm");
+    let ga_state = if genre_analysis {
+        pick(lang, "on", "увімк.")
+    } else {
+        pick(lang, "off", "вимк.")
+    };
+    let gal = pick(lang, "Genre analyzer", "Аналізатор жанрів");
     let q_display = quality_display(lang, quality);
     format!(
-        "{title}\n\n{q}: <b>{q_display}</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>\n{hql}: <b>{hq}</b>\n{sl}: <b>{stats_state}</b>",
+        "{title}\n\n{q}: <b>{q_display}</b>\n{l}: <b>{}</b>\n{s}: <b>{}</b>\n{t}: <b>{}</b>\n{f}: <b>{lf}</b>\n{hql}: <b>{hq}</b>\n{sl}: <b>{stats_state}</b>\n{gal}: <b>{ga_state}</b>",
         language_name(language),
         search_source.display_name(),
         state
@@ -96,6 +103,57 @@ pub fn settings_title(
 
 pub fn tags_label(lang: Lang) -> &'static str {
     pick(lang, "🏷 Tags: album + genre", "🏷 Теги: альбом і жанри")
+}
+
+pub fn genre_analysis_label(lang: Lang) -> &'static str {
+    pick(lang, "🎛 Genre analyzer", "🎛 Аналізатор жанрів")
+}
+
+pub fn genre_chart_label(lang: Lang) -> &'static str {
+    pick(lang, "📊 Genre chart", "📊 Графік жанрів")
+}
+
+pub fn genre_chart_disabled(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "🎛 Enable the genre analyzer in /settings first.",
+        "🎛 Спочатку увімкни аналізатор жанрів у /settings.",
+    )
+}
+
+pub fn genre_chart_empty(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "No genre data yet — download a few tracks with the analyzer enabled.",
+        "Ще немає даних — скачай кілька треків з увімкненим аналізатором.",
+    )
+}
+
+pub fn genre_chart_failed(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Could not build the genre chart.",
+        "Не вдалося побудувати графік жанрів.",
+    )
+}
+
+pub fn genre_chart_title(lang: Lang) -> &'static str {
+    pick(lang, "Your genres", "Твої жанри")
+}
+
+pub fn genre_chart_subtitle(lang: Lang, tracks: i64, genres: usize) -> String {
+    match lang {
+        Lang::En => format!("{tracks} tracks · {genres} genres"),
+        Lang::Uk => format!("{tracks} треків · {genres} жанрів"),
+    }
+}
+
+pub fn genre_chart_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: /genres [5..20] — number of bars.",
+        "Використання: /genres [5..20] — кількість стовпців.",
+    )
 }
 
 pub fn lastfm_stats_label(lang: Lang) -> &'static str {

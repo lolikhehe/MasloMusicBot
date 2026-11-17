@@ -43,6 +43,10 @@ pub struct AppState {
     /// Genre lookups are repeated on cache hits and album replays; keep them in
     /// memory for a day so we don't hammer Last.fm/iTunes per send.
     pub genre_cache: Cache<String, Vec<String>>,
+    /// Resolved collage artwork URLs (Last.fm or Deezer catalog). In-memory
+    /// only; each collage re-downloads the image bytes so nothing accumulates
+    /// on the operator's disk.
+    pub artwork_cache: Cache<String, Option<String>>,
 }
 
 impl AppState {
@@ -72,6 +76,10 @@ impl AppState {
             .max_capacity(5_000)
             .time_to_live(Duration::from_secs(24 * 60 * 60))
             .build();
+        let artwork_cache = Cache::builder()
+            .max_capacity(5_000)
+            .time_to_live(Duration::from_secs(24 * 60 * 60))
+            .build();
         let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
         let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
         let inline_generations = Cache::builder()
@@ -97,6 +105,7 @@ impl AppState {
             inline_generation_tx,
             lastfm,
             genre_cache,
+            artwork_cache,
         }
     }
 

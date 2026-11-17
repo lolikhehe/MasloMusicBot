@@ -13,6 +13,24 @@ use serde::Deserialize;
 use std::time::Duration;
 use url::Url;
 
+/// Which catalog entry an artwork lookup should target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtworkKind {
+    Track,
+    Album,
+    Artist,
+}
+
+impl ArtworkKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Track => "track",
+            Self::Album => "album",
+            Self::Artist => "artist",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ExternalResolver {
     client: reqwest::Client,
@@ -218,6 +236,38 @@ impl ExternalResolver {
             .await
             .map_err(map_reqwest)?;
         Ok(deezer_albums_from_page(page))
+    }
+
+    /// Resolve real artwork for a Last.fm chart row. Last.fm frequently returns
+    /// its grey-star placeholder for top tracks/artists, so the Deezer public
+    /// catalog is used as a fallback. Returns the largest available image URL.
+    pub async fn deezer_artwork(
+        &self,
+        kind: ArtworkKind,
+        query: &str,
+    ) -> Result<Option<String>, DownloadError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(None);
+        }
+        let endpoint = match kind {
+            ArtworkKind::Track => "https://api.deezer.com/search",
+            ArtworkKind::Album => "https://api.deezer.com/search/album",
+            ArtworkKind::Artist => "https://api.deezer.com/search/artist",
+        };
+        let payload: serde_json::Value = self
+            .client
+            .get(endpoint)
+            .query(&[("q", query), ("limit", "1")])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        Ok(artwork_from_payload(kind, &payload))
     }
 
     /// Public iTunes Search API, `entity=album` (no auth). Used by `/alb <name>`;
@@ -569,6 +619,22 @@ fn deezer_results_from_page(page: DeezerTrackList) -> Vec<SearchResult> {
     results
 }
 
+/// Pull the largest artwork URL out of a Deezer search response. Kept pure so
+/// the three response shapes can be unit-tested without network access.
+fn artwork_from_payload(kind: ArtworkKind, payload: &serde_json::Value) -> Option<String> {
+    let first = payload.get("data")?.as_array()?.first()?;
+    let image = match kind {
+        ArtworkKind::Track => first
+            .get("album")
+            .and_then(|album| album.get("cover_xl").or_else(|| album.get("cover_big"))),
+        ArtworkKind::Album => first.get("cover_xl").or_else(|| first.get("cover_big")),
+        ArtworkKind::Artist => first.get("picture_xl").or_else(|| first.get("picture_big")),
+    }?
+    .as_str()?
+    .trim();
+    (!image.is_empty()).then(|| image.to_owned())
+}
+
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
     if error.status() == Some(reqwest::StatusCode::NOT_FOUND) {
         DownloadError::NotFound
@@ -742,6 +808,36 @@ mod tests {
             upgrade_artwork("https://x/100x100bb.jpg".into()),
             "https://x/600x600bb.jpg"
         );
+    }
+
+    #[test]
+    fn extracts_largest_artwork_from_deezer_payloads() {
+        let track = serde_json::json!({
+            "data": [{ "album": { "cover_big": "https://x/500.jpg", "cover_xl": "https://x/1000.jpg" } }]
+        });
+        assert_eq!(
+            artwork_from_payload(ArtworkKind::Track, &track).as_deref(),
+            Some("https://x/1000.jpg")
+        );
+
+        let album = serde_json::json!({
+            "data": [{ "cover_big": "https://x/500.jpg" }]
+        });
+        assert_eq!(
+            artwork_from_payload(ArtworkKind::Album, &album).as_deref(),
+            Some("https://x/500.jpg")
+        );
+
+        let artist = serde_json::json!({
+            "data": [{ "picture_xl": "https://x/artist.jpg" }]
+        });
+        assert_eq!(
+            artwork_from_payload(ArtworkKind::Artist, &artist).as_deref(),
+            Some("https://x/artist.jpg")
+        );
+
+        let empty = serde_json::json!({ "data": [] });
+        assert_eq!(artwork_from_payload(ArtworkKind::Track, &empty), None);
     }
 
     #[test]

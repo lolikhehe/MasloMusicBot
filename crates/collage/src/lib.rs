@@ -128,7 +128,13 @@ fn shade_bottom(canvas: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32)
 }
 
 /// Wrap into at most `max_lines`, then truncate the last line with an ellipsis.
-fn wrap(text: &str, max_width: f32, max_lines: usize, font: &FontRef<'_>) -> Vec<String> {
+fn wrap(
+    text: &str,
+    max_width: f32,
+    max_lines: usize,
+    size: f32,
+    font: &FontRef<'_>,
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
     for word in text.split_whitespace() {
@@ -137,7 +143,7 @@ fn wrap(text: &str, max_width: f32, max_lines: usize, font: &FontRef<'_>) -> Vec
         } else {
             format!("{current} {word}")
         };
-        if measure(&candidate, 18.0, font) <= max_width {
+        if measure(&candidate, size, font) <= max_width {
             current = candidate;
         } else {
             if !current.is_empty() {
@@ -153,10 +159,10 @@ fn wrap(text: &str, max_width: f32, max_lines: usize, font: &FontRef<'_>) -> Vec
         lines.truncate(max_lines);
     }
     if let Some(last) = lines.last_mut() {
-        while measure(last, 18.0, font) > max_width && !last.is_empty() {
+        while measure(last, size, font) > max_width && !last.is_empty() {
             last.pop();
         }
-        if !last.is_empty() && measure(&format!("{last}…"), 18.0, font) <= max_width {
+        if !last.is_empty() && measure(&format!("{last}…"), size, font) <= max_width {
             last.push('…');
         }
     }
@@ -207,20 +213,8 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
                 .to_rgba8();
             imageops::overlay(&mut canvas, &cover, i64::from(inner_x), i64::from(inner_y));
             has_cover = true;
-            blend_rect(&mut canvas, inner_x, inner_y, 46, 34, 0.62);
             shade_bottom(&mut canvas, inner_x, inner_y + inner_h - 96, inner_w, 96);
         }
-        // Rank goes on top of the artwork so it stays visible.
-        draw(
-            &mut canvas,
-            &format!("#{}", index + 1),
-            inner_x as f32 + 12.0,
-            inner_y as f32 + 26.0,
-            16.0,
-            ACCENT,
-            &font,
-        );
-
         let mut label = item.name.clone();
         if let Some(artist) = &item.secondary {
             if !artist.is_empty() {
@@ -228,7 +222,7 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
                 label.push_str(artist);
             }
         }
-        let lines = wrap(&label, inner_w as f32 - 24.0, 3, &font);
+        let lines = wrap(&label, inner_w as f32 - 24.0, 3, 18.0, &font);
         let text_top = if has_cover {
             inner_y + inner_h - 92
         } else {
@@ -261,6 +255,113 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
         .map_err(|error| format!("cannot save collage: {error}"))
 }
 
+/// One column of the genre histogram.
+#[derive(Debug, Clone)]
+pub struct BarItem {
+    pub label: String,
+    pub value: u64,
+}
+
+/// Render a vertical bar chart (the genre analyzer). `items` are expected to be
+/// already sorted by value, highest first. The title/subtitle sit in the header;
+/// each bar carries its value and a wrapped label underneath.
+pub fn render_bars(
+    title: &str,
+    subtitle: &str,
+    items: &[BarItem],
+    out: &Path,
+) -> Result<(), String> {
+    if items.is_empty() {
+        return Err("no bars to render".to_owned());
+    }
+    let font = font();
+    let bars = items.len() as u32;
+    const HEADER_H: u32 = 116;
+    const PLOT_H: u32 = 400;
+    const LABEL_H: u32 = 150;
+    const FOOTER_H: u32 = 34;
+    let width = (MARGIN * 2 + bars * 128).clamp(1_000, 2_400);
+    let height = HEADER_H + PLOT_H + LABEL_H + FOOTER_H;
+    let slot = (width - MARGIN * 2) / bars;
+    let bar_width = (slot as f32 * 0.62).clamp(28.0, 110.0) as u32;
+    let plot_bottom = HEADER_H + PLOT_H;
+    let max_value = items
+        .iter()
+        .map(|item| item.value)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let mut canvas = RgbaImage::from_pixel(width, height, BACKGROUND);
+
+    draw(&mut canvas, title, MARGIN as f32, 48.0, 30.0, TEXT, &font);
+    draw(
+        &mut canvas,
+        subtitle,
+        MARGIN as f32,
+        82.0,
+        15.0,
+        MUTED,
+        &font,
+    );
+    fill_rect(
+        &mut canvas,
+        MARGIN,
+        plot_bottom,
+        width - MARGIN * 2,
+        1,
+        Rgba([70, 76, 92, 255]),
+    );
+
+    for (index, item) in items.iter().enumerate() {
+        let center = MARGIN as f32 + slot as f32 * index as f32 + slot as f32 / 2.0;
+        let bar_height = (((PLOT_H - 42) as u64 * item.value / max_value).max(3)) as u32;
+        let bar_top = plot_bottom - bar_height;
+        let bar_left = center as u32 - bar_width / 2;
+        fill_rect(
+            &mut canvas,
+            bar_left,
+            bar_top,
+            bar_width,
+            bar_height,
+            ACCENT,
+        );
+        draw_centered(
+            &mut canvas,
+            &item.value.to_string(),
+            center,
+            bar_top as f32 - 10.0,
+            15.0,
+            TEXT,
+            &font,
+        );
+        let lines = wrap(&item.label, slot as f32 - 10.0, 3, 13.0, &font);
+        for (line_index, line) in lines.iter().enumerate() {
+            draw_centered(
+                &mut canvas,
+                line,
+                center,
+                plot_bottom as f32 + 24.0 + line_index as f32 * 16.0,
+                13.0,
+                MUTED,
+                &font,
+            );
+        }
+    }
+
+    draw(
+        &mut canvas,
+        "MasloMusicBot · genre analyzer",
+        MARGIN as f32,
+        height as f32 - 12.0,
+        12.0,
+        MUTED,
+        &font,
+    );
+    canvas
+        .save(out)
+        .map_err(|error| format!("cannot save chart: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +383,30 @@ mod tests {
         assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
         let decoded = image::load_from_memory(&bytes).expect("decode");
         assert!(decoded.width() > 600 && decoded.height() > 600);
+    }
+
+    #[test]
+    fn renders_genre_bar_chart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("genres.png");
+        let items: Vec<BarItem> = [
+            ("Alternative Rock", 12),
+            ("Hard Rock", 9),
+            ("Metal", 8),
+            ("Electronic", 5),
+            ("Pop", 3),
+        ]
+        .into_iter()
+        .map(|(label, value)| BarItem {
+            label: label.to_owned(),
+            value,
+        })
+        .collect();
+        render_bars("Your genres", "25 tracks · 5 genres", &items, &path).expect("chart");
+        let bytes = std::fs::read(&path).expect("png");
+        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+        let decoded = image::load_from_memory(&bytes).expect("decode");
+        assert!(decoded.width() >= 1_000 && decoded.height() > 600);
     }
 
     #[test]

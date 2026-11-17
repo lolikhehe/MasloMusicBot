@@ -274,6 +274,32 @@ impl DownloadManager {
         }
     }
 
+    /// Resolve missing collage artwork through the public Deezer catalog. One
+    /// short metadata request, bounded to 6 s; `None` on any failure so the
+    /// collage still renders with a placeholder cell.
+    pub async fn artwork_url(
+        &self,
+        kind: providers::external::ArtworkKind,
+        query: &str,
+    ) -> Option<String> {
+        match tokio::time::timeout(
+            Duration::from_secs(6),
+            self.external.deezer_artwork(kind, query),
+        )
+        .await
+        {
+            Ok(Ok(value)) => value,
+            Ok(Err(error)) => {
+                warn!(%error, "Deezer artwork lookup failed");
+                None
+            }
+            Err(_) => {
+                warn!("Deezer artwork lookup timed out");
+                None
+            }
+        }
+    }
+
     /// Resolve just enough metadata to show a track in inline results without
     /// downloading it.
     pub async fn describe(&self, mut request: TrackRequest) -> Result<TrackRequest, DownloadError> {

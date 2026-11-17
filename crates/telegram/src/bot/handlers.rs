@@ -108,6 +108,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
                 request,
                 user.tags_enabled,
                 user.hq_cover,
+                user.genre_analysis,
             )
             .await
         }
@@ -149,8 +150,20 @@ async fn handle_track(
     request: TrackRequest,
     tags_enabled: bool,
     hq_cover: bool,
+    genre_analysis: bool,
 ) -> HandlerResult {
-    if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
+    if try_cache_send(
+        state,
+        bot,
+        chat,
+        &request.key,
+        quality,
+        user_id,
+        tags_enabled,
+        genre_analysis,
+    )
+    .await?
+    {
         return Ok(());
     }
 
@@ -164,6 +177,7 @@ async fn handle_track(
         user_id,
         tags_enabled,
         hq_cover,
+        genre_analysis,
     )
     .await
     {
@@ -331,6 +345,7 @@ pub async fn deliver_album(
     album: common::domain::Album,
     tags_enabled: bool,
     hq_cover: bool,
+    genre_analysis: bool,
 ) -> HandlerResult {
     let total = album.tracks.len();
     let title = escape_html(&album.title);
@@ -374,6 +389,7 @@ pub async fn deliver_album(
                 user_id,
                 tags_enabled,
                 hq_cover,
+                genre_analysis,
             )
             .await;
             (track_title, result)
@@ -478,15 +494,16 @@ pub fn caption_with_flac_fallback(caption: Option<String>, fell_back: bool) -> O
     }
 }
 
-/// Best-effort genre enrichment when the user opted into tags.
+/// Best-effort genre enrichment when the user opted into tags or the genre
+/// analyzer (the latter needs genres to count them).
 ///
 /// Last.fm is the primary source: a track's community tags are specific and
 /// numerous (`thrash metal`, `groove metal`, ...) unlike the single coarse
 /// `primaryGenreName` iTunes returns. iTunes stays as a fallback when there is
 /// no Last.fm key, no match, or the lookup fails. The result is cached in memory
 /// because this runs again on cache hits and album replays.
-pub async fn enrich_tags(state: &AppState, meta: &mut TrackMeta, tags_enabled: bool) {
-    if !tags_enabled || meta.genres.len() >= 8 {
+pub async fn enrich_tags(state: &AppState, meta: &mut TrackMeta, enabled: bool) {
+    if !enabled || meta.genres.len() >= 8 {
         return;
     }
     let tags = fetch_genres(state, meta).await;
@@ -561,19 +578,24 @@ pub fn tags_caption(meta: &TrackMeta, tags_enabled: bool) -> Option<String> {
 
 /// Serve a cache entry if possible. A stale `file_id` is purged so the caller
 /// can fall back to a fresh download.
+#[allow(clippy::too_many_arguments)]
 async fn try_cache_send(
     state: &AppState,
     bot: &Bot,
     chat: ChatId,
     key: &TrackKey,
     quality: u32,
+    user_id: i64,
     tags_enabled: bool,
+    genre_analysis: bool,
 ) -> Result<bool, BoxError> {
     let Some(cached) = state.manager.get_cached(key, quality).await? else {
         return Ok(false);
     };
     // Legacy cache entries (and sources with no genre info) may lack genres;
-    // fill it on demand when the user opted into the tags caption.
+    // fill them on demand for the tags caption. The genre analyzer must not
+    // slow the cache fast path, so analyzer-only enrichment happens after the
+    // send in a background task.
     let mut caption_meta = cached.meta.clone();
     enrich_tags(state, &mut caption_meta, tags_enabled).await;
     let caption = tags_caption(&caption_meta, tags_enabled);
@@ -581,6 +603,26 @@ async fn try_cache_send(
         Ok(_) => {
             state.manager.touch_cached(key, quality).await;
             metrics::counter!("music_bot_cache_hits_total").increment(1);
+            if genre_analysis {
+                let track_key = key.to_string();
+                if caption_meta.genres.is_empty() && !tags_enabled {
+                    let state = state.clone();
+                    let mut meta = cached.meta.clone();
+                    tokio::spawn(async move {
+                        enrich_tags(&state, &mut meta, true).await;
+                        let _ = state
+                            .db
+                            .record_genres(user_id, &track_key, &meta.genres)
+                            .await;
+                    });
+                } else if let Err(error) = state
+                    .db
+                    .record_genres(user_id, &track_key, &caption_meta.genres)
+                    .await
+                {
+                    warn!(%error, key = %key, "could not record genres for cache hit");
+                }
+            }
             Ok(true)
         }
         Err(error) if send::is_invalid_file_id(&error) => {
@@ -603,8 +645,21 @@ pub async fn deliver_track(
     user_id: i64,
     tags_enabled: bool,
     hq_cover: bool,
+    genre_analysis: bool,
 ) -> Result<Delivery, BoxError> {
-    if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
+    let enrich = tags_enabled || genre_analysis;
+    if try_cache_send(
+        state,
+        bot,
+        chat,
+        &request.key,
+        quality,
+        user_id,
+        tags_enabled,
+        genre_analysis,
+    )
+    .await?
+    {
         return Ok(Delivery::Cached);
     }
 
@@ -613,7 +668,7 @@ pub async fn deliver_track(
     // Genre lookups are HTTP requests too; start them against the metadata we
     // already have from search so they overlap the (usually slower) audio
     // download instead of adding latency after it.
-    let genre_task = if tags_enabled
+    let genre_task = if enrich
         && request
             .meta
             .as_ref()
@@ -642,13 +697,24 @@ pub async fn deliver_track(
             Ok(tags) => merge_genres(&mut prepared.meta, tags),
             Err(error) => warn!(%error, "parallel genre lookup failed"),
         },
-        None => enrich_tags(state, &mut prepared.meta, tags_enabled).await,
+        None => enrich_tags(state, &mut prepared.meta, enrich).await,
     }
     metrics::histogram!("music_bot_download_seconds")
         .record(download_started.elapsed().as_secs_f64());
 
     // Another request may have finished while we downloaded.
-    if try_cache_send(state, bot, chat, &request.key, quality, tags_enabled).await? {
+    if try_cache_send(
+        state,
+        bot,
+        chat,
+        &request.key,
+        quality,
+        user_id,
+        tags_enabled,
+        genre_analysis,
+    )
+    .await?
+    {
         return Ok(Delivery::Cached);
     }
 
@@ -687,6 +753,16 @@ pub async fn deliver_track(
         .await
     {
         warn!(%error, key = %request.key, "could not cache uploaded track");
+    }
+    if genre_analysis {
+        let track_key = request.key.to_string();
+        if let Err(error) = state
+            .db
+            .record_genres(user_id, &track_key, &prepared.meta.genres)
+            .await
+        {
+            warn!(%error, key = %request.key, "could not record genres for upload");
+        }
     }
     Ok(Delivery::Uploaded)
 }

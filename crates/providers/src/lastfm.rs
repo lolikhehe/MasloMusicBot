@@ -92,6 +92,19 @@ impl StatsKind {
     }
 }
 
+/// Last.fm serves a grey star for items without artwork. Those URLs are real
+/// images (so a plain "is the URL non-empty" check passes) but must never be
+/// drawn as covers; the caller falls back to a public catalog lookup instead.
+pub fn is_placeholder_image(url: &str) -> bool {
+    const PLACEHOLDERS: &[&str] = &[
+        "2a96cbd8b46e442fc41c2b86b821562f",
+        "b26d6fd11de240a1c045dfb5c5d9fe65",
+        "c6f59c1e5e7240a4c0d427abd71f3dbb",
+        "d41d8cd98f00b204e9800998ecf8427e",
+    ];
+    PLACEHOLDERS.iter().any(|hash| url.contains(hash))
+}
+
 /// One row of a Last.fm chart. `secondary` is the artist for tracks/albums.
 #[derive(Debug, Clone)]
 pub struct ScrobbleItem {
@@ -313,71 +326,79 @@ impl LastFmClient {
             .json::<serde_json::Value>()
             .await
             .map_err(map_reqwest)?;
-        let root_key = match kind {
-            StatsKind::Tracks => "toptracks",
-            StatsKind::Albums => "topalbums",
-            StatsKind::Artists => "topartists",
-        };
-        let row_key = match kind {
-            StatsKind::Tracks => "track",
-            StatsKind::Albums => "album",
-            StatsKind::Artists => "artist",
-        };
-        let mut items: Vec<ScrobbleItem> = response
-            .get(root_key)
-            .and_then(|page| page.get(row_key))
-            .and_then(|rows| rows.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|row| {
-                let name = row.get("name")?.as_str()?.trim().to_owned();
-                if name.is_empty() {
-                    return None;
-                }
-                let secondary = row
-                    .get("artist")
-                    .and_then(|artist| {
-                        artist
-                            .get("name")
-                            .and_then(|name| name.as_str())
-                            .or_else(|| artist.as_str())
-                    })
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned);
-                let playcount = row
-                    .get("playcount")
-                    .and_then(|value| {
-                        value
-                            .as_str()
-                            .and_then(|text| text.parse::<u64>().ok())
-                            .or_else(|| value.as_u64())
-                    })
-                    .unwrap_or(0);
-                // Last.fm orders images small → extralarge/mega; the last one
-                // is the biggest available.
-                let image_url = row
-                    .get("image")
-                    .and_then(|images| images.as_array())
-                    .and_then(|images| {
-                        images
-                            .iter()
-                            .filter_map(|image| image.get("#text")?.as_str())
-                            .filter(|url| !url.is_empty())
-                            .last()
-                    })
-                    .map(str::to_owned);
-                Some(ScrobbleItem {
-                    name,
-                    secondary,
-                    playcount,
-                    image_url,
-                })
-            })
-            .collect();
+        let mut items = parse_top_items(kind, &response);
         items.sort_by(|left, right| right.playcount.cmp(&left.playcount));
         Ok(items)
     }
+}
+
+/// Pure parser for `user.getTop*` payloads, kept separate so the placeholder
+/// filtering can be unit-tested without network access.
+fn parse_top_items(kind: StatsKind, response: &serde_json::Value) -> Vec<ScrobbleItem> {
+    let root_key = match kind {
+        StatsKind::Tracks => "toptracks",
+        StatsKind::Albums => "topalbums",
+        StatsKind::Artists => "topartists",
+    };
+    let row_key = match kind {
+        StatsKind::Tracks => "track",
+        StatsKind::Albums => "album",
+        StatsKind::Artists => "artist",
+    };
+    response
+        .get(root_key)
+        .and_then(|page| page.get(row_key))
+        .and_then(|rows| rows.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let name = row.get("name")?.as_str()?.trim().to_owned();
+            if name.is_empty() {
+                return None;
+            }
+            let secondary = row
+                .get("artist")
+                .and_then(|artist| {
+                    artist
+                        .get("name")
+                        .and_then(|name| name.as_str())
+                        .or_else(|| artist.as_str())
+                })
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            let playcount = row
+                .get("playcount")
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .and_then(|text| text.parse::<u64>().ok())
+                        .or_else(|| value.as_u64())
+                })
+                .unwrap_or(0);
+            // Last.fm orders images small → extralarge/mega; the last one
+            // is the biggest available. Skip the grey-star placeholder:
+            // for top tracks/artists it is frequently the only image, and
+            // drawing it looked like broken artwork in collages.
+            let image_url = row
+                .get("image")
+                .and_then(|images| images.as_array())
+                .and_then(|images| {
+                    images
+                        .iter()
+                        .filter_map(|image| image.get("#text")?.as_str())
+                        .filter(|url| !url.is_empty() && !is_placeholder_image(url))
+                        .next_back()
+                })
+                .map(str::to_owned);
+            Some(ScrobbleItem {
+                name,
+                secondary,
+                playcount,
+                image_url,
+            })
+        })
+        .collect()
 }
 
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
@@ -769,5 +790,39 @@ mod tests {
         let json = r##"{"error":6,"message":"Track not found"}"##;
         let body: TrackInfoResponse = serde_json::from_str(json).expect("json");
         assert!(body.track.is_none());
+    }
+
+    #[test]
+    fn top_items_drop_lastfm_placeholder_artwork() {
+        // Live shape: every image size points at the grey-star placeholder.
+        let json = r##"{
+            "toptracks": { "track": [
+                {
+                    "name": "Sultans of Swing",
+                    "artist": { "name": "Dire Straits" },
+                    "playcount": "42",
+                    "image": [
+                        { "#text": "https://lastfm-img.freetls.fastly.net/i/u/34s/2a96cbd8b46e442fc41c2b86b821562f.png", "size": "small" },
+                        { "#text": "https://lastfm-img.freetls.fastly.net/i/u/300x300/2a96cbd8b46e442fc41c2b86b821562f.png", "size": "extralarge" }
+                    ]
+                },
+                {
+                    "name": "Money for Nothing",
+                    "artist": { "name": "Dire Straits" },
+                    "playcount": 7,
+                    "image": [
+                        { "#text": "https://x/small.jpg", "size": "small" },
+                        { "#text": "https://x/mega.jpg", "size": "mega" }
+                    ]
+                }
+            ] }
+        }"##;
+        let response: serde_json::Value = serde_json::from_str(json).expect("json");
+        let items = parse_top_items(StatsKind::Tracks, &response);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].image_url, None);
+        assert_eq!(items[0].playcount, 42);
+        assert_eq!(items[1].image_url.as_deref(), Some("https://x/mega.jpg"));
+        assert_eq!(items[1].playcount, 7);
     }
 }

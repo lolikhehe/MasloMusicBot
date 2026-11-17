@@ -41,11 +41,12 @@ not be editable into messages.
 |---|---|---|
 | `/start` | everyone | Disclaimer and quick intro |
 | `/help` | everyone | How to use the bot |
-| `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps, or **FLAC** lossless), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px) |
+| `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps, or **FLAC** lossless), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px), Last.fm stats toggle, genre analyzer toggle |
 | `/alb <name>` | everyone | Find an album by name (Deezer + Apple Music catalogs) and download it track by track |
 | `/import` / playlist file | everyone | Import a playlist from Spotify/TuneMyMusic/Soundiiz exports (CSV/TXT/JSON) or pasted `Artist – Title` lines |
 | `/profile` / `/lastfmstats [period]` | everyone | Last.fm scrobble stats (enable **Last.fm stats** in `/settings` and connect `/lastfm <nick>`) |
 | `/collage <tracks\|albums\|artists> [3x3..10x10] [period]` | everyone | PNG collage of your most played tracks/albums/artists with playcounts |
+| `/genres [5..20]` | everyone | PNG bar chart of the genres in your downloads (deduplicated per track; enable **Genre analyzer** in `/settings`) |
 | `/stats` | admins | Tracks cached, users seen, uptime |
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |
@@ -72,7 +73,7 @@ All settings come from environment variables (see `.env.example`). Highlights:
 
 - `ENABLED_PROVIDERS` — comma-separated, or `all` (`youtube,youtube_music,soundcloud,bandcamp,spotify,apple_music,deezer`)
 - `SEARCH_PROVIDERS` — `youtube,soundcloud,deezer` (anonymous search allowed for the bot; restrict e.g. to `youtube` to pin old behavior). Order is irrelevant; per-user choice wins. Search is two-tier cached (moka L1 + SQLite `search_cache` L2) keyed per source, and inline results carry no new file uploads.
-- `LASTFM_API_KEY` — optional; enables the Last.fm inline "now playing" proposal and `/lastfm`. Users connect with `/lastfm <public nickname>` (never a password; the recent-tracks feed is public). With no key set, inline empty query stays empty and `/lastfm` reports it is not configured.
+- `LASTFM_API_KEY` — optional; enables the Last.fm inline "now playing" proposal, `/lastfm`, `/profile`, `/collage` and artwork enrichment. Users connect with `/lastfm <public nickname>` (never a password; the recent-tracks feed is public). With no key set, inline empty query stays empty and `/lastfm` reports it is not configured. Last.fm's grey-star placeholder artwork is ignored; collages resolve real covers through the public Deezer catalog (in-memory URL cache, image bytes re-downloaded per render).
 - `MAX_DURATION_SECS` (default 1200), `MAX_FILE_MB` (default 100 in code, but always clamped to the Telegram Bot API 50 MB upload limit — effective audio ceiling ≈49 MB)
 - `MAX_COLLECTION_TRACKS` (default 25), `MAX_ACTIVE_DOWNLOADS_PER_USER` (default 2)
 - `YTDLP_AUTO_UPDATE` (default `true`) — the container entrypoint downloads the latest yt-dlp into `/data/tmp/bin` on every start and uses it (pinned binary as fallback). Set `false` to keep the pinned build. A long-running container does not update itself; restart it regularly (e.g. weekly) to stay current. See `docs/yt-dlp-alternatives.md` for why there is no maintenance-free YouTube downloader.

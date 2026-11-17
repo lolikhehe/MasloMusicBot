@@ -19,6 +19,7 @@ const MIGRATION_0004: &str = include_str!("../../../migrations/0004_lastfm.sql")
 const MIGRATION_0005: &str = include_str!("../../../migrations/0005_hq_cover.sql");
 const MIGRATION_0006: &str = include_str!("../../../migrations/0006_meta.sql");
 const MIGRATION_0007: &str = include_str!("../../../migrations/0007_lastfm_stats.sql");
+const MIGRATION_0008: &str = include_str!("../../../migrations/0008_genre_analysis.sql");
 
 #[derive(Clone)]
 pub struct Db {
@@ -135,6 +136,18 @@ impl Db {
         .map_err(db_err)?;
         if has_lastfm_stats == 0 {
             sqlx::raw_sql(MIGRATION_0007)
+                .execute(&pool)
+                .await
+                .map_err(db_err)?;
+        }
+        let has_genre_analysis: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('users') WHERE name = 'genre_analysis'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(db_err)?;
+        if has_genre_analysis == 0 {
+            sqlx::raw_sql(MIGRATION_0008)
                 .execute(&pool)
                 .await
                 .map_err(db_err)?;
@@ -337,7 +350,7 @@ impl Db {
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
              ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user, hq_cover, lastfm_stats",
+             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user, hq_cover, lastfm_stats, genre_analysis",
         )
         .bind(id)
         .bind(fallback.code())
@@ -359,6 +372,7 @@ impl Db {
             lastfm_user: row.get::<Option<String>, _>("lastfm_user"),
             hq_cover: row.get::<i64, _>("hq_cover") != 0,
             lastfm_stats: row.get::<i64, _>("lastfm_stats") != 0,
+            genre_analysis: row.get::<i64, _>("genre_analysis") != 0,
         })
     }
 
@@ -432,6 +446,105 @@ impl Db {
             .await
             .map_err(db_err)?;
         Ok(())
+    }
+
+    pub async fn set_genre_analysis(&self, id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query("UPDATE users SET genre_analysis = ?, last_seen_at = ? WHERE user_id = ?")
+            .bind(i64::from(enabled))
+            .bind(unix_now())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Record one downloaded track for the genre analyzer. The user's toggle is
+    /// checked here so every delivery path can call this unconditionally.
+    /// Returns `true` when the track was new (its genres were counted).
+    pub async fn record_genres(
+        &self,
+        id: i64,
+        track_key: &str,
+        genres: &[String],
+    ) -> AppResult<bool> {
+        if genres.is_empty() {
+            return Ok(false);
+        }
+        let enabled: Option<i64> =
+            sqlx::query_scalar("SELECT genre_analysis FROM users WHERE user_id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_err)?;
+        if enabled != Some(1) {
+            return Ok(false);
+        }
+        let now = unix_now();
+        let mut transaction = self.pool.begin().await.map_err(db_err)?;
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO user_genre_tracks (user_id, track_key, created_at)
+             VALUES (?, ?, ?)",
+        )
+        .bind(id)
+        .bind(track_key)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(db_err)?;
+        if inserted.rows_affected() == 0 {
+            transaction.commit().await.map_err(db_err)?;
+            return Ok(false);
+        }
+        for genre in genres {
+            let genre = genre.trim();
+            if genre.is_empty() {
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO user_genres (user_id, genre, listens, updated_at)
+                 VALUES (?, ?, 1, ?)
+                 ON CONFLICT(user_id, genre) DO UPDATE SET
+                     listens = listens + 1,
+                     updated_at = excluded.updated_at",
+            )
+            .bind(id)
+            .bind(genre)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .map_err(db_err)?;
+        }
+        transaction.commit().await.map_err(db_err)?;
+        Ok(true)
+    }
+
+    /// Most-listened genres for one user, highest first.
+    pub async fn top_genres(&self, id: i64, limit: usize) -> AppResult<Vec<(String, i64)>> {
+        let rows = sqlx::query(
+            "SELECT genre, listens FROM user_genres
+             WHERE user_id = ?
+             ORDER BY listens DESC, genre ASC
+             LIMIT ?",
+        )
+        .bind(id)
+        .bind(limit.clamp(1, 50) as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get::<String, _>("genre"), row.get::<i64, _>("listens")))
+            .collect())
+    }
+
+    /// Number of distinct tracks counted by the analyzer.
+    pub async fn genre_track_count(&self, id: i64) -> AppResult<i64> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_genre_tracks WHERE user_id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_err)
     }
 
     pub async fn set_tags_enabled(&self, id: i64, enabled: bool) -> AppResult<()> {
@@ -581,6 +694,51 @@ mod tests {
         assert!(db.purge_track(&key).await.expect("purge"));
         assert!(db.get_track(&key, 192).await.expect("get").is_none());
         assert!(db.get_track(&key, 320).await.expect("get").is_none());
+    }
+
+    #[tokio::test]
+    async fn genre_analyzer_deduplicates_and_respects_toggle() {
+        let db = test_db().await;
+        let user = db.ensure_user(99, Lang::En).await.expect("user");
+        assert!(!user.genre_analysis);
+
+        // Toggle off: nothing is recorded even when genres are available.
+        assert!(
+            !db.record_genres(99, "youtube:one", &["Rock".to_owned()])
+                .await
+                .expect("record off")
+        );
+        assert_eq!(db.genre_track_count(99).await.expect("count"), 0);
+
+        db.set_genre_analysis(99, true).await.expect("toggle");
+        assert!(
+            db.record_genres(99, "youtube:one", &["Rock".to_owned(), "Metal".to_owned()])
+                .await
+                .expect("record one")
+        );
+        // The same track again must not inflate the chart.
+        assert!(
+            !db.record_genres(99, "youtube:one", &["Rock".to_owned()])
+                .await
+                .expect("record replay")
+        );
+        assert!(
+            db.record_genres(99, "youtube:two", &["Rock".to_owned()])
+                .await
+                .expect("record two")
+        );
+        let top = db.top_genres(99, 10).await.expect("top");
+        assert_eq!(top, vec![("Rock".to_owned(), 2), ("Metal".to_owned(), 1)]);
+        assert_eq!(db.genre_track_count(99).await.expect("count"), 2);
+
+        // Turning the analyzer off stops new recordings but keeps history.
+        db.set_genre_analysis(99, false).await.expect("toggle off");
+        assert!(
+            !db.record_genres(99, "youtube:three", &["Jazz".to_owned()])
+                .await
+                .expect("record off again")
+        );
+        assert_eq!(db.genre_track_count(99).await.expect("count"), 2);
     }
 
     #[tokio::test]

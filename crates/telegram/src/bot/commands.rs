@@ -30,6 +30,8 @@ pub enum Command {
     Collage(Option<String>),
     /// `/import <playlist text>` or an uploaded CSV/TXT/JSON document.
     Import(Option<String>),
+    /// `/genres [bars]` — per-user genre analyzer chart.
+    GenreStats(Option<String>),
     Unknown(String),
 }
 
@@ -60,6 +62,9 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "profile" | "lastfmstats" => Command::Profile((!args.is_empty()).then_some(args)),
         "collage" => Command::Collage((!args.is_empty()).then_some(args)),
         "import" => Command::Import((!args.is_empty()).then_some(args)),
+        "genres" | "genre" | "analysis" | "жанри" | "аналітика" => {
+            Command::GenreStats((!args.is_empty()).then_some(args))
+        }
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
         "purge" => Command::Purge((!args.is_empty()).then_some(args)),
@@ -75,6 +80,7 @@ pub fn settings_keyboard(
     tags_enabled: bool,
     hq_cover: bool,
     lastfm_stats: bool,
+    genre_analysis: bool,
 ) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = [128u32, 192, 256, 320]
         .chunks(2)
@@ -139,6 +145,18 @@ pub fn settings_keyboard(
         ),
         format!("s:lstats:{}", u8::from(!lastfm_stats)),
     )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{}{}",
+            if genre_analysis { "✓ " } else { "" },
+            i18n::genre_analysis_label(lang)
+        ),
+        format!("s:gan:{}", u8::from(!genre_analysis)),
+    )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        i18n::genre_chart_label(lang),
+        "gn:c:10",
+    )]);
     rows.push(
         [Lang::En, Lang::Uk]
             .into_iter()
@@ -194,6 +212,7 @@ pub async fn handle_command(
                 user_record.lastfm_user.as_deref(),
                 user_record.hq_cover,
                 user_record.lastfm_stats,
+                user_record.genre_analysis,
             );
             if !state
                 .config
@@ -212,6 +231,7 @@ pub async fn handle_command(
                     user_record.tags_enabled,
                     user_record.hq_cover,
                     user_record.lastfm_stats,
+                    user_record.genre_analysis,
                 ))
                 .await?;
         }
@@ -323,6 +343,13 @@ pub async fn handle_command(
             }
             crate::bot::import::handle_import_args(state, bot, msg, content.as_deref(), lang)
                 .await?;
+        }
+        Command::GenreStats(args) => {
+            if !msg.chat.is_private() {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            crate::bot::stats::handle_genres(state, bot, msg, args.as_deref(), lang).await?;
         }
         Command::AlbumSearch(query) => {
             if !msg.chat.is_private() {

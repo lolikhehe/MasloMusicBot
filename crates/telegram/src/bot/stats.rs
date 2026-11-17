@@ -7,6 +7,7 @@ use crate::state::AppState;
 use common::domain::Lang;
 use common::error::HandlerResult;
 use common::i18n;
+use providers::external::ArtworkKind;
 use providers::lastfm::{LastFmClient, ScrobbleItem, StatsKind, StatsPeriod};
 use std::sync::Arc;
 use std::time::Duration;
@@ -213,29 +214,62 @@ async fn send_collage(
             .await?;
         return Ok(());
     }
-    // Fetch real artwork from the URLs Last.fm already returned. Bounded
-    // concurrency keeps this gentle on the operator's network, and nothing is
-    // cached on disk.
+    // Last.fm artwork is used when real; its grey-star placeholder is filtered
+    // out in the client, in which case the public Deezer catalog is asked for
+    // the actual cover. Resolution and image download share one semaphore so a
+    // 10x10 collage stays gentle on the operator's network.
+    let artwork_kind = match kind {
+        StatsKind::Tracks => ArtworkKind::Track,
+        StatsKind::Albums => ArtworkKind::Album,
+        StatsKind::Artists => ArtworkKind::Artist,
+    };
     let mut covers: Vec<Option<Vec<u8>>> = vec![None; items.len()];
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(6))
         .build()
         .unwrap_or_default();
-    let semaphore = Arc::new(Semaphore::new(4));
+    let semaphore = Arc::new(Semaphore::new(6));
     let mut tasks = JoinSet::new();
     for (index, item) in items.iter().enumerate() {
-        if let Some(url) = item.image_url.clone() {
-            let client = client.clone();
-            let semaphore = semaphore.clone();
-            tasks.spawn(async move {
-                let _permit = semaphore.acquire().await.ok()?;
-                let response = client.get(&url).send().await.ok()?;
-                if !response.status().is_success() {
-                    return None;
+        let query = match kind {
+            StatsKind::Artists => item.name.clone(),
+            StatsKind::Tracks | StatsKind::Albums => format!(
+                "{} {}",
+                item.secondary.as_deref().unwrap_or_default(),
+                item.name
+            ),
+        };
+        let cache_key = format!("{}:{}", artwork_kind.as_str(), query.trim().to_lowercase());
+        let lastfm_url = item.image_url.clone();
+        let state = state.clone();
+        let client = client.clone();
+        let semaphore = semaphore.clone();
+        tasks.spawn(async move {
+            let _permit = semaphore.acquire().await.ok()?;
+            let url = match lastfm_url {
+                Some(url) => Some(url),
+                None => {
+                    if let Some(cached) = state.artwork_cache.get(&cache_key).await {
+                        cached
+                    } else {
+                        let resolved = state.manager.artwork_url(artwork_kind, &query).await;
+                        state
+                            .artwork_cache
+                            .insert(cache_key, resolved.clone())
+                            .await;
+                        resolved
+                    }
                 }
-                Some((index, response.bytes().await.ok()?.to_vec()))
-            });
-        }
+            }?;
+            let response = client.get(&url).send().await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let bytes = response.bytes().await.ok()?.to_vec();
+            // Empty/1x1 responses are not useful covers; let the cell fall back
+            // to the plain dark placeholder.
+            (bytes.len() > 512).then_some((index, bytes))
+        });
     }
     while let Some(result) = tasks.join_next().await {
         if let Ok(Some((index, bytes))) = result {
@@ -277,6 +311,141 @@ async fn send_collage(
         warn!(%error, "collage upload failed");
     }
     Ok(())
+}
+
+fn genre_keyboard(bars: u8) -> InlineKeyboardMarkup {
+    let row: Vec<InlineKeyboardButton> = [5u8, 8, 10, 12, 15, 20]
+        .into_iter()
+        .map(|value| {
+            let check = if value == bars { "✓ " } else { "" };
+            InlineKeyboardButton::callback(format!("{check}{value}"), format!("gn:c:{value}"))
+        })
+        .collect();
+    InlineKeyboardMarkup::new(vec![row])
+}
+
+fn genre_display(value: &str) -> String {
+    if value.eq_ignore_ascii_case("r&b") {
+        return "R&B".to_owned();
+    }
+    value
+        .split_whitespace()
+        .map(|word| {
+            let mut characters = word.chars();
+            match characters.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + characters.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<String>>()
+        .join(" ")
+}
+
+pub async fn handle_genres(
+    state: &AppState,
+    bot: &Bot,
+    msg: &Message,
+    arg: Option<&str>,
+    lang: Lang,
+) -> HandlerResult {
+    let Some(from) = msg.from.as_ref() else {
+        return Ok(());
+    };
+    let user_id = from.id.0 as i64;
+    let user = state.db.ensure_user(user_id, lang).await?;
+    if !user.genre_analysis {
+        bot.send_message(msg.chat.id, i18n::genre_chart_disabled(lang))
+            .await?;
+        return Ok(());
+    }
+    let bars = match arg
+        .and_then(|value| value.split_whitespace().next())
+        .map(str::parse::<u8>)
+    {
+        None => 10,
+        Some(Ok(value)) => value.clamp(5, 20),
+        Some(Err(_)) => {
+            bot.send_message(msg.chat.id, i18n::genre_chart_usage(lang))
+                .await?;
+            return Ok(());
+        }
+    };
+    send_genre_chart(state, bot, msg.chat.id, user_id, lang, bars).await
+}
+
+async fn send_genre_chart(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    user_id: i64,
+    lang: Lang,
+    bars: u8,
+) -> HandlerResult {
+    let user = state.db.ensure_user(user_id, lang).await?;
+    if !user.genre_analysis {
+        bot.send_message(chat, i18n::genre_chart_disabled(lang))
+            .await?;
+        return Ok(());
+    }
+    let rows = state.db.top_genres(user_id, usize::from(bars)).await?;
+    if rows.is_empty() {
+        bot.send_message(chat, i18n::genre_chart_empty(lang))
+            .await?;
+        return Ok(());
+    }
+    let total_tracks = state.db.genre_track_count(user_id).await?;
+    let items: Vec<collage::BarItem> = rows
+        .iter()
+        .map(|(genre, listens)| collage::BarItem {
+            label: genre_display(genre),
+            value: (*listens).max(1) as u64,
+        })
+        .collect();
+    let title = i18n::genre_chart_title(lang);
+    let subtitle = i18n::genre_chart_subtitle(lang, total_tracks, items.len());
+    let path = state
+        .config
+        .tmp_dir
+        .join(format!("genres-{}.png", uuid::Uuid::new_v4().simple()));
+    if let Err(error) = collage::render_bars(title, &subtitle, &items, &path) {
+        warn!(%error, "genre chart render failed");
+        bot.send_message(chat, i18n::genre_chart_failed(lang))
+            .await?;
+        return Ok(());
+    }
+    let result = bot
+        .send_photo(chat, InputFile::file(&path))
+        .caption(subtitle)
+        .reply_markup(genre_keyboard(bars))
+        .await;
+    let _ = tokio::fs::remove_file(&path).await;
+    if let Err(error) = result {
+        warn!(%error, "genre chart upload failed");
+    }
+    Ok(())
+}
+
+/// Resolve the `gn:c:<bars>` callback from `/genres` and the settings button.
+pub async fn handle_genre_chart_callback(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    bars: u8,
+) -> HandlerResult {
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    let user_id = query.from.id.0 as i64;
+    let lang = state.db.ensure_user(user_id, Lang::En).await?.lang;
+    send_genre_chart(
+        state,
+        bot,
+        message.chat.id,
+        user_id,
+        lang,
+        bars.clamp(5, 20),
+    )
+    .await
 }
 
 /// Resolve the `lf:c:<kind>:<grid>:<period>` callback from `/profile`.
