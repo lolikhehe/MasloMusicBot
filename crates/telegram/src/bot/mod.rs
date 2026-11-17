@@ -17,6 +17,7 @@ use teloxide::dispatching::Dispatcher;
 use teloxide::error_handlers::LoggingErrorHandler;
 use teloxide::prelude::*;
 use teloxide::types::{Update, UpdateKind};
+use teloxide::update_listeners::UpdateListener;
 use teloxide::update_listeners::webhooks::{Options, axum_to_router};
 use tracing::{error, info, warn};
 
@@ -43,7 +44,8 @@ pub async fn run(bot: Bot, state: AppState) -> anyhow::Result<()> {
         }
         let address = state.config.webhook_addr;
         let path = options.path.clone();
-        let (listener, _stop_future, router) = axum_to_router(bot.clone(), options).await?;
+        let (mut listener, stop_future, router) = axum_to_router(bot.clone(), options).await?;
+        let stop_token = listener.stop_token();
         let server = tokio::spawn(async move {
             let tcp = tokio::net::TcpListener::bind(address)
                 .await
@@ -67,6 +69,15 @@ pub async fn run(bot: Bot, state: AppState) -> anyhow::Result<()> {
                 .await;
         });
         await_shutdown(shutdown_token, &mut dispatcher_task).await;
+        // The stop future deletes the webhook from Telegram; without awaiting
+        // it a restarted replica would leave a stale webhook registered.
+        stop_token.stop();
+        if tokio::time::timeout(std::time::Duration::from_secs(10), stop_future)
+            .await
+            .is_err()
+        {
+            warn!("webhook deletion timed out");
+        }
         server.abort();
     } else {
         info!("starting polling listener");
