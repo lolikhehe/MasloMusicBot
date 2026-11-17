@@ -49,7 +49,7 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             .await?;
         return Ok(());
     }
-    if !state.inline_limiter.allow(user_id).await {
+    if !state.inline_limiter.allow(user_id) {
         bot.answer_inline_query(query.id.clone(), Vec::new())
             .await?;
         return Ok(());
@@ -465,13 +465,12 @@ async fn fallback_private(
 ) {
     // Fix the inline placeholder so the chat doesn't keep a stale
     // "Downloading…" message; the audio arrives in private chat instead.
-    if let Some(inline_message_id) = result.inline_message_id.clone() {
-        if let Err(error) = bot
+    if let Some(inline_message_id) = result.inline_message_id.clone()
+        && let Err(error) = bot
             .edit_message_text_inline(inline_message_id, i18n::sent_to_private(lang))
             .await
-        {
-            warn!(%error, "could not edit inline placeholder to point at private chat");
-        }
+    {
+        warn!(%error, "could not edit inline placeholder to point at private chat");
     }
     let Some(request) = state.selections.get(&result.result_id).await else {
         return;

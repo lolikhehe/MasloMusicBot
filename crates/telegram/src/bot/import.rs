@@ -187,13 +187,13 @@ fn parse_entries(content: &str) -> Vec<Entry> {
     if trimmed.is_empty() {
         return Vec::new();
     }
-    if trimmed.starts_with('[') || trimmed.starts_with('{') {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            let mut entries = Vec::new();
-            collect_json(&value, &mut entries);
-            if !entries.is_empty() {
-                return entries;
-            }
+    if (trimmed.starts_with('[') || trimmed.starts_with('{'))
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+    {
+        let mut entries = Vec::new();
+        collect_json(&value, &mut entries);
+        if !entries.is_empty() {
+            return entries;
         }
     }
     if trimmed.contains(',')

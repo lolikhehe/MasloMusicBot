@@ -629,8 +629,17 @@ fn classify_failure(stderr: &str, timeout: Duration) -> DownloadError {
 }
 
 fn trim_log(value: &str) -> String {
+    const KEEP: usize = 2000;
     let value = value.trim();
-    let start = value.len().saturating_sub(2000);
+    if value.len() <= KEEP {
+        return value.to_owned();
+    }
+    // Byte slicing must land on a char boundary: stderr can contain non-ASCII
+    // titles and yt-dlp messages, and slicing inside a code point panics.
+    let mut start = value.len() - KEEP;
+    while !value.is_char_boundary(start) {
+        start += 1;
+    }
     value[start..].to_owned()
 }
 
@@ -659,5 +668,17 @@ mod tests {
         assert_eq!(duration_secs(Some(12.6)), Some(13));
         assert_eq!(duration_secs(Some(0.0)), None);
         assert_eq!(duration_secs(Some(f64::NAN)), None);
+    }
+
+    #[test]
+    fn trim_log_never_slices_inside_utf8() {
+        // Total length 2002, so the old `len - 2000` start landed inside the
+        // two-byte `ї` and panicked.
+        let value = format!("a{}{}", "ї", "b".repeat(1999));
+        assert_eq!(value.len(), 2002);
+        let trimmed = trim_log(&value);
+        assert!(trimmed.starts_with('b'));
+        assert_eq!(trimmed.len(), 1999);
+        assert_eq!(trim_log("short"), "short");
     }
 }

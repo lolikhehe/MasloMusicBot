@@ -148,11 +148,7 @@ impl LastFmClient {
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .user_agent("music-bot/0.1 (Telegram music bot)")
-                .build()
-                .unwrap_or_default(),
+            client: crate::http::client(std::time::Duration::from_secs(5)).unwrap_or_default(),
         }
     }
 
@@ -327,7 +323,7 @@ impl LastFmClient {
             .await
             .map_err(map_reqwest)?;
         let mut items = parse_top_items(kind, &response);
-        items.sort_by(|left, right| right.playcount.cmp(&left.playcount));
+        items.sort_by_key(|item| std::cmp::Reverse(item.playcount));
         Ok(items)
     }
 }
@@ -387,8 +383,7 @@ fn parse_top_items(kind: StatsKind, response: &serde_json::Value) -> Vec<Scrobbl
                     images
                         .iter()
                         .filter_map(|image| image.get("#text")?.as_str())
-                        .filter(|url| !url.is_empty() && !is_placeholder_image(url))
-                        .next_back()
+                        .rfind(|url| !url.is_empty() && !is_placeholder_image(url))
                 })
                 .map(str::to_owned);
             Some(ScrobbleItem {
@@ -463,8 +458,6 @@ struct UserInfo {
 struct TrackInfoResponse {
     #[serde(default)]
     track: Option<TrackInfo>,
-    #[serde(default)]
-    error: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,8 +470,6 @@ struct TrackInfo {
 struct ArtistTagsResponse {
     #[serde(default)]
     toptags: Option<TagList>,
-    #[serde(default)]
-    error: Option<i32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -521,7 +512,7 @@ impl TagList {
             .filter(|tag| !tag.name.trim().is_empty())
             .map(|tag| (tag.count.unwrap_or(0), tag.name.trim().to_owned()))
             .collect();
-        tags.sort_by(|left, right| right.0.cmp(&left.0));
+        tags.sort_by_key(|tag| std::cmp::Reverse(tag.0));
         tags.into_iter().map(|(_, name)| name).collect()
     }
 }

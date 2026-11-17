@@ -540,3 +540,42 @@ Confirmed: image rebuilt, container recreated healthy, bot reconnected to Telegr
 `yt-dlp --skip-download` on a YouTube URL now prints the title with no EJS warning, and a
 full `bestaudio[ext=m4a]/bestaudio` download inside the container succeeds (valid M4A,
 `DENO_DIR` cache created on the volume).
+
+## Optimization pass (2026-11-17, v2.0.3)
+
+**Shared HTTP policy.** All public-API clients (Last.fm, Deezer/iTunes/Spotify metadata,
+collage covers) are built in `providers::http::client`. One policy means pooled keep-alive
+connections are actually reused across calls; a per-call `reqwest::Client` paid a new TLS
+handshake every time. Bodies are streamed with hard ceilings rather than buffered via
+`bytes()`, so a broken `content-length` cannot allocate an unbounded buffer. `gzip` is on
+for JSON; images pass through.
+
+**`last_seen_at` is throttled to one write per user per 5 minutes.** `ensure_user` used to
+run `INSERT … ON CONFLICT … RETURNING` on every message, i.e. a write transaction even for
+returning users. It now does a `SELECT` and writes only when the in-memory stamp is older
+than 5 minutes. Tradeoff: ordering by `last_seen_at` and the release-broadcast ordering can
+lag by up to 5 minutes. Both only need *a* recent timestamp, and the broadcast still
+reaches every non-banned user, so the tradeoff is accepted. The stamp map is bounded
+(swept above 8 192 entries) and uses a std mutex that is never held across an await.
+
+**Genre recording is one statement + one batch.** The user toggle and the per-track dedupe
+are folded into `INSERT OR IGNORE … SELECT … WHERE EXISTS`, then all distinct genre labels
+upsert in a single multi-row statement inside the same transaction. This preserves the
+"count a track once per genre" rule (case-insensitive labels are merged) while removing a
+toggle read and N statements per track.
+
+**Embedded cover budget bug.** `embeddable_cover` compared against `MAX_COVER_BYTES`
+(200 KB, Telegram's thumbnail limit). The embedded picture has the audio file's budget,
+so an HQ 1000 px JPEG above ~200 KB was silently dropped. It now uses
+`MAX_EMBEDDED_COVER_BYTES` (1.5 MB), with a regression test.
+
+**Collage/stat rendering.** CPU work (decode, resize, PNG encode) moved to
+`spawn_blocking`; covers are `Arc<[u8]>` so duplicate cells share bytes; unique artwork
+queries/URLs are resolved/downloaded once per chart; resize uses `Triangle`; rectangle
+fills write the raw buffer. Artwork bytes are still never written to disk — every collage
+re-downloads them and drops them after the send, as before.
+
+**Cover-art quality vs speed.** `Triangle` replaces `Lanczos3` for 202 px cells. The
+difference is not visible at that size, and the measured 10×10 render dropped from
+~388 ms to ~215 ms on the dev machine (distinct covers; see docs/perf.md). End-to-end
+Telegram latency remains NOT MEASURED.

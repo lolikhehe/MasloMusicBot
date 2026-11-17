@@ -38,10 +38,7 @@ pub struct ExternalResolver {
 
 impl ExternalResolver {
     pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .user_agent("music-bot/0.1 (+https://github.com/)")
-            .build()?;
+        let client = crate::http::client(timeout)?;
         Ok(Self { client })
     }
 

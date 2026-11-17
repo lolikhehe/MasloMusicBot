@@ -42,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let iterations = 1_000usize;
     let mut get_samples = Vec::with_capacity(iterations);
     let mut touch_samples = Vec::with_capacity(iterations);
+    let mut user_samples = Vec::with_capacity(iterations);
     for i in 0..iterations {
         let key = TrackKey::new(format!("youtube:bench-{}", i % N));
         let t = Instant::now();
@@ -51,10 +52,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let t = Instant::now();
         db.touch_track(&key, 192).await?;
         touch_samples.push(t.elapsed());
+
+        // Every incoming update resolves the user record; measure the hot
+        // path (existing row) rather than the one-time insert.
+        let t = Instant::now();
+        let _ = db
+            .ensure_user(i as i64 % 50, common::domain::Lang::En)
+            .await?;
+        user_samples.push(t.elapsed());
     }
 
     report("get_track (cache hot path read)", &mut get_samples);
     report("touch_track (cache hit bookkeeping)", &mut touch_samples);
+    report("ensure_user (message hot path)", &mut user_samples);
     Ok(())
 }
 

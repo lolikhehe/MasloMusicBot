@@ -13,11 +13,11 @@ use providers::external::ExternalResolver;
 use providers::ytdlp::YtDlp;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use storage::Db;
 use tempfile::TempDir;
-use tokio::sync::{Mutex, Semaphore, broadcast};
+use tokio::sync::{Semaphore, broadcast};
 use tracing::{info, warn};
 
 #[derive(Clone)]
@@ -60,11 +60,7 @@ pub struct DownloadManager {
 
 impl DownloadManager {
     pub fn new(config: Arc<Config>, db: Db, ytdlp: YtDlp, external: ExternalResolver) -> Self {
-        let cover_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent("music-bot/0.1")
-            .build()
-            .unwrap_or_default();
+        let cover_client = providers::http::client(Duration::from_secs(20)).unwrap_or_default();
         let search_cache = Cache::builder()
             .max_capacity(1_000)
             .time_to_live(Duration::from_secs(600))
@@ -365,7 +361,10 @@ impl DownloadManager {
         let mut sender = None;
 
         {
-            let mut inflight = self.inflight.lock().await;
+            let mut inflight = self
+                .inflight
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if let Some(existing) = inflight.get(&cache_key) {
                 receiver = Some(existing.subscribe());
             } else {
@@ -394,7 +393,10 @@ impl DownloadManager {
         let result = self.prepare_leader(request, quality, hq_cover).await;
         let broadcast_result = result.clone().map_err(|error| Arc::new(error.clone()));
         let _ = sender.send(broadcast_result);
-        let mut inflight = self.inflight.lock().await;
+        let mut inflight = self
+            .inflight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         inflight.remove(&cache_key);
         metrics::gauge!("music_bot_downloads_queued").set(inflight.len() as f64);
         drop(inflight);

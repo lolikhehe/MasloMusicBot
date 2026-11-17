@@ -47,6 +47,7 @@ pub fn help(lang: Lang, is_admin: bool) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn settings_title(
     lang: Lang,
     quality: u32,
@@ -679,6 +680,7 @@ pub fn collage_usage(lang: Lang) -> &'static str {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn profile_summary(
     lang: Lang,
     name: &str,

@@ -3,6 +3,7 @@
 //! to avoid pulling a web framework in for two static routes.
 
 use metrics_exporter_prometheus::PrometheusHandle;
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use storage::Db;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -35,7 +36,9 @@ async fn respond(
     db: Db,
     handle: PrometheusHandle,
 ) -> std::io::Result<()> {
-    let mut buf = vec![0u8; 8192];
+    // Requests are tiny (`GET /healthz HTTP/1.1`); a stack buffer avoids an
+    // allocation per probe.
+    let mut buf = [0u8; 4096];
     let read = socket.read(&mut buf).await?;
     let request = String::from_utf8_lossy(&buf[..read]);
     let path = request
@@ -46,33 +49,36 @@ async fn respond(
         .next()
         .unwrap_or("/");
 
-    let (status, content_type, body) = match path {
+    let (status, content_type, body): (&str, &str, Cow<'static, str>) = match path {
         "/healthz" => {
             if db.ping().await {
                 (
                     "200 OK",
                     "application/json",
-                    "{\"status\":\"ok\"}".to_owned(),
+                    Cow::Borrowed("{\"status\":\"ok\"}"),
                 )
             } else {
                 (
                     "503 Service Unavailable",
                     "application/json",
-                    "{\"status\":\"degraded\"}".to_owned(),
+                    Cow::Borrowed("{\"status\":\"degraded\"}"),
                 )
             }
         }
         "/metrics" => (
             "200 OK",
             "text/plain; version=0.0.4; charset=utf-8",
-            handle.render(),
+            Cow::Owned(handle.render()),
         ),
-        _ => ("404 Not Found", "text/plain", "not found".to_owned()),
+        _ => ("404 Not Found", "text/plain", Cow::Borrowed("not found")),
     };
 
-    let response = format!(
-        "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+    // Header and body are written separately so the body is not copied into
+    // another allocation just to be sent.
+    let header = format!(
+        "HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
     );
-    socket.write_all(response.as_bytes()).await
+    socket.write_all(header.as_bytes()).await?;
+    socket.write_all(body.as_bytes()).await
 }

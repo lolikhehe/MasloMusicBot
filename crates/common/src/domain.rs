@@ -1,6 +1,7 @@
 //! Core value types shared by the bot, providers, cache and downloader.
 
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
 
@@ -181,6 +182,20 @@ impl TrackMeta {
     /// that downloaded video titles often carry ("Artist - Title",
     /// "Artist Title") so the chat doesn't show the name twice.
     pub fn without_artist_prefix(&self) -> Self {
+        match self.stripped_title() {
+            Cow::Borrowed(_) => self.clone(),
+            Cow::Owned(title) => {
+                let mut meta = self.clone();
+                meta.title = title;
+                meta
+            }
+        }
+    }
+
+    /// Borrowing variant of [`Self::without_artist_prefix`] for send paths that
+    /// only need the title. Avoids cloning the whole metadata (including the
+    /// genre vector) on every cached delivery.
+    pub fn stripped_title(&self) -> Cow<'_, str> {
         const SEPARATORS: &str = "-–—:|•/\\";
         let title = self.title.trim();
         let artist = self
@@ -189,14 +204,13 @@ impl TrackMeta {
             .map(str::trim)
             .filter(|artist| !artist.is_empty());
         let Some(artist) = artist else {
-            return self.clone();
+            return Cow::Borrowed(&self.title);
         };
         let artist_len = artist.chars().count();
-        if title.chars().count() <= artist_len {
-            return self.clone();
-        }
-        if !title.to_lowercase().starts_with(&artist.to_lowercase()) {
-            return self.clone();
+        if title.chars().count() <= artist_len
+            || !title.to_lowercase().starts_with(&artist.to_lowercase())
+        {
+            return Cow::Borrowed(&self.title);
         }
         let rest: String = title.chars().skip(artist_len).collect();
         let rest = rest
@@ -204,11 +218,10 @@ impl TrackMeta {
             .trim_start_matches(|ch| SEPARATORS.contains(ch))
             .trim_start();
         if rest.is_empty() {
-            return self.clone();
+            Cow::Borrowed(&self.title)
+        } else {
+            Cow::Owned(rest.to_owned())
         }
-        let mut meta = self.clone();
-        meta.title = rest.to_owned();
-        meta
     }
 
     pub fn search_query(&self) -> String {

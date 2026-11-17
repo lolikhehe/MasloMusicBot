@@ -47,6 +47,10 @@ pub struct AppState {
     /// only; each collage re-downloads the image bytes so nothing accumulates
     /// on the operator's disk.
     pub artwork_cache: Cache<String, Option<String>>,
+    /// Shared pooled client for artwork/catalog HTTP calls (Last.fm, Deezer,
+    /// iTunes, cover images). Reusing it keeps TLS handshakes and idle
+    /// connections out of every collage request.
+    pub http: reqwest::Client,
 }
 
 impl AppState {
@@ -82,6 +86,9 @@ impl AppState {
             .build();
         let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
         let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
+        // 6 s is enough for every public catalog and cover host used here; the
+        // client is shared so keep-alive connections are reused across charts.
+        let http = providers::http::client(Duration::from_secs(6)).unwrap_or_default();
         let inline_generations = Cache::builder()
             .max_capacity(10_000)
             .time_to_idle(Duration::from_secs(600))
@@ -106,11 +113,14 @@ impl AppState {
             lastfm,
             genre_cache,
             artwork_cache,
+            http,
         }
     }
 
     pub fn new_selection_id(&self) -> String {
-        uuid::Uuid::new_v4().simple().to_string()[..16].to_owned()
+        let mut id = uuid::Uuid::new_v4().simple().to_string();
+        id.truncate(16);
+        id
     }
 
     /// Bump the per-user inline generation counter; returns the new value.

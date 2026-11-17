@@ -16,7 +16,6 @@ path = "src/main.rs"
 anyhow.workspace = true
 common.workspace = true
 dotenvy.workspace = true
-futures.workspace = true
 downloader.workspace = true
 mimalloc.workspace = true
 providers.workspace = true

@@ -9,6 +9,7 @@ use common::i18n;
 use common::version::DEV_CHANNEL_LINE;
 use downloader::PreparedAudio;
 use providers::{ParsedInput, parse_input};
+use std::borrow::Cow;
 use std::time::Instant;
 use teloxide::prelude::*;
 use teloxide::types::{
@@ -79,7 +80,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
         return Ok(());
     }
 
-    if !state.limiter.allow(user_id).await {
+    if !state.limiter.allow(user_id) {
         send::send_html(
             &bot,
             msg.chat.id,
@@ -92,8 +93,9 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     metrics::counter!("music_bot_requests_total").increment(1);
     let started = Instant::now();
     // Spec §10: user texts must not be logged beyond debugging, so we log the
-    // routing decision rather than the text itself.
-    let input = entity_url(&msg).unwrap_or_else(|| text.to_owned());
+    // routing decision rather than the text itself. Borrowed when there is no
+    // hidden URL entity, which is the common case.
+    let input = entity_url(&msg).map_or(Cow::Borrowed(text), Cow::Owned);
     info!(user_id, "handling input");
 
     let result = match parse_input(&input) {

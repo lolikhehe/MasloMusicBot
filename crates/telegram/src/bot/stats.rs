@@ -4,13 +4,14 @@
 
 use crate::bot::handlers::escape_html;
 use crate::state::AppState;
-use common::domain::Lang;
+use common::domain::{Lang, UserRecord};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::external::ArtworkKind;
+use providers::http;
 use providers::lastfm::{LastFmClient, ScrobbleItem, StatsKind, StatsPeriod};
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, ParseMode};
 use tokio::sync::Semaphore;
@@ -18,6 +19,12 @@ use tokio::task::JoinSet;
 use tracing::warn;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Hard ceiling for one collage cover. Last.fm/Deezer artwork is far smaller;
+/// the cap only stops a misbehaving host from buffering an unbounded body.
+const MAX_COVER_BYTES: u64 = 4 * 1024 * 1024;
+/// Simultaneous artwork resolutions/downloads per collage.
+const COVER_PARALLELISM: usize = 6;
 
 struct Context {
     client: LastFmClient,
@@ -92,7 +99,14 @@ pub async fn handle_profile(
         .and_then(|value| value.split_whitespace().next())
         .unwrap_or("");
     let period = StatsPeriod::parse(token).unwrap_or(StatsPeriod::ThreeMonths);
-    let summary = match context.client.profile(&context.nick).await {
+    // Both calls hit the same API host; running them together halves the wait.
+    let (summary, top) = tokio::join!(
+        context.client.profile(&context.nick),
+        context
+            .client
+            .top_items(&context.nick, period, StatsKind::Tracks, 5),
+    );
+    let summary = match summary {
         Ok(summary) => summary,
         Err(error) => {
             warn!(%error, "last.fm profile lookup failed");
@@ -101,32 +115,20 @@ pub async fn handle_profile(
             return Ok(());
         }
     };
-    let top = context
-        .client
-        .top_items(&context.nick, period, StatsKind::Tracks, 5)
-        .await
-        .unwrap_or_default();
+    let top = top.unwrap_or_default();
     let top_lines: Vec<String> = top
         .iter()
         .enumerate()
         .map(|(index, item)| {
             let title = escape_html(&item.name);
-            let artist = item
-                .secondary
-                .as_deref()
-                .map(escape_html)
-                .unwrap_or_default();
-            format!(
-                "{}. {}{} · <b>{}</b>",
-                index + 1,
-                title,
-                if artist.is_empty() {
-                    String::new()
-                } else {
-                    format!(" — {artist}")
-                },
-                item.playcount
-            )
+            match item.secondary.as_deref().map(escape_html) {
+                Some(artist) if !artist.is_empty() => format!(
+                    "{}. {title} — {artist} · <b>{}</b>",
+                    index + 1,
+                    item.playcount
+                ),
+                _ => format!("{}. {title} · <b>{}</b>", index + 1, item.playcount),
+            }
         })
         .collect();
     let text = i18n::profile_summary(
@@ -216,66 +218,96 @@ async fn send_collage(
     }
     // Last.fm artwork is used when real; its grey-star placeholder is filtered
     // out in the client, in which case the public Deezer catalog is asked for
-    // the actual cover. Resolution and image download share one semaphore so a
-    // 10x10 collage stays gentle on the operator's network.
+    // the actual cover. Unique queries and unique URLs are each resolved once,
+    // so a 10x10 "top albums" chart with repeated records does far less work
+    // than before, and every duplicate cell shares one `Arc<[u8]>`.
     let artwork_kind = match kind {
         StatsKind::Tracks => ArtworkKind::Track,
         StatsKind::Albums => ArtworkKind::Album,
         StatsKind::Artists => ArtworkKind::Artist,
     };
-    let mut covers: Vec<Option<Vec<u8>>> = vec![None; items.len()];
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(6))
-        .build()
-        .unwrap_or_default();
-    let semaphore = Arc::new(Semaphore::new(6));
-    let mut tasks = JoinSet::new();
+    let mut urls: Vec<Option<String>> = items.iter().map(|item| item.image_url.clone()).collect();
+    let query_for = |item: &ScrobbleItem| match kind {
+        StatsKind::Artists => item.name.clone(),
+        StatsKind::Tracks | StatsKind::Albums => format!(
+            "{} {}",
+            item.secondary.as_deref().unwrap_or_default(),
+            item.name
+        ),
+    };
+
+    let mut pending: HashMap<String, (String, Vec<usize>)> = HashMap::new();
     for (index, item) in items.iter().enumerate() {
-        let query = match kind {
-            StatsKind::Artists => item.name.clone(),
-            StatsKind::Tracks | StatsKind::Albums => format!(
-                "{} {}",
-                item.secondary.as_deref().unwrap_or_default(),
-                item.name
-            ),
-        };
+        if urls[index].is_some() {
+            continue;
+        }
+        let query = query_for(item);
         let cache_key = format!("{}:{}", artwork_kind.as_str(), query.trim().to_lowercase());
-        let lastfm_url = item.image_url.clone();
-        let state = state.clone();
-        let client = client.clone();
-        let semaphore = semaphore.clone();
-        tasks.spawn(async move {
-            let _permit = semaphore.acquire().await.ok()?;
-            let url = match lastfm_url {
-                Some(url) => Some(url),
-                None => {
-                    if let Some(cached) = state.artwork_cache.get(&cache_key).await {
-                        cached
-                    } else {
-                        let resolved = state.manager.artwork_url(artwork_kind, &query).await;
-                        state
-                            .artwork_cache
-                            .insert(cache_key, resolved.clone())
-                            .await;
-                        resolved
-                    }
-                }
-            }?;
-            let response = client.get(&url).send().await.ok()?;
-            if !response.status().is_success() {
-                return None;
+        pending
+            .entry(cache_key)
+            .or_insert_with(|| (query, Vec::new()))
+            .1
+            .push(index);
+    }
+
+    let mut resolves = JoinSet::new();
+    let resolve_semaphore = Arc::new(Semaphore::new(COVER_PARALLELISM));
+    for (cache_key, (query, indexes)) in pending {
+        if let Some(cached) = state.artwork_cache.get(&cache_key).await {
+            for index in indexes {
+                urls[index] = cached.clone();
             }
-            let bytes = response.bytes().await.ok()?.to_vec();
-            // Empty/1x1 responses are not useful covers; let the cell fall back
-            // to the plain dark placeholder.
-            (bytes.len() > 512).then_some((index, bytes))
+            continue;
+        }
+        let state = state.clone();
+        let semaphore = resolve_semaphore.clone();
+        resolves.spawn(async move {
+            let _permit = semaphore.acquire().await.ok()?;
+            let resolved = state.manager.artwork_url(artwork_kind, &query).await;
+            state
+                .artwork_cache
+                .insert(cache_key, resolved.clone())
+                .await;
+            Some((indexes, resolved))
         });
     }
-    while let Some(result) = tasks.join_next().await {
-        if let Ok(Some((index, bytes))) = result {
-            covers[index] = Some(bytes);
+    while let Some(result) = resolves.join_next().await {
+        if let Ok(Some((indexes, resolved))) = result {
+            for index in indexes {
+                urls[index] = resolved.clone();
+            }
         }
     }
+
+    let mut by_url: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, url) in urls.into_iter().enumerate() {
+        if let Some(url) = url {
+            by_url.entry(url).or_default().push(index);
+        }
+    }
+    let mut covers: Vec<Option<Arc<[u8]>>> = vec![None; items.len()];
+    let mut downloads = JoinSet::new();
+    let download_semaphore = Arc::new(Semaphore::new(COVER_PARALLELISM));
+    for (url, indexes) in by_url {
+        let client = state.http.clone();
+        let semaphore = download_semaphore.clone();
+        downloads.spawn(async move {
+            let _permit = semaphore.acquire().await.ok()?;
+            let bytes = http::fetch_bytes(&client, &url, MAX_COVER_BYTES).await?;
+            // Empty/1x1 responses are not useful covers; let the cell fall back
+            // to the plain dark placeholder.
+            (bytes.len() > 512).then_some((indexes, bytes))
+        });
+    }
+    while let Some(result) = downloads.join_next().await {
+        if let Ok(Some((indexes, bytes))) = result {
+            let shared: Arc<[u8]> = bytes.into();
+            for index in indexes {
+                covers[index] = Some(shared.clone());
+            }
+        }
+    }
+
     let cells: Vec<collage::CollageItem> = items
         .into_iter()
         .enumerate()
@@ -283,7 +315,7 @@ async fn send_collage(
             name: item.name,
             secondary: item.secondary,
             playcount: item.playcount,
-            cover: covers.get(index).cloned().flatten(),
+            cover: covers[index].take(),
         })
         .collect();
     let label = match (kind, context.lang) {
@@ -299,11 +331,26 @@ async fn send_collage(
         .config
         .tmp_dir
         .join(format!("collage-{}.png", uuid::Uuid::new_v4().simple()));
-    if let Err(error) = collage::render(&title, &cells, grid, &path) {
-        warn!(%error, "collage render failed");
-        bot.send_message(chat, i18n::collage_failed(context.lang))
-            .await?;
-        return Ok(());
+    // Decoding 100 covers and encoding a multi-megapixel PNG is CPU work;
+    // keeping it off the async workers matters when several charts overlap.
+    let render_path = path.clone();
+    let rendered =
+        tokio::task::spawn_blocking(move || collage::render(&title, &cells, grid, &render_path))
+            .await;
+    match rendered {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            warn!(%error, "collage render failed");
+            bot.send_message(chat, i18n::collage_failed(context.lang))
+                .await?;
+            return Ok(());
+        }
+        Err(error) => {
+            warn!(%error, "collage render task failed");
+            bot.send_message(chat, i18n::collage_failed(context.lang))
+                .await?;
+            return Ok(());
+        }
     }
     let result = bot.send_photo(chat, InputFile::file(&path)).await;
     let _ = tokio::fs::remove_file(&path).await;
@@ -370,7 +417,7 @@ pub async fn handle_genres(
             return Ok(());
         }
     };
-    send_genre_chart(state, bot, msg.chat.id, user_id, lang, bars).await
+    send_genre_chart(state, bot, msg.chat.id, user_id, &user, bars).await
 }
 
 async fn send_genre_chart(
@@ -378,10 +425,10 @@ async fn send_genre_chart(
     bot: &Bot,
     chat: ChatId,
     user_id: i64,
-    lang: Lang,
+    user: &UserRecord,
     bars: u8,
 ) -> HandlerResult {
-    let user = state.db.ensure_user(user_id, lang).await?;
+    let lang = user.lang;
     if !user.genre_analysis {
         bot.send_message(chat, i18n::genre_chart_disabled(lang))
             .await?;
@@ -407,11 +454,32 @@ async fn send_genre_chart(
         .config
         .tmp_dir
         .join(format!("genres-{}.png", uuid::Uuid::new_v4().simple()));
-    if let Err(error) = collage::render_bars(title, &subtitle, &items, &path) {
-        warn!(%error, "genre chart render failed");
-        bot.send_message(chat, i18n::genre_chart_failed(lang))
-            .await?;
-        return Ok(());
+    let render_path = path.clone();
+    let title_for_render = title.to_owned();
+    let subtitle_for_render = subtitle.clone();
+    let rendered = tokio::task::spawn_blocking(move || {
+        collage::render_bars(
+            &title_for_render,
+            &subtitle_for_render,
+            &items,
+            &render_path,
+        )
+    })
+    .await;
+    match rendered {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            warn!(%error, "genre chart render failed");
+            bot.send_message(chat, i18n::genre_chart_failed(lang))
+                .await?;
+            return Ok(());
+        }
+        Err(error) => {
+            warn!(%error, "genre chart render task failed");
+            bot.send_message(chat, i18n::genre_chart_failed(lang))
+                .await?;
+            return Ok(());
+        }
     }
     let result = bot
         .send_photo(chat, InputFile::file(&path))
@@ -436,13 +504,13 @@ pub async fn handle_genre_chart_callback(
         return Ok(());
     };
     let user_id = query.from.id.0 as i64;
-    let lang = state.db.ensure_user(user_id, Lang::En).await?.lang;
+    let user = state.db.ensure_user(user_id, Lang::En).await?;
     send_genre_chart(
         state,
         bot,
         message.chat.id,
         user_id,
-        lang,
+        &user,
         bars.clamp(5, 20),
     )
     .await
@@ -461,14 +529,17 @@ pub async fn handle_collage_callback(
     let Some(message) = query.regular_message() else {
         return Ok(());
     };
-    let lang = state.db.ensure_user(user_id, Lang::En).await?.lang;
-    let user = state.db.ensure_user(user_id, lang).await?;
+    let user = state.db.ensure_user(user_id, Lang::En).await?;
     let Some(nick) = user.lastfm_user.filter(|value| !value.is_empty()) else {
         return Ok(());
     };
     let Some(client) = state.lastfm.clone() else {
         return Ok(());
     };
-    let context = Context { client, nick, lang };
+    let context = Context {
+        client,
+        nick,
+        lang: user.lang,
+    };
     send_collage(state, bot, message.chat.id, &context, kind, grid, period).await
 }

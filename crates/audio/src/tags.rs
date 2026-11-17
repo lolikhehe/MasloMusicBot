@@ -155,7 +155,7 @@ pub async fn prepare_cover(
 }
 
 async fn download_cover(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
-    let response = client.get(url).send().await.ok()?;
+    let mut response = client.get(url).send().await.ok()?;
     if !response.status().is_success()
         || response
             .content_length()
@@ -163,8 +163,21 @@ async fn download_cover(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> 
     {
         return None;
     }
-    let bytes = response.bytes().await.ok()?;
-    (!bytes.is_empty() && bytes.len() as u64 <= MAX_COVER_DOWNLOAD).then(|| bytes.to_vec())
+    // Stream instead of buffering blindly: a server with no content-length can
+    // otherwise make us allocate an unbounded body before the size check.
+    let mut bytes = Vec::with_capacity(
+        response
+            .content_length()
+            .unwrap_or(64 * 1024)
+            .min(256 * 1024) as usize,
+    );
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if bytes.len() as u64 + chunk.len() as u64 > MAX_COVER_DOWNLOAD {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 async fn file_size(path: &Path) -> u64 {
@@ -293,6 +306,13 @@ fn is_jpeg(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xFF, 0xD8, 0xFF])
 }
 
+/// The embedded cover follows the audio file's own budget (1.5 MB), not
+/// Telegram's 200 KB thumbnail cap. Using the thumbnail limit here silently
+/// dropped HQ covers above ~200 KB.
+fn embeddable_cover(len: usize) -> bool {
+    len > 0 && len as u64 <= MAX_EMBEDDED_COVER_BYTES
+}
+
 /// Write common tags and an optional front cover. Runs on a blocking thread.
 pub async fn tag_audio(path: PathBuf, meta: TrackMeta, cover: Option<PathBuf>) {
     let result =
@@ -339,7 +359,7 @@ fn tag_audio_sync(path: &Path, meta: &TrackMeta, cover: Option<&Path>) -> Result
 
     if let Some(cover) = cover {
         let data = std::fs::read(cover).map_err(|error| format!("cover read: {error}"))?;
-        if !data.is_empty() && data.len() <= MAX_COVER_BYTES {
+        if embeddable_cover(data.len()) {
             let picture = Picture::unchecked(data)
                 .pic_type(PictureType::CoverFront)
                 .mime_type(MimeType::Jpeg)
@@ -451,5 +471,15 @@ mod tests {
         ]);
         assert_eq!(image_long_side(&jpeg), Some(1000));
         assert_eq!(image_long_side(b"not a jpeg"), None);
+    }
+
+    #[test]
+    fn embedded_cover_uses_audio_budget_not_thumbnail_budget() {
+        // Regression: a 300 KB HQ cover used to be dropped because the
+        // embedded check reused Telegram's 200 KB thumbnail cap.
+        assert!(embeddable_cover(300_000));
+        assert!(embeddable_cover(MAX_EMBEDDED_COVER_BYTES as usize));
+        assert!(!embeddable_cover(MAX_EMBEDDED_COVER_BYTES as usize + 1));
+        assert!(!embeddable_cover(0));
     }
 }

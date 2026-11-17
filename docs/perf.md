@@ -87,3 +87,63 @@ Conclusion: `mmap_size` was a measurable regression on this workload and was rem
 rest of the pass is semantics-preserving and should mainly help under real concurrency
 (DB roundtrips halved on the message path; limiter no longer scans all users per call).
 End-to-end S1/S2 still require live traffic to measure.
+
+## Optimization pass (2026-11-17, v2.0.3: network + full-code pass)
+
+Scope: shared HTTP plumbing, SQLite hot path, collage/stat rendering, callbacks and the
+small allocations on the message path.
+
+Network:
+- Every metadata/image client in the workspace is now built by `providers::http::client`
+  (10 s connect timeout, 90 s idle-pool reuse, 60 s TCP keep-alive, shared user agent).
+  Previously `ExternalResolver`, `LastFmClient` and the cover downloader each built their
+  own client, so every call paid a fresh TLS handshake.
+- `reqwest/gzip` is enabled workspace-wide; JSON catalog responses shrink on the wire.
+- Response bodies are streamed with hard byte ceilings (`providers::http::fetch_bytes`,
+  cover download in `audio::tags`) instead of `Response::bytes()`, which trusted
+  `content-length` or buffered an unbounded body.
+- Collage artwork: unique queries are resolved once, unique URLs are downloaded once,
+  duplicate cells share one `Arc<[u8]>`. Both phases are bounded by the same 6-permit
+  semaphore, and the shared `state.http` client replaces a per-collage `reqwest::Client`.
+
+Database:
+- `ensure_user` is now read-first on the message hot path; `last_seen_at` is only written
+  at most once per user per 5 minutes (map swept above 8 192 entries). First contact still
+  inserts and returns the row.
+- `record_genres` folds the toggle check and track dedupe into one `INSERT … SELECT …
+  WHERE EXISTS`, then upserts all genres in one multi-row `QueryBuilder` statement
+  (was: toggle SELECT + per-genre statement inside a transaction).
+- `stats()` is one statement with three scalar subqueries instead of three round trips.
+
+Rendering / Telegram layer:
+- `collage::render` runs on `spawn_blocking`; the custom conditional in `render_bars` does
+  too. Covers use `Arc<[u8]>`, duplicate covers are decoded/resized once per canvas,
+  resize uses `Triangle` (the 202 px cell hides the difference), and `fill_rect` /
+  `blend_rect` write the raw buffer with a 256-entry alpha LUT.
+- `/profile` runs the profile and top-tracks calls concurrently.
+- Settings callbacks patch the already-read `UserRecord` instead of re-reading the row
+  after every toggle.
+- Rate limiter is a `std::sync::Mutex` with a sync `allow`; the critical section never
+  awaits. Health server uses a stack buffer and writes header/body separately.
+- `trim_log` no longer panics when yt-dlp stderr has non-ASCII text at the cut point.
+- Embedded cover budget bug fixed: the check used Telegram's 200 KB thumbnail cap instead
+  of the 1.5 MB audio budget, silently dropping HQ covers above ~200 KB.
+
+Measured locally (Windows x64, `cargo run --release`, noisy shared desktop; indicative only):
+
+| Benchmark | Before | After |
+|---|---|---|
+| `render_bench`: collage 10×10, 100 distinct 400 px JPEG covers, avg | 388.09 ms | 214.77 ms |
+| same, p50 / max | 348.85 / 554.82 ms | 219.60 / 221.56 ms |
+| `render_bench`: 10-bar genre chart, avg | 11.16 ms | 2.48 ms |
+| same, p50 / max | 3.92 / 40.53 ms | 2.37 / 2.83 ms |
+| `cache_bench`: `ensure_user` avg | 56.60 µs | 32.99 µs |
+| same, p50 / p95 / max | 37.8 / 75.3 µs / 3.71 ms | 25.7 / 91 µs / 263.6 µs |
+
+Notes:
+- The collage benchmark uses 100 *distinct* covers, so the decoded-cover reuse is not
+  exercised; real album/artist charts repeat artwork and gain more than the table shows.
+- `ensure_user` p95 moved within run-to-run noise (shared desktop); the average halves
+  because the 5-minute throttle removes nearly all write transactions from the loop.
+- End-to-end S1–S4 remain **NOT MEASURED** until post-deploy traffic; re-check
+  `music_bot_*` histograms and update the scenario table above.

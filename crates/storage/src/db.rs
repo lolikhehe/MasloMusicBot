@@ -8,10 +8,13 @@
 use common::domain::{CachedTrack, Lang, Provider, Stats, TrackKey, TrackMeta, UserRecord};
 use common::error::{AppError, AppResult};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool};
+use sqlx::{QueryBuilder, Row, SqlitePool};
+use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 const SCHEMA: &str = include_str!("../../../migrations/0001_init.sql");
 const MIGRATION_0002: &str = include_str!("../../../migrations/0002_user_search_source.sql");
@@ -24,7 +27,15 @@ const MIGRATION_0008: &str = include_str!("../../../migrations/0008_genre_analys
 #[derive(Clone)]
 pub struct Db {
     pool: SqlitePool,
+    /// Last time each user's `last_seen_at` was written. The message hot path
+    /// only reads the user row; this throttle keeps it from turning every
+    /// message into a write transaction.
+    seen: Arc<Mutex<HashMap<i64, i64>>>,
 }
+
+/// `last_seen_at` is bookkeeping for the release broadcast and admin stats;
+/// one write per active user per five minutes is plenty.
+const LAST_SEEN_INTERVAL_SECS: i64 = 5 * 60;
 
 impl Db {
     pub async fn connect(database_url: &str) -> AppResult<Self> {
@@ -160,7 +171,10 @@ impl Db {
             .execute(&pool)
             .await;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            seen: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// Lightweight liveness check used by /healthz.
@@ -282,23 +296,22 @@ impl Db {
         Ok(result.rows_affected() > 0)
     }
 
+    /// One statement instead of three round trips; `/stats` runs on demand but
+    /// the three scans used to hit the same rows separately.
     pub async fn stats(&self) -> AppResult<Stats> {
-        let tracks: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tracks")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db_err)?;
-        let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db_err)?;
-        let sends: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(uses), 0) FROM tracks")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db_err)?;
+        let row = sqlx::query(
+            "SELECT
+                 (SELECT COUNT(*) FROM tracks) AS tracks,
+                 (SELECT COUNT(*) FROM users) AS users,
+                 (SELECT COALESCE(SUM(uses), 0) FROM tracks) AS sends",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?;
         Ok(Stats {
-            tracks,
-            users,
-            sends,
+            tracks: row.get::<i64, _>("tracks"),
+            users: row.get::<i64, _>("users"),
+            sends: row.get::<i64, _>("sends"),
         })
     }
 
@@ -342,25 +355,48 @@ impl Db {
         Ok(())
     }
 
-    /// One round trip: `RETURNING` hands back the post-upsert row. Called on
-    /// every incoming message, so the extra round trip used to matter.
+    /// Message hot path. The common case (returning user) is a single `SELECT`;
+    /// `last_seen_at` is only written once per `LAST_SEEN_INTERVAL_SECS`.
+    /// First contact inserts the row and returns its defaults.
     pub async fn ensure_user(&self, id: i64, fallback: Lang) -> AppResult<UserRecord> {
+        if let Some(user) = self.user_by_id(id).await? {
+            self.touch_last_seen(id).await;
+            return Ok(user);
+        }
+
         let now = unix_now();
-        let row = sqlx::query(
+        // `DO NOTHING` keeps a concurrent first message from failing with a
+        // unique-constraint error; both workers end up reading the same row.
+        sqlx::query(
             "INSERT INTO users (user_id, language, quality, banned, created_at, last_seen_at)
              VALUES (?, ?, 192, 0, ?, ?)
-             ON CONFLICT(user_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-             RETURNING language, quality, banned, search_source, tags_enabled, lastfm_user, hq_cover, lastfm_stats, genre_analysis",
+             ON CONFLICT(user_id) DO NOTHING",
         )
         .bind(id)
         .bind(fallback.code())
         .bind(now)
         .bind(now)
-        .fetch_one(&self.pool)
+        .execute(&self.pool)
         .await
         .map_err(db_err)?;
+        self.mark_seen(id, now);
 
-        Ok(UserRecord {
+        self.user_by_id(id)
+            .await?
+            .ok_or_else(|| AppError::Message("user row disappeared after insert".to_owned()))
+    }
+
+    async fn user_by_id(&self, id: i64) -> AppResult<Option<UserRecord>> {
+        let row = sqlx::query(
+            "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,
+                    hq_cover, lastfm_stats, genre_analysis
+             FROM users WHERE user_id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(row.map(|row| UserRecord {
             lang: Lang::from_code(row.get::<String, _>("language").as_str()).unwrap_or(Lang::En),
             quality: u32::try_from(row.get::<i64, _>("quality")).unwrap_or(192),
             banned: row.get::<i64, _>("banned") != 0,
@@ -373,7 +409,46 @@ impl Db {
             hq_cover: row.get::<i64, _>("hq_cover") != 0,
             lastfm_stats: row.get::<i64, _>("lastfm_stats") != 0,
             genre_analysis: row.get::<i64, _>("genre_analysis") != 0,
-        })
+        }))
+    }
+
+    /// Write `last_seen_at` at most once per interval per user. The map is a
+    /// std mutex (never held across an await) and is swept in place whenever it
+    /// grows past the watermark, so memory stays bounded.
+    async fn touch_last_seen(&self, id: i64) {
+        const WATERMARK: usize = 8_192;
+        let now = unix_now();
+        {
+            let mut seen = self
+                .seen
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if seen.len() > WATERMARK {
+                seen.retain(|_, stamp| now.saturating_sub(*stamp) < LAST_SEEN_INTERVAL_SECS);
+            }
+            if let Some(stamp) = seen.get(&id)
+                && now.saturating_sub(*stamp) < LAST_SEEN_INTERVAL_SECS
+            {
+                return;
+            }
+            seen.insert(id, now);
+        }
+        if let Err(error) = sqlx::query("UPDATE users SET last_seen_at = ? WHERE user_id = ?")
+            .bind(now)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+        {
+            warn!(%error, user_id = id, "failed to update last_seen_at");
+        }
+    }
+
+    fn mark_seen(&self, id: i64, now: i64) {
+        let mut seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        seen.insert(id, now);
     }
 
     pub async fn set_language(&self, id: i64, lang: Lang) -> AppResult<()> {
@@ -460,7 +535,8 @@ impl Db {
     }
 
     /// Record one downloaded track for the genre analyzer. The user's toggle is
-    /// checked here so every delivery path can call this unconditionally.
+    /// checked in the same statement that deduplicates the track, so there is
+    /// no separate read; genres are upserted in one multi-row statement.
     /// Returns `true` when the track was new (its genres were counted).
     pub async fn record_genres(
         &self,
@@ -471,24 +547,21 @@ impl Db {
         if genres.is_empty() {
             return Ok(false);
         }
-        let enabled: Option<i64> =
-            sqlx::query_scalar("SELECT genre_analysis FROM users WHERE user_id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
-        if enabled != Some(1) {
-            return Ok(false);
-        }
         let now = unix_now();
         let mut transaction = self.pool.begin().await.map_err(db_err)?;
+        // `WHERE EXISTS` folds the toggle check into the insert; zero rows
+        // affected means "off" or "already counted".
         let inserted = sqlx::query(
             "INSERT OR IGNORE INTO user_genre_tracks (user_id, track_key, created_at)
-             VALUES (?, ?, ?)",
+             SELECT ?, ?, ?
+             WHERE EXISTS (
+                 SELECT 1 FROM users WHERE user_id = ? AND genre_analysis = 1
+             )",
         )
         .bind(id)
         .bind(track_key)
         .bind(now)
+        .bind(id)
         .execute(&mut *transaction)
         .await
         .map_err(db_err)?;
@@ -496,24 +569,36 @@ impl Db {
             transaction.commit().await.map_err(db_err)?;
             return Ok(false);
         }
+
+        // Genres may repeat within one track's tag list ("Rock", "rock");
+        // count each distinct label once, keeping the first spelling.
+        let mut unique: Vec<&str> = Vec::with_capacity(genres.len());
         for genre in genres {
             let genre = genre.trim();
-            if genre.is_empty() {
+            if genre.is_empty() || unique.iter().any(|seen| seen.eq_ignore_ascii_case(genre)) {
                 continue;
             }
-            sqlx::query(
-                "INSERT INTO user_genres (user_id, genre, listens, updated_at)
-                 VALUES (?, ?, 1, ?)
-                 ON CONFLICT(user_id, genre) DO UPDATE SET
-                     listens = listens + 1,
-                     updated_at = excluded.updated_at",
-            )
-            .bind(id)
-            .bind(genre)
-            .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(db_err)?;
+            unique.push(genre);
+        }
+        if !unique.is_empty() {
+            let mut builder =
+                QueryBuilder::new("INSERT INTO user_genres (user_id, genre, listens, updated_at) ");
+            builder.push_values(unique, |mut row, genre| {
+                row.push_bind(id)
+                    .push_bind(genre)
+                    .push_bind(1_i64)
+                    .push_bind(now);
+            });
+            builder.push(
+                " ON CONFLICT(user_id, genre) DO UPDATE SET
+                      listens = listens + 1,
+                      updated_at = excluded.updated_at",
+            );
+            builder
+                .build()
+                .execute(&mut *transaction)
+                .await
+                .map_err(db_err)?;
         }
         transaction.commit().await.map_err(db_err)?;
         Ok(true)
@@ -712,9 +797,13 @@ mod tests {
 
         db.set_genre_analysis(99, true).await.expect("toggle");
         assert!(
-            db.record_genres(99, "youtube:one", &["Rock".to_owned(), "Metal".to_owned()])
-                .await
-                .expect("record one")
+            db.record_genres(
+                99,
+                "youtube:one",
+                &["Rock".to_owned(), "Metal".to_owned(), "rock".to_owned()]
+            )
+            .await
+            .expect("record one")
         );
         // The same track again must not inflate the chart.
         assert!(
@@ -739,6 +828,58 @@ mod tests {
                 .expect("record off again")
         );
         assert_eq!(db.genre_track_count(99).await.expect("count"), 2);
+    }
+
+    #[tokio::test]
+    async fn ensure_user_throttles_last_seen_writes() {
+        let db = test_db().await;
+        db.ensure_user(5, Lang::En).await.expect("create");
+
+        // Simulate an old stamp and force the next call to write.
+        sqlx::query("UPDATE users SET last_seen_at = 0 WHERE user_id = 5")
+            .execute(&db.pool)
+            .await
+            .expect("reset");
+        db.seen.lock().expect("seen").remove(&5);
+        db.ensure_user(5, Lang::En).await.expect("touch");
+        assert!(last_seen(&db, 5).await > 0);
+
+        // Within the interval the row is read but not written again.
+        sqlx::query("UPDATE users SET last_seen_at = 0 WHERE user_id = 5")
+            .execute(&db.pool)
+            .await
+            .expect("reset");
+        db.ensure_user(5, Lang::En).await.expect("throttled touch");
+        assert_eq!(last_seen(&db, 5).await, 0);
+    }
+
+    #[tokio::test]
+    async fn stats_counts_tracks_and_users() {
+        let db = test_db().await;
+        let key = TrackKey::new("youtube:stats");
+        let track = CachedTrack {
+            key: key.clone(),
+            file_id: "FILE".into(),
+            file_unique_id: "UNIQUE".into(),
+            source_url: None,
+            provider: Provider::YouTube,
+            meta: TrackMeta::default(),
+        };
+        db.put_track(&track, 192, Some(1000)).await.expect("put");
+        db.put_track(&track, 320, Some(2000)).await.expect("put");
+        db.ensure_user(1, Lang::En).await.expect("user");
+        let stats = db.stats().await.expect("stats");
+        assert_eq!(stats.tracks, 2);
+        assert_eq!(stats.users, 1);
+        assert!(stats.sends >= 0);
+    }
+
+    async fn last_seen(db: &Db, id: i64) -> i64 {
+        sqlx::query_scalar("SELECT last_seen_at FROM users WHERE user_id = ?")
+            .bind(id)
+            .fetch_one(&db.pool)
+            .await
+            .expect("last_seen")
     }
 
     #[tokio::test]

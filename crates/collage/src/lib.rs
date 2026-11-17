@@ -3,9 +3,11 @@
 //! identical on the developer's Windows box and in the Linux container.
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont, point};
-use image::imageops::FilterType;
-use image::{Rgba, RgbaImage, imageops};
+use image::imageops::{self, FilterType};
+use image::{Rgba, RgbaImage};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 const FONT: &[u8] = include_bytes!("../../../assets/DejaVuSans.ttf");
 const CELL: u32 = 210;
@@ -24,9 +26,9 @@ pub struct CollageItem {
     pub name: String,
     pub secondary: Option<String>,
     pub playcount: u64,
-    /// Decoded cover bytes (JPEG/PNG). When absent the cell keeps the plain
-    /// dark placeholder.
-    pub cover: Option<Vec<u8>>,
+    /// Cover bytes (JPEG/PNG) shared between cells; duplicate artwork is one
+    /// allocation. When absent the cell keeps the plain dark placeholder.
+    pub cover: Option<Arc<[u8]>>,
 }
 
 fn font() -> FontRef<'static> {
@@ -98,23 +100,51 @@ fn draw_centered(
 }
 
 fn fill_rect(canvas: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32, color: Rgba<u8>) {
-    for py in y..(y + height).min(canvas.height()) {
-        for px in x..(x + width).min(canvas.width()) {
-            canvas.put_pixel(px, py, color);
-        }
+    let x_end = (x + width).min(canvas.width());
+    let y_end = (y + height).min(canvas.height());
+    if x >= x_end || y >= y_end {
+        return;
+    }
+    let row_bytes = (x_end - x) as usize * 4;
+    let stride = canvas.width() as usize * 4;
+    // Build the row once, then memcpy it per scanline; per-pixel writes meant
+    // three bounds checks and a `put_pixel` call each.
+    let mut line = vec![0u8; row_bytes];
+    for pixel in line.as_chunks_mut::<4>().0 {
+        pixel.copy_from_slice(&color.0);
+    }
+    let data = canvas.as_mut();
+    for py in y..y_end {
+        let start = py as usize * stride + x as usize * 4;
+        data[start..start + row_bytes].copy_from_slice(&line);
     }
 }
 
 fn blend_rect(canvas: &mut RgbaImage, x: u32, y: u32, width: u32, height: u32, alpha: f32) {
-    for py in y..(y + height).min(canvas.height()) {
-        for px in x..(x + width).min(canvas.width()) {
-            let background = canvas.get_pixel(px, py);
-            let mut blended = Rgba([0, 0, 0, 255]);
-            for channel in 0..3 {
-                blended.0[channel] =
-                    (f32::from(background.0[channel]) * (1.0 - alpha)).round() as u8;
-            }
-            canvas.put_pixel(px, py, blended);
+    let x_end = (x + width).min(canvas.width());
+    let y_end = (y + height).min(canvas.height());
+    if x >= x_end || y >= y_end {
+        return;
+    }
+    let factor = (1.0 - alpha).clamp(0.0, 1.0);
+    // 256-entry lookup instead of a float multiply per channel per pixel; the
+    // bottom shade alone darkens ~20 000 pixels per cover cell.
+    let mut lut = [0u8; 256];
+    for (value, slot) in lut.iter_mut().enumerate() {
+        *slot = (value as f32 * factor).round() as u8;
+    }
+    let row_bytes = (x_end - x) as usize * 4;
+    let stride = canvas.width() as usize * 4;
+    let data = canvas.as_mut();
+    for py in y..y_end {
+        let start = py as usize * stride + x as usize * 4;
+        for pixel in data[start..start + row_bytes].as_chunks_mut::<4>().0 {
+            pixel[0] = lut[pixel[0] as usize];
+            pixel[1] = lut[pixel[1] as usize];
+            pixel[2] = lut[pixel[2] as usize];
+            // Keep the canvas opaque: transparent PNG covers would otherwise
+            // leave holes that viewers render as white.
+            pixel[3] = 255;
         }
     }
 }
@@ -188,6 +218,9 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
         &font,
     );
 
+    // Album/artist collages show the same artwork in several cells; decode and
+    // resize every unique cover once per render (keyed by the shared `Arc`).
+    let mut covers: HashMap<usize, Option<RgbaImage>> = HashMap::new();
     for index in 0..(grid * grid) as usize {
         let row = index / grid as usize;
         let column = index % grid as usize;
@@ -205,22 +238,38 @@ pub fn render(title: &str, items: &[CollageItem], grid: u8, out: &Path) -> Resul
             continue;
         };
         let mut has_cover = false;
-        if let Some(bytes) = item.cover.as_deref()
-            && let Ok(decoded) = image::load_from_memory(bytes)
+        let cover_ptr = item
+            .cover
+            .as_ref()
+            .map(|bytes| Arc::as_ptr(bytes) as *const u8 as usize);
+        if let Some(pointer) = cover_ptr {
+            covers.entry(pointer).or_insert_with(|| {
+                item.cover
+                    .as_deref()
+                    .and_then(|bytes| image::load_from_memory(bytes).ok())
+                    // Triangle is several times cheaper than Lanczos3 at this
+                    // scale; the 202 px cell makes the difference invisible.
+                    .map(|decoded| {
+                        decoded
+                            .resize_to_fill(inner_w, inner_h, FilterType::Triangle)
+                            .to_rgba8()
+                    })
+            });
+        }
+        if let Some(cover) = cover_ptr
+            .and_then(|pointer| covers.get(&pointer))
+            .and_then(Option::as_ref)
         {
-            let cover = decoded
-                .resize_to_fill(inner_w, inner_h, FilterType::Lanczos3)
-                .to_rgba8();
-            imageops::overlay(&mut canvas, &cover, i64::from(inner_x), i64::from(inner_y));
+            imageops::overlay(&mut canvas, cover, i64::from(inner_x), i64::from(inner_y));
             has_cover = true;
             shade_bottom(&mut canvas, inner_x, inner_y + inner_h - 96, inner_w, 96);
         }
         let mut label = item.name.clone();
-        if let Some(artist) = &item.secondary {
-            if !artist.is_empty() {
-                label.push_str(" — ");
-                label.push_str(artist);
-            }
+        if let Some(artist) = &item.secondary
+            && !artist.is_empty()
+        {
+            label.push_str(" — ");
+            label.push_str(artist);
         }
         let lines = wrap(&label, inner_w as f32 - 24.0, 3, 18.0, &font);
         let text_top = if has_cover {
@@ -426,7 +475,7 @@ mod tests {
                 name: format!("Album {index}"),
                 secondary: Some("Artist".to_owned()),
                 playcount: 100 - index,
-                cover: Some(encoded.clone()),
+                cover: Some(encoded.clone().into()),
             })
             .collect();
         render("Top albums", &items, 3, &path).expect("render");

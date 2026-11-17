@@ -1,8 +1,8 @@
 ﻿//! Per-user sliding-window limiter. A zero limit disables limiting.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
 /// Deques belonging to users who hit the limiter again are reused; dropping
 /// stale users happens only when the map grows past this watermark so the
@@ -22,15 +22,20 @@ impl RateLimiter {
         }
     }
 
-    /// Returns true if the request is allowed.
-    pub async fn allow(&self, user_id: i64) -> bool {
+    /// Returns true if the request is allowed. Synchronous: the critical
+    /// section is a few map operations and must not await, so a std mutex is
+    /// both cheaper and less contended than the tokio one it replaced.
+    pub fn allow(&self, user_id: i64) -> bool {
         if self.per_minute == 0 {
             return true;
         }
         let now = Instant::now();
         let window = Duration::from_secs(60);
         let cutoff = now.checked_sub(window).unwrap_or(now);
-        let mut users = self.inner.lock().await;
+        let mut users = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         // Only sweep the whole map when it balloons; the per-user path below
         // is otherwise O(1).
         if users.len() > SWEEP_WATERMARK {
@@ -57,20 +62,20 @@ impl RateLimiter {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn limits_after_quota() {
+    #[test]
+    fn limits_after_quota() {
         let limiter = RateLimiter::new(2);
-        assert!(limiter.allow(1).await);
-        assert!(limiter.allow(1).await);
-        assert!(!limiter.allow(1).await);
-        assert!(limiter.allow(2).await);
+        assert!(limiter.allow(1));
+        assert!(limiter.allow(1));
+        assert!(!limiter.allow(1));
+        assert!(limiter.allow(2));
     }
 
-    #[tokio::test]
-    async fn zero_means_unlimited() {
+    #[test]
+    fn zero_means_unlimited() {
         let limiter = RateLimiter::new(0);
         for _ in 0..10 {
-            assert!(limiter.allow(1).await);
+            assert!(limiter.allow(1));
         }
     }
 }

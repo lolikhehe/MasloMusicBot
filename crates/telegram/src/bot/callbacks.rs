@@ -62,151 +62,23 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         .await?;
     } else if let Some(id) = data.strip_prefix("alx:") {
         handle_album_cancel(&state, &bot, &query, id, user.lang).await?;
-    } else if let Some(value) = data.strip_prefix("s:tags:") {
-        if let Some(enabled) = parse_bool(value) {
-            state.db.set_tags_enabled(user_id, enabled).await?;
-            let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(
-                &state,
-                &bot,
-                &query,
-                user.lang,
-                user.quality,
-                user.search_source,
-                enabled,
-                user.lastfm_user.as_deref(),
-                user.hq_cover,
-            )
-            .await?;
-            let _ = bot
-                .answer_callback_query(query.id.clone())
-                .text(i18n::settings_saved(user.lang))
-                .await;
-        }
-    } else if let Some(value) = data.strip_prefix("s:hq:") {
-        if let Some(enabled) = parse_bool(value) {
-            state.db.set_hq_cover(user_id, enabled).await?;
-            let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(
-                &state,
-                &bot,
-                &query,
-                user.lang,
-                user.quality,
-                user.search_source,
-                user.tags_enabled,
-                user.lastfm_user.as_deref(),
-                enabled,
-            )
-            .await?;
-            let _ = bot
-                .answer_callback_query(query.id.clone())
-                .text(i18n::settings_saved(user.lang))
-                .await;
-        }
-    } else if let Some(value) = data.strip_prefix("s:lstats:") {
-        if let Some(enabled) = parse_bool(value) {
-            state.db.set_lastfm_stats(user_id, enabled).await?;
-            let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(
-                &state,
-                &bot,
-                &query,
-                user.lang,
-                user.quality,
-                user.search_source,
-                user.tags_enabled,
-                user.lastfm_user.as_deref(),
-                user.hq_cover,
-            )
-            .await?;
-            let _ = bot
-                .answer_callback_query(query.id.clone())
-                .text(i18n::settings_saved(user.lang))
-                .await;
-        }
-    } else if let Some(value) = data.strip_prefix("s:gan:") {
-        if let Some(enabled) = parse_bool(value) {
-            state.db.set_genre_analysis(user_id, enabled).await?;
-            let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(
-                &state,
-                &bot,
-                &query,
-                user.lang,
-                user.quality,
-                user.search_source,
-                user.tags_enabled,
-                user.lastfm_user.as_deref(),
-                user.hq_cover,
-            )
-            .await?;
-            let _ = bot
-                .answer_callback_query(query.id.clone())
-                .text(i18n::settings_saved(user.lang))
-                .await;
-        }
-    } else if let Some(value) = data.strip_prefix("s:q:") {
-        if let Ok(quality) = value.parse::<u32>() {
-            state.db.set_quality(user_id, quality).await?;
-            refresh_settings(
-                &state,
-                &bot,
-                &query,
-                user.lang,
-                quality,
-                user.search_source,
-                user.tags_enabled,
-                user.lastfm_user.as_deref(),
-                user.hq_cover,
-            )
-            .await?;
-            let _ = bot
-                .answer_callback_query(query.id.clone())
-                .text(i18n::settings_saved(user.lang))
-                .await;
-        }
-    } else if let Some(code) = data.strip_prefix("s:src:") {
-        if let Some(source) = parse_search_source(code) {
-            state.db.set_search_source(user_id, source).await?;
-            let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(
-                &state,
-                &bot,
-                &query,
-                user.lang,
-                user.quality,
-                source,
-                user.tags_enabled,
-                user.lastfm_user.as_deref(),
-                user.hq_cover,
-            )
-            .await?;
-            let _ = bot
-                .answer_callback_query(query.id.clone())
-                .text(i18n::settings_saved(user.lang))
-                .await;
-        }
-    } else if let Some(code) = data.strip_prefix("s:lang:") {
-        if let Some(lang) = common::domain::Lang::from_code(code) {
-            state.db.set_language(user_id, lang).await?;
-            let user = state.db.ensure_user(user_id, preferred).await?;
-            refresh_settings(
-                &state,
-                &bot,
-                &query,
-                lang,
-                user.quality,
-                user.search_source,
-                user.tags_enabled,
-                user.lastfm_user.as_deref(),
-                user.hq_cover,
-            )
-            .await?;
-            let _ = bot
-                .answer_callback_query(query.id.clone())
-                .text(i18n::settings_saved(lang))
-                .await;
+    } else if let Some(payload) = data.strip_prefix("s:") {
+        match payload.split_once(':') {
+            Some((setting, value)) => {
+                if let Some(updated) = apply_setting(&state, user_id, &user, setting, value).await?
+                {
+                    refresh_settings(&state, &bot, &query, &updated).await?;
+                    let _ = bot
+                        .answer_callback_query(query.id.clone())
+                        .text(i18n::settings_saved(updated.lang))
+                        .await;
+                } else {
+                    let _ = bot.answer_callback_query(query.id.clone()).await;
+                }
+            }
+            None => {
+                let _ = bot.answer_callback_query(query.id.clone()).await;
+            }
         }
     } else if let Some(value) = data.strip_prefix("gn:c:") {
         if let Ok(bars) = value.parse::<u8>() {
@@ -237,6 +109,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_selection(
     state: &AppState,
     bot: &Bot,
@@ -256,7 +129,7 @@ async fn handle_selection(
     let message_id = message.id;
     let user_id = query.from.id.0 as i64;
 
-    if !state.limiter.allow(user_id).await {
+    if !state.limiter.allow(user_id) {
         let _ = edit_html(
             bot,
             chat,
@@ -342,6 +215,7 @@ async fn handle_album_pick(
 }
 
 /// User confirmed a collection: start downloading it with limited parallelism.
+#[allow(clippy::too_many_arguments)]
 async fn handle_album_confirm(
     state: &AppState,
     bot: &Bot,
@@ -410,46 +284,111 @@ async fn handle_album_cancel(
     Ok(())
 }
 
+/// Apply one `/settings` toggle and return the updated record. The caller
+/// already read the user row for the callback, so the new state is patched in
+/// memory instead of re-reading the row after every write.
+async fn apply_setting(
+    state: &AppState,
+    user_id: i64,
+    user: &common::domain::UserRecord,
+    setting: &str,
+    value: &str,
+) -> Result<Option<common::domain::UserRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut updated = user.clone();
+    match setting {
+        "tags" => {
+            let Some(enabled) = parse_bool(value) else {
+                return Ok(None);
+            };
+            state.db.set_tags_enabled(user_id, enabled).await?;
+            updated.tags_enabled = enabled;
+        }
+        "hq" => {
+            let Some(enabled) = parse_bool(value) else {
+                return Ok(None);
+            };
+            state.db.set_hq_cover(user_id, enabled).await?;
+            updated.hq_cover = enabled;
+        }
+        "lstats" => {
+            let Some(enabled) = parse_bool(value) else {
+                return Ok(None);
+            };
+            state.db.set_lastfm_stats(user_id, enabled).await?;
+            updated.lastfm_stats = enabled;
+        }
+        "gan" => {
+            let Some(enabled) = parse_bool(value) else {
+                return Ok(None);
+            };
+            state.db.set_genre_analysis(user_id, enabled).await?;
+            updated.genre_analysis = enabled;
+        }
+        "q" => {
+            let Ok(quality) = value.parse::<u32>() else {
+                return Ok(None);
+            };
+            let quality = if quality == 0 {
+                0
+            } else {
+                quality.clamp(64, 320)
+            };
+            state.db.set_quality(user_id, quality).await?;
+            updated.quality = quality;
+        }
+        "src" => {
+            let Some(source) = parse_search_source(value) else {
+                return Ok(None);
+            };
+            state.db.set_search_source(user_id, source).await?;
+            updated.search_source = source;
+        }
+        "lang" => {
+            let Some(lang) = common::domain::Lang::from_code(value) else {
+                return Ok(None);
+            };
+            state.db.set_language(user_id, lang).await?;
+            updated.lang = lang;
+        }
+        _ => return Ok(None),
+    }
+    Ok(Some(updated))
+}
+
 async fn refresh_settings(
     state: &AppState,
     bot: &Bot,
     query: &CallbackQuery,
-    lang: common::domain::Lang,
-    quality: u32,
-    search_source: common::domain::Provider,
-    tags_enabled: bool,
-    lastfm_user: Option<&str>,
-    hq_cover: bool,
+    user: &common::domain::UserRecord,
 ) -> HandlerResult {
     let Some(message) = query.regular_message() else {
         return Ok(());
     };
-    let current = state.db.ensure_user(query.from.id.0 as i64, lang).await?;
     let mut body = i18n::settings_title(
-        lang,
-        quality,
-        lang,
-        search_source,
-        tags_enabled,
-        lastfm_user,
-        hq_cover,
-        current.lastfm_stats,
-        current.genre_analysis,
+        user.lang,
+        user.quality,
+        user.lang,
+        user.search_source,
+        user.tags_enabled,
+        user.lastfm_user.as_deref(),
+        user.hq_cover,
+        user.lastfm_stats,
+        user.genre_analysis,
     );
-    if !state.config.search_providers.contains(&search_source) {
+    if !state.config.search_providers.contains(&user.search_source) {
         body.push_str("\n\n");
-        body.push_str(i18n::search_source_blocked(lang));
+        body.push_str(i18n::search_source_blocked(user.lang));
     }
     bot.edit_message_text(message.chat.id, message.id, body)
         .parse_mode(ParseMode::Html)
         .reply_markup(settings_keyboard(
-            lang,
-            quality,
-            search_source,
-            tags_enabled,
-            hq_cover,
-            current.lastfm_stats,
-            current.genre_analysis,
+            user.lang,
+            user.quality,
+            user.search_source,
+            user.tags_enabled,
+            user.hq_cover,
+            user.lastfm_stats,
+            user.genre_analysis,
         ))
         .await?;
     Ok(())
