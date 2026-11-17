@@ -2,12 +2,22 @@
 
 use crate::rate_limit::RateLimiter;
 use common::config::Config;
-use common::domain::{Album, AlbumRef, TrackRequest};
+use common::domain::{Album, AlbumRef, Provider, TrackKey, TrackMeta, TrackRequest};
 use downloader::DownloadManager;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use storage::Db;
+
+/// Minimal identity of the last successfully delivered track. Used by
+/// `/lyrics` with no arguments, so users don't have to retype Artist — Title.
+#[derive(Clone)]
+pub struct LastTrack {
+    pub key: TrackKey,
+    pub title: String,
+    pub performer: Option<String>,
+    pub provider: Provider,
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -51,6 +61,15 @@ pub struct AppState {
     /// iTunes, cover images). Reusing it keeps TLS handshakes and idle
     /// connections out of every collage request.
     pub http: reqwest::Client,
+    /// Public lyrics lookup (LRCLIB with lyrics.ovh fallback). Metadata only —
+    /// no lyrics are persisted to disk.
+    pub lyrics: providers::lyrics::LyricsClient,
+    /// 24-hour in-memory lyrics cache (positive and negative results). No disk
+    /// caching: text lives only as long as this process.
+    pub lyrics_cache: Cache<String, Option<providers::lyrics::Lyrics>>,
+    /// Last track sent to each user, kept in memory for the duration of a
+    /// session. Bounded and expiring; lets `/lyrics` work without an argument.
+    pub last_tracks: Cache<i64, LastTrack>,
 }
 
 impl AppState {
@@ -84,11 +103,24 @@ impl AppState {
             .max_capacity(5_000)
             .time_to_live(Duration::from_secs(24 * 60 * 60))
             .build();
-        let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
-        let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
         // 6 s is enough for every public catalog and cover host used here; the
         // client is shared so keep-alive connections are reused across charts.
         let http = providers::http::client(Duration::from_secs(6)).unwrap_or_default();
+        let lyrics = providers::lyrics::LyricsClient::new(
+            http.clone(),
+            config.lrclib_base_url.clone(),
+            config.lyrics_ovh_base_url.clone(),
+        );
+        let lyrics_cache = Cache::builder()
+            .max_capacity(2_000)
+            .time_to_live(Duration::from_secs(24 * 60 * 60))
+            .build();
+        let last_tracks = Cache::builder()
+            .max_capacity(10_000)
+            .time_to_live(Duration::from_secs(30 * 60))
+            .build();
+        let limiter = Arc::new(RateLimiter::new(config.rate_limit_per_min));
+        let inline_limiter = Arc::new(RateLimiter::new(config.rate_limit_inline_per_min));
         let inline_generations = Cache::builder()
             .max_capacity(10_000)
             .time_to_idle(Duration::from_secs(600))
@@ -114,7 +146,35 @@ impl AppState {
             genre_cache,
             artwork_cache,
             http,
+            lyrics,
+            lyrics_cache,
+            last_tracks,
         }
+    }
+
+    /// Remember a successfully sent track for argument-less `/lyrics`.
+    pub async fn remember_track(
+        &self,
+        user_id: i64,
+        meta: &TrackMeta,
+        key: &TrackKey,
+        provider: Provider,
+    ) {
+        let title = meta.stripped_title().into_owned();
+        if title.is_empty() {
+            return;
+        }
+        self.last_tracks
+            .insert(
+                user_id,
+                LastTrack {
+                    key: key.clone(),
+                    title,
+                    performer: meta.performer.clone(),
+                    provider,
+                },
+            )
+            .await;
     }
 
     pub fn new_selection_id(&self) -> String {

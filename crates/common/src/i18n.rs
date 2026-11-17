@@ -35,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)",
     );
     if is_admin {
         format!(
@@ -45,6 +45,51 @@ pub fn help(lang: Lang, is_admin: bool) -> String {
     } else {
         base.to_owned()
     }
+}
+
+/// `/lyrics` help text. The command accepts an explicit query, the last sent
+/// track, or a reply to an audio message.
+pub fn lyrics_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "📝 Usage: <code>/lyrics Artist — Title</code>\nOr send <code>/lyrics</code> after a track, or reply to an audio message with <code>/lyrics</code>.",
+        "📝 Використання: <code>/lyrics Виконавець — Назва</code>\nАбо надішліть <code>/lyrics</code> після треку, або відповідайте <code>/lyrics</code> на аудіоповідомлення.",
+    )
+}
+
+pub fn lyrics_searching(lang: Lang) -> &'static str {
+    pick(lang, "🔎 Looking up lyrics…", "🔎 Шукаю текст пісні…")
+}
+
+pub fn lyrics_header(lang: Lang, source: &str, synced: bool) -> String {
+    let title = pick(lang, "<b>Lyrics</b>", "<b>Текст пісні</b>");
+    let kind = if synced {
+        pick(lang, "timestamped", "з таймкодами")
+    } else {
+        pick(lang, "plain text", "звичайний текст")
+    };
+    format!("📝 {title} · {source} · {kind}\n\n")
+}
+
+pub fn lyrics_footer(lang: Lang) -> String {
+    let _ = lang;
+    format!("\n\n— {DEV_CHANNEL_HANDLE}")
+}
+
+pub fn lyrics_not_found(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "😕 Lyrics not found in the public sources (LRCLIB, lyrics.ovh).",
+        "😕 Текст не знайдено у публічних джерелах (LRCLIB, lyrics.ovh).",
+    )
+}
+
+pub fn lyrics_no_last(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Send a track first, reply to an audio message, or pass a query: <code>/lyrics Artist — Title</code>.",
+        "Спочатку надішліть трек, відповідайте на аудіоповідомлення або вкажіть запит: <code>/lyrics Виконавець — Назва</code>.",
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -41,6 +41,9 @@ pub struct Config {
     pub download_timeout: Duration,
     pub metadata_timeout: Duration,
     pub bot_api_wait: Duration,
+    /// Public lyrics APIs (no token, no scraping). Overridable for local mocks.
+    pub lrclib_base_url: String,
+    pub lyrics_ovh_base_url: String,
 }
 
 impl Config {
@@ -164,6 +167,14 @@ impl Config {
             download_timeout: Duration::from_secs(env_parse("DOWNLOAD_TIMEOUT_SECS", 300u64)?),
             metadata_timeout: Duration::from_secs(env_parse("METADATA_TIMEOUT_SECS", 30u64)?),
             bot_api_wait: Duration::from_secs(env_parse("BOT_API_WAIT_SECS", 20u64)?),
+            lrclib_base_url: env_optional("LRCLIB_BASE_URL")
+                .unwrap_or_else(|| "https://lrclib.net".to_owned())
+                .trim_end_matches('/')
+                .to_owned(),
+            lyrics_ovh_base_url: env_optional("LYRICS_OVH_BASE_URL")
+                .unwrap_or_else(|| "https://api.lyrics.ovh/v1".to_owned())
+                .trim_end_matches('/')
+                .to_owned(),
         })
     }
 

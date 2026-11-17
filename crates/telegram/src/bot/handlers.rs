@@ -604,6 +604,9 @@ async fn try_cache_send(
     match send::send_cached(bot, chat, &cached, caption).await {
         Ok(_) => {
             state.manager.touch_cached(key, quality).await;
+            state
+                .remember_track(user_id, &caption_meta, key, cached.provider)
+                .await;
             metrics::counter!("music_bot_cache_hits_total").increment(1);
             if genre_analysis {
                 let track_key = key.to_string();
@@ -766,6 +769,9 @@ pub async fn deliver_track(
             warn!(%error, key = %request.key, "could not record genres for upload");
         }
     }
+    state
+        .remember_track(user_id, &prepared.meta, &request.key, request.provider)
+        .await;
     Ok(Delivery::Uploaded)
 }
 

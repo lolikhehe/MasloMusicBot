@@ -32,6 +32,9 @@ pub enum Command {
     Import(Option<String>),
     /// `/genres [bars]` — per-user genre analyzer chart.
     GenreStats(Option<String>),
+    /// `/lyrics [Artist — Title]` — public lyrics lookup; falls back to the
+    /// last delivered track or an audio reply.
+    Lyrics(Option<String>),
     Unknown(String),
 }
 
@@ -64,6 +67,9 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "import" => Command::Import((!args.is_empty()).then_some(args)),
         "genres" | "genre" | "analysis" | "жанри" | "аналітика" => {
             Command::GenreStats((!args.is_empty()).then_some(args))
+        }
+        "lyrics" | "lyric" | "текст" | "лірика" => {
+            Command::Lyrics((!args.is_empty()).then_some(args))
         }
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
@@ -350,6 +356,9 @@ pub async fn handle_command(
                 return Ok(());
             }
             crate::bot::stats::handle_genres(state, bot, msg, args.as_deref(), lang).await?;
+        }
+        Command::Lyrics(query) => {
+            crate::bot::lyrics::handle_lyrics(state, bot, msg, query, lang).await?;
         }
         Command::AlbumSearch(query) => {
             if !msg.chat.is_private() {

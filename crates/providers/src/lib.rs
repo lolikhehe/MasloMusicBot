@@ -1,6 +1,7 @@
 pub mod external;
 pub mod http;
 pub mod lastfm;
+pub mod lyrics;
 pub mod url;
 pub mod ytdlp;
 

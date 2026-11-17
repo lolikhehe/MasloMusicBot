@@ -6,6 +6,7 @@ pub mod commands;
 pub mod handlers;
 pub mod import;
 pub mod inline;
+pub mod lyrics;
 pub mod send;
 pub mod stats;
 
