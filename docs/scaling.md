@@ -20,10 +20,20 @@ Postgres with long polling by default; webhooks are enabled by setting
 `last_seen_at` writing is throttled per process (5 min per user per replica);
 with N replicas this is at most N writes/user/interval, still negligible.
 
-There is **no data migration from the old SQLite file**. Users, settings and
-`file_id`s are recreated on first contact / next download; only the cache is
-lost. This is acceptable for an experimental branch but must be planned before
-merging to main.
+There is **no automatic data migration from the old SQLite file**. On the
+2026-11-18 promotion the 12 user rows, 92 cached `file_id`s and the
+`announced_version` marker were copied manually from `bot-data:/data/bot.db`
+into the new Postgres volume with a small SQL script (generating `INSERT`
+statements with Python's `sqlite3` module, then `psql -f`). New deployments
+start with an empty cache and repopulate it on the next download.
+
+Deployment note: Docker Desktop's WSL disk image (`docker_data.vhdx`,
+`ext4.vhdx`) was moved off the system drive to `D:\DockerDesktopWSL`. Docker
+Desktop 4.95 does not reliably relocate the WSL data folder via its
+`DataFolder` setting, so `C:\Users\<user>\AppData\Local\Docker\wsl` is a
+directory junction pointing at `D:\DockerDesktopWSL`. Images, container
+layers and named volumes (`bot-data`, `botapi`, `pg-data`) therefore live on
+D while Docker keeps using its original path.
 
 ## Running it
 
