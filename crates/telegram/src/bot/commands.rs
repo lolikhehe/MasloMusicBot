@@ -49,6 +49,8 @@ pub enum Command {
     Broadcast(Option<String>),
     Queue,
     Cancel(Option<String>),
+    /// `/stop` — cancel every active action for the caller.
+    Stop,
     Convert(Option<String>),
     Normalize(Option<String>),
     Playlist(Option<String>),
@@ -98,6 +100,7 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "broadcast" | "розсилка" => Command::Broadcast((!args.is_empty()).then_some(args)),
         "queue" | "черга" => Command::Queue,
         "cancel" | "скасувати" => Command::Cancel((!args.is_empty()).then_some(args)),
+        "stop" | "стоп" => Command::Stop,
         "convert" | "формат" => Command::Convert((!args.is_empty()).then_some(args)),
         "normalize" | "нормалізація" => {
             Command::Normalize((!args.is_empty()).then_some(args))
@@ -489,6 +492,11 @@ pub async fn handle_command(
             let ok = state.db.request_cancel(id.trim(), user_id).await?;
             send_plain(bot, msg.chat.id, i18n::cancel_result(lang, ok)).await?;
         }
+        Command::Stop => {
+            let jobs = state.db.cancel_all_jobs_for_user(user_id).await?;
+            let prompts = state.db.clear_user_selections(user_id).await?;
+            send_plain(bot, msg.chat.id, i18n::stop_result(lang, jobs, prompts)).await?;
+        }
         Command::Convert(format) => {
             let Some(value) = format
                 .map(|value| value.trim().to_ascii_lowercase())
@@ -497,6 +505,54 @@ pub async fn handle_command(
                 send_plain(bot, msg.chat.id, i18n::convert_usage(lang)).await?;
                 return Ok(());
             };
+
+            // Replying to a bot-sent audio converts *that* track; a bare
+            // `/convert <fmt>` still only changes the default for new ones.
+            let reply_file_id = msg.reply_to_message().and_then(|m| {
+                m.audio()
+                    .map(|audio| audio.file.id.0.clone())
+                    .or_else(|| m.document().map(|doc| doc.file.id.0.clone()))
+            });
+            if let Some(file_id) = reply_file_id {
+                let Some(cached) = state.db.track_by_file_id(&file_id).await? else {
+                    send_plain(bot, msg.chat.id, i18n::convert_reply_no_track(lang)).await?;
+                    return Ok(());
+                };
+                let Some(url) = cached.source_url.clone() else {
+                    send_plain(bot, msg.chat.id, i18n::convert_reply_no_track(lang)).await?;
+                    return Ok(());
+                };
+                state.db.set_audio_format(user_id, &value).await?;
+                let request = common::domain::TrackRequest {
+                    key: cached.key.clone(),
+                    provider: cached.provider,
+                    source_url: Some(url.clone()),
+                    meta: Some(cached.meta.clone()),
+                    target: common::domain::DownloadTarget::Url(url),
+                };
+                let progress = bot
+                    .send_message(msg.chat.id, i18n::downloading(lang))
+                    .await?;
+                let result = crate::bot::handlers::deliver_track(
+                    state,
+                    bot,
+                    msg.chat.id,
+                    request,
+                    user_record.quality,
+                    user_id,
+                    user_record.tags_enabled,
+                    user_record.hq_cover,
+                    user_record.genre_analysis,
+                )
+                .await;
+                let text = match result {
+                    Ok(_) => i18n::convert_reply_done(lang, &value),
+                    Err(error) => i18n::convert_reply_failed(lang, &error.to_string()),
+                };
+                let _ = crate::bot::handlers::edit_html(bot, msg.chat.id, progress.id, text).await;
+                return Ok(());
+            }
+
             state.db.set_audio_format(user_id, &value).await?;
             send_plain(
                 bot,
@@ -525,7 +581,13 @@ pub async fn handle_command(
             .await?;
         }
         Command::GroupMode(value) => {
-            if !is_admin {
+            // The static ADMIN_IDS list is not enough: a group owner/admin must
+            // be able to opt the group in. Query Telegram for chat privileges.
+            let chat_admin = matches!(
+                bot.get_chat_member(msg.chat.id, user.id).await,
+                Ok(member) if member.is_privileged()
+            );
+            if !is_admin && !chat_admin {
                 send_plain(bot, msg.chat.id, i18n::admin_only(lang)).await?;
                 return Ok(());
             }

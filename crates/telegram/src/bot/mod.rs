@@ -61,6 +61,10 @@ pub async fn run(bot: Bot, state: AppState) -> anyhow::Result<()> {
 
         let mut dispatcher = Dispatcher::builder(bot, handler)
             .dependencies(dependencies)
+            // Default keying by chat id makes teloxide handle every update from
+            // one chat sequentially: /help waits for a whole album download.
+            // Use the concurrent worker for all updates instead.
+            .distribution_function(|_| None::<()>)
             .build();
         let shutdown_token = dispatcher.shutdown_token();
         let mut dispatcher_task = tokio::spawn(async move {
@@ -86,6 +90,10 @@ pub async fn run(bot: Bot, state: AppState) -> anyhow::Result<()> {
         info!("starting polling listener");
         let mut dispatcher = Dispatcher::builder(bot, handler)
             .dependencies(dependencies)
+            // Default keying by chat id makes teloxide handle every update from
+            // one chat sequentially: /help waits for a whole album download.
+            // Use the concurrent worker for all updates instead.
+            .distribution_function(|_| None::<()>)
             .build();
         let shutdown_token = dispatcher.shutdown_token();
         let mut dispatcher_task = tokio::spawn(async move {

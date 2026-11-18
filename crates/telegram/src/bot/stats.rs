@@ -510,7 +510,9 @@ async fn send_genre_chart(
             .await?;
         return Ok(());
     }
-    let since = unix_now() - period.window_secs().unwrap_or(0);
+    // `Overall` has no window: use epoch, not "now" (which filters out every
+    // recorded listen and made /genres always report "no data").
+    let since = period.window_secs().map_or(0, |window| unix_now() - window);
     let rows = state
         .db
         .top_genres_since(user_id, usize::from(bars), since)

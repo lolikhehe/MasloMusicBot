@@ -139,6 +139,43 @@ impl Db {
         }))
     }
 
+    /// Find an already-downloaded track by the Telegram file id of the audio
+    /// the bot sent. Used by `/convert` when replying to a track message.
+    pub async fn track_by_file_id(&self, file_id: &str) -> AppResult<Option<CachedTrack>> {
+        let row = sqlx::query!(
+            "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,
+                    performer, album, duration_secs, thumbnail_url, genres
+             FROM tracks WHERE file_id = $1
+             ORDER BY last_used_at DESC
+             LIMIT 1",
+            file_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        Ok(row.map(|row| CachedTrack {
+            key: TrackKey(row.track_key),
+            file_id: row.file_id,
+            file_unique_id: row.file_unique_id,
+            source_url: row.source_url,
+            provider: row
+                .provider
+                .parse::<Provider>()
+                .unwrap_or(Provider::YouTube),
+            meta: TrackMeta {
+                title: row.title,
+                performer: row.performer,
+                album: row.album,
+                duration_secs: row
+                    .duration_secs
+                    .and_then(|value| u32::try_from(value).ok()),
+                thumbnail_url: row.thumbnail_url,
+                genres: serde_json::from_str(&row.genres).unwrap_or_default(),
+            },
+        }))
+    }
+
     pub async fn put_track(
         &self,
         track: &CachedTrack,
@@ -1243,6 +1280,32 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// `/stop`: flag every active job of a user as cancelled in one statement.
+    pub async fn cancel_all_jobs_for_user(&self, user_id: i64) -> AppResult<u64> {
+        let result = sqlx::query!(
+            "UPDATE download_jobs SET cancel_requested = true, updated_at = $2
+             WHERE user_id = $1
+               AND status IN ('queued', 'downloading', 'uploading')
+               AND NOT cancel_requested",
+            user_id,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected())
+    }
+
+    /// `/stop`: drop every pending one-shot prompt (playlist import, album
+    /// picks, lyrics choices) so no stray follow-up is acted on afterwards.
+    pub async fn clear_user_selections(&self, user_id: i64) -> AppResult<u64> {
+        let result = sqlx::query!("DELETE FROM selections WHERE user_id = $1", user_id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(result.rows_affected())
     }
 
     pub async fn job_cancel_requested(&self, id: &str) -> AppResult<bool> {
