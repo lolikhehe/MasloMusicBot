@@ -608,48 +608,92 @@ async fn send_album_info(
     let Some(artist) = artist else {
         return;
     };
-    let bio = match &state.lastfm {
-        Some(client) => client.artist_bio(artist).await.ok().flatten(),
-        None => None,
+    // Long-form text goes in separate messages: photo captions stop at 1024
+    // characters, plain messages at 4096.
+    let (bio, wiki) = match &state.lastfm {
+        Some(client) => {
+            let bio = client.artist_bio(artist).await.ok().flatten();
+            let wiki = client.album_wiki(artist, &album.title).await.ok().flatten();
+            (bio, wiki)
+        }
+        None => (None, None),
     };
-    let caption = album_info_caption(&album.title, artist, facts.as_ref(), bio.as_deref());
-    let Some(url) = meta
+    let caption = album_info_caption(&album.title, artist, facts.as_ref());
+    match meta
         .thumbnail_url
         .as_deref()
         .map(str::trim)
         .filter(|url| !url.is_empty())
-    else {
-        let _ = send::send_html(bot, chat, caption).await;
-        return;
-    };
-    // Apple artwork is stored at 600x600; the CDN serves the same asset at
-    // any size. Deezer thumbnails are already 1000px (`cover_xl`).
-    let url = url
-        .replace("600x600bb", "1000x1000bb")
-        .replace("100x100bb", "1000x1000bb");
-    match providers::http::fetch_bytes(&state.http, &url, 8 * 1024 * 1024).await {
-        Some(bytes) => {
-            let _ = bot
-                .send_photo(chat, InputFile::memory(bytes))
-                .caption(caption)
-                .parse_mode(ParseMode::Html)
-                .await;
+    {
+        Some(url) => {
+            // Apple artwork is stored at 600x600; the CDN serves the same asset
+            // at any size. Deezer thumbnails are already 1000px (`cover_xl`).
+            let url = url
+                .replace("600x600bb", "1000x1000bb")
+                .replace("100x100bb", "1000x1000bb");
+            match providers::http::fetch_bytes(&state.http, &url, 8 * 1024 * 1024).await {
+                Some(bytes) => {
+                    let _ = bot
+                        .send_photo(chat, InputFile::memory(bytes))
+                        .caption(caption)
+                        .parse_mode(ParseMode::Html)
+                        .await;
+                }
+                None => {
+                    let _ = send::send_html(bot, chat, caption).await;
+                }
+            }
         }
         None => {
             let _ = send::send_html(bot, chat, caption).await;
         }
     }
+    send_info_sections(
+        bot,
+        chat,
+        artist,
+        &album.title,
+        bio.as_deref(),
+        wiki.as_deref(),
+    )
+    .await;
+}
+
+/// Artist bio and album wiki as their own messages, so neither is cut short by
+/// the 1024-character caption limit on the cover photo.
+async fn send_info_sections(
+    bot: &Bot,
+    chat: ChatId,
+    artist: &str,
+    title: &str,
+    bio: Option<&str>,
+    wiki: Option<&str>,
+) {
+    if let Some(bio) = bio {
+        let _ = send::send_html(bot, chat, info_section("👤", artist, bio)).await;
+    }
+    if let Some(wiki) = wiki {
+        let _ = send::send_html(bot, chat, info_section("💿", title, wiki)).await;
+    }
+}
+
+/// One long-form info section. Telegram's text limit applies per message, so
+/// each section is sent separately; a rare over-long source text is cut at
+/// 4000 characters to stay safely inside the 4096 cap.
+fn info_section(icon: &str, name: &str, body: &str) -> String {
+    let short: String = body.trim().chars().take(4000).collect();
+    format!(
+        "{icon} <b>{}</b>\n\n{}",
+        escape_html(name.trim()),
+        escape_html(short.trim_end())
+    )
 }
 
 /// Caption for the album-info photo. Deliberately language-neutral (symbols,
-/// names, numbers) so it needs no per-locale strings. The bio is truncated to
-/// keep the whole caption under Telegram's 1024-character limit.
-fn album_info_caption(
-    title: &str,
-    artist: &str,
-    facts: Option<&providers::AlbumFacts>,
-    bio: Option<&str>,
-) -> String {
+/// names, numbers) so it needs no per-locale strings; the long-form bio and
+/// album wiki are sent as separate messages instead of being squeezed into
+/// the 1024-character caption limit.
+fn album_info_caption(title: &str, artist: &str, facts: Option<&providers::AlbumFacts>) -> String {
     let mut header = format!(
         "💿 <b>{}</b>\n🎤 {}",
         escape_html(title.trim()),
@@ -689,16 +733,7 @@ fn album_info_caption(
             header.push_str(&line);
         }
     }
-    let Some(bio) = bio.map(str::trim).filter(|bio| !bio.is_empty()) else {
-        return header;
-    };
-    // Telegram caps photo captions at 1024 characters; keep headroom.
-    let budget = 1000usize.saturating_sub(header.chars().count() + 2);
-    if budget < 80 {
-        return header;
-    }
-    let short: String = bio.chars().take(budget.min(600)).collect();
-    format!("{header}\n\n{}", escape_html(short.trim_end()))
+    header
 }
 
 #[cfg(test)]
@@ -706,19 +741,14 @@ mod album_info_tests {
     use super::*;
 
     #[test]
-    fn album_info_caption_fits_limit() {
+    fn album_info_caption_carries_facts() {
         let facts = providers::AlbumFacts {
             release_year: Some("2018".to_owned()),
             label: Some("Star Records".to_owned()),
             genres: vec!["Rock".to_owned(), "Pop".to_owned()],
             ..Default::default()
         };
-        let bio = "word ".repeat(400);
-        let caption = album_info_caption("Night <Drive>", "Testo & Band", Some(&facts), Some(&bio));
-        assert!(
-            caption.chars().count() <= 1000,
-            "caption stays under Telegram's cap"
-        );
+        let caption = album_info_caption("Night <Drive>", "Testo & Band", Some(&facts));
         assert!(caption.contains("💿 <b>Night &lt;Drive&gt;</b>"));
         assert!(caption.contains("🎤 Testo &amp; Band"));
         assert!(caption.contains("📅 2018 · Star Records · Rock, Pop"));
@@ -726,8 +756,21 @@ mod album_info_tests {
 
     #[test]
     fn album_info_caption_without_extras() {
-        let bare = album_info_caption("Title", "Artist", None, None);
+        let bare = album_info_caption("Title", "Artist", None);
         assert_eq!(bare, "💿 <b>Title</b>\n🎤 Artist");
+    }
+
+    #[test]
+    fn info_section_stays_within_message_limit() {
+        let long = "word ".repeat(3000);
+        let text = info_section("👤", "Artist <&>", &long);
+        assert!(
+            text.chars().count() <= 4096,
+            "section message under Telegram's text cap"
+        );
+        assert!(text.starts_with("👤 <b>Artist &lt;&amp;&gt;</b>\n\n"));
+        let text = info_section("💿", "Album", "Short story.");
+        assert!(text.ends_with("Short story."));
     }
 }
 

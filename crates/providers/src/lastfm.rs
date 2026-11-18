@@ -334,9 +334,9 @@ impl LastFmClient {
         Ok(top.toptags.map(TagList::into_names).unwrap_or_default())
     }
 
-    /// Short artist biography from `artist.getinfo` (`bio.summary`) with the
-    /// trailing "Read more on Last.fm" link stripped. `None` when Last.fm has
-    /// no biography for the name.
+    /// Full artist biography from `artist.getinfo` (`bio.content`, falling
+    /// back to `bio.summary`) with the "Read more on Last.fm" link stripped.
+    /// `None` when Last.fm has no biography for the name.
     pub async fn artist_bio(&self, artist: &str) -> Result<Option<String>, DownloadError> {
         let artist = artist.trim();
         if artist.is_empty() {
@@ -363,13 +363,66 @@ impl LastFmClient {
         let bio = body
             .artist
             .and_then(|artist| artist.bio)
-            .and_then(|bio| bio.summary)
-            .map(|summary| {
-                let cut = summary.find("<a ").unwrap_or(summary.len());
-                summary[..cut].trim().to_owned()
+            // `content` is the full biography; `summary` is its shortened form.
+            .and_then(|bio| {
+                bio.content
+                    .filter(|content| !content.trim().is_empty())
+                    .or(bio.summary)
             })
-            .filter(|summary| !summary.is_empty());
+            .map(|text| {
+                let cut = text.find("<a ").unwrap_or(text.len());
+                text[..cut].trim().to_owned()
+            })
+            .filter(|text| !text.is_empty());
         Ok(bio)
+    }
+
+    /// Album description from `album.getinfo` (`wiki.content`, falling back to
+    /// `wiki.summary`) with links stripped. `None` when Last.fm has no
+    /// editorial for the release.
+    pub async fn album_wiki(
+        &self,
+        artist: &str,
+        album: &str,
+    ) -> Result<Option<String>, DownloadError> {
+        let artist = artist.trim();
+        let album = album.trim();
+        if artist.is_empty() || album.is_empty() {
+            return Ok(None);
+        }
+        let body: AlbumInfoResponse = self
+            .client
+            .get(API_URL)
+            .query(&[
+                ("method", "album.getinfo"),
+                ("artist", artist),
+                ("album", album),
+                ("api_key", &self.api_key),
+                ("format", "json"),
+                ("autocorrect", "1"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        let wiki = body
+            .album
+            .and_then(|album| album.wiki)
+            .and_then(|wiki| {
+                wiki.content
+                    .filter(|content| !content.trim().is_empty())
+                    .or(wiki.summary)
+            })
+            .map(|text| {
+                let cut = text.find("<a ").unwrap_or(text.len());
+                text[..cut].trim().to_owned()
+            })
+            .filter(|text| !text.is_empty());
+        Ok(wiki)
     }
 
     /// Public profile totals: scrobbles, library size and country.
@@ -606,6 +659,28 @@ struct ArtistBioInfo {
 
 #[derive(Debug, Deserialize)]
 struct ArtistBio {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AlbumInfoResponse {
+    #[serde(default)]
+    album: Option<AlbumWikiInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AlbumWikiInfo {
+    #[serde(default)]
+    wiki: Option<AlbumWiki>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AlbumWiki {
+    #[serde(default)]
+    content: Option<String>,
     #[serde(default)]
     summary: Option<String>,
 }
