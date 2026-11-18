@@ -6,17 +6,38 @@ use crate::version::DEV_CHANNEL_HANDLE;
 
 fn pick(lang: Lang, en: &'static str, uk: &'static str) -> &'static str {
     match lang {
-        Lang::En
-        | Lang::Pl
-        | Lang::De
-        | Lang::Cn
-        | Lang::Jp
-        | Lang::Fr
-        | Lang::Nl
-        | Lang::Cz
-        | Lang::Be => en,
         Lang::Uk => uk,
+        Lang::En => en,
+        other => crate::locales::lookup(other.code(), en).unwrap_or(en),
     }
+}
+
+/// Translated `format!` template. Translations keep the same named
+/// placeholders as the English source.
+fn template(lang: Lang, en: &'static str) -> &'static str {
+    pick(lang, en, en)
+}
+
+/// Like `format!`, but takes the translated template for `lang`. Accepts
+/// named args (`name = value`) and positional `{}` args.
+macro_rules! lformat {
+    ($lang:expr, $tpl:literal $(, $key:ident = $val:expr)* $(,)?) => {{
+        let mut result = $crate::i18n::template($lang, $tpl).to_owned();
+        $(
+            result = result.replace(
+                concat!("{", stringify!($key), "}"),
+                &$val.to_string(),
+            );
+        )*
+        result
+    }};
+    ($lang:expr, $tpl:literal, $($val:expr),+ $(,)?) => {{
+        let mut result = $crate::i18n::template($lang, $tpl).to_owned();
+        $(
+            result = result.replacen("{}", &$val.to_string(), 1);
+        )*
+        result
+    }};
 }
 
 pub fn language_name(lang: Lang) -> &'static str {
@@ -430,7 +451,12 @@ pub fn genre_chart_subtitle(lang: Lang, tracks: i64, genres: usize) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("{tracks} tracks · {genres} genres"),
+        | Lang::Be => lformat!(
+            lang,
+            "{tracks} tracks · {genres} genres",
+            tracks = tracks,
+            genres = genres
+        ),
         Lang::Uk => format!("{tracks} треків · {genres} жанрів"),
     }
 }
@@ -462,11 +488,11 @@ pub fn lastfm_disabled(lang: Lang) -> &'static str {
 pub fn lastfm_status(lang: Lang, user: Option<&str>) -> String {
     match user {
         Some(nick) => match lang {
-            Lang::En | Lang::Pl | Lang::De | Lang::Cn | Lang::Jp | Lang::Fr | Lang::Nl | Lang::Cz | Lang::Be => format!("🎵 Last.fm connected as <b>{nick}</b>. In inline mode with an empty query the bot will now suggest what you're playing.\nDisconnect: /lastfm off"),
+            Lang::En | Lang::Pl | Lang::De | Lang::Cn | Lang::Jp | Lang::Fr | Lang::Nl | Lang::Cz | Lang::Be => lformat!(lang, "🎵 Last.fm connected as <b>{nick}</b>. In inline mode with an empty query the bot will now suggest what you're playing.\nDisconnect: /lastfm off", nick = nick),
             Lang::Uk => format!("🎵 Last.fm підключено як <b>{nick}</b>. Тепер в inline-режимі порожній запит запропонує те, що грає зараз.\nВідключити: /lastfm off"),
         },
         None => match lang {
-            Lang::En | Lang::Pl | Lang::De | Lang::Cn | Lang::Jp | Lang::Fr | Lang::Nl | Lang::Cz | Lang::Be => "🎵 Last.fm: not connected.\nConnect: /lastfm &lt;your nickname&gt; — inline empty query will suggest what's playing now.".to_string(),
+            Lang::En | Lang::Pl | Lang::De | Lang::Cn | Lang::Jp | Lang::Fr | Lang::Nl | Lang::Cz | Lang::Be => template(lang, "🎵 Last.fm: not connected.\nConnect: /lastfm &lt;your nickname&gt; — inline empty query will suggest what's playing now.").to_string(),
             Lang::Uk => "🎵 Last.fm: не підключено.\nПідключити: /lastfm &lt;ваш нікнейм&gt; — порожній inline-запит запропонує те, що грає зараз.".to_string(),
         },
     }
@@ -494,8 +520,10 @@ pub fn lastfm_no_activity(lang: Lang, nick: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!(
-            "✅ Connected as <b>{nick}</b>, but no recent tracks yet. Make sure your player scrobbles to Last.fm and your profile is public."
+        | Lang::Be => lformat!(
+            lang,
+            "✅ Connected as <b>{nick}</b>, but no recent tracks yet. Make sure your player scrobbles to Last.fm and your profile is public.",
+            nick = nick
         ),
         Lang::Uk => format!(
             "✅ Підключено як <b>{nick}</b>, але останніх треків ще немає. Переконайся, що плеєр скроблить на Last.fm, а профіль — публічний."
@@ -513,8 +541,11 @@ pub fn lastfm_connected_track(lang: Lang, nick: &str, track: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!(
-            "✅ Connected as <b>{nick}</b>. Now playing: <b>{track}</b>. In inline mode, an empty query will propose it."
+        | Lang::Be => lformat!(
+            lang,
+            "✅ Connected as <b>{nick}</b>. Now playing: <b>{track}</b>. In inline mode, an empty query will propose it.",
+            nick = nick,
+            track = track
         ),
         Lang::Uk => format!(
             "✅ Підключено як <b>{nick}</b>. Зараз грає: <b>{track}</b>. Порожній inline-запит запропонує його."
@@ -541,7 +572,7 @@ pub fn now_playing_inline(lang: Lang, track: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("▶ Now playing: {track}"),
+        | Lang::Be => lformat!(lang, "▶ Now playing: {track}", track = track),
         Lang::Uk => format!("▶ Зараз грає: {track}"),
     }
 }
@@ -563,7 +594,7 @@ pub fn quality_display(lang: Lang, quality: u32) -> String {
             | Lang::Fr
             | Lang::Nl
             | Lang::Cz
-            | Lang::Be => "FLAC (lossless)".to_owned(),
+            | Lang::Be => template(lang, "FLAC (lossless)").to_owned(),
             Lang::Uk => "FLAC (без втрати)".to_owned(),
         }
     } else {
@@ -599,7 +630,7 @@ pub fn language_button(lang: Lang) -> &'static str {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => "🇬🇧 English",
+        | Lang::Be => template(lang, "🇬🇧 English"),
         Lang::Uk => "🇺🇦 Українська",
     }
 }
@@ -662,7 +693,11 @@ pub fn rate_limited(lang: Lang, per_minute: u32) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("⏳ Too many requests. Limit: {per_minute} per minute."),
+        | Lang::Be => lformat!(
+            lang,
+            "⏳ Too many requests. Limit: {per_minute} per minute.",
+            per_minute = per_minute
+        ),
         Lang::Uk => format!("⏳ Забагато запитів. Ліміт: {per_minute} на хвилину."),
     }
 }
@@ -697,7 +732,8 @@ pub fn error(lang: Lang, error: &DownloadError) -> String {
                 | Lang::Fr
                 | Lang::Nl
                 | Lang::Cz
-                | Lang::Be => format!(
+                | Lang::Be => lformat!(
+                    lang,
                     "⏱ The track is too long. Maximum duration is {} minutes.",
                     limit / 60
                 ),
@@ -717,7 +753,8 @@ pub fn error(lang: Lang, error: &DownloadError) -> String {
                 | Lang::Fr
                 | Lang::Nl
                 | Lang::Cz
-                | Lang::Be => format!(
+                | Lang::Be => lformat!(
+                    lang,
                     "📦 The file is too large. Maximum size is {} MB.",
                     limit / 1_000_000
                 ),
@@ -747,7 +784,11 @@ pub fn error(lang: Lang, error: &DownloadError) -> String {
                 | Lang::Fr
                 | Lang::Nl
                 | Lang::Cz
-                | Lang::Be => format!("🚫 {} is disabled on this bot.", provider.display_name()),
+                | Lang::Be => lformat!(
+                    lang,
+                    "🚫 {} is disabled on this bot.",
+                    provider.display_name()
+                ),
                 Lang::Uk => format!("🚫 {} вимкнено в цьому боті.", provider.display_name()),
             };
         }
@@ -781,7 +822,12 @@ pub fn album_confirm(lang: Lang, title: &str, count: usize) -> String {
         | Lang::Nl
         | Lang::Cz
         | Lang::Be => {
-            format!("💿 <b>{title}</b>\n{count} track(s). Download the whole collection?")
+            lformat!(
+                lang,
+                "💿 <b>{title}</b>\n{count} track(s). Download the whole collection?",
+                title = title,
+                count = count
+            )
         }
         Lang::Uk => format!("💿 <b>{title}</b>\n{count} треків. Завантажити весь збірник?"),
     }
@@ -813,7 +859,12 @@ pub fn album_started(lang: Lang, title: &str, count: usize) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("💿 <b>{title}</b>\n{count} track(s) queued."),
+        | Lang::Be => lformat!(
+            lang,
+            "💿 <b>{title}</b>\n{count} track(s) queued.",
+            title = title,
+            count = count
+        ),
         Lang::Uk => format!("💿 <b>{title}</b>\nУ черзі треків: {count}."),
     }
 }
@@ -828,7 +879,13 @@ pub fn album_progress(lang: Lang, current: usize, total: usize, title: &str) -> 
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("💿 {current}/{total} — {title}"),
+        | Lang::Be => lformat!(
+            lang,
+            "💿 {current}/{total} — {title}",
+            current = current,
+            total = total,
+            title = title
+        ),
         Lang::Uk => format!("💿 {current}/{total} — {title}"),
     }
 }
@@ -843,7 +900,12 @@ pub fn album_done(lang: Lang, ok: usize, failed: usize) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("✅ Album finished: {ok} sent, {failed} failed."),
+        | Lang::Be => lformat!(
+            lang,
+            "✅ Album finished: {ok} sent, {failed} failed.",
+            ok = ok,
+            failed = failed
+        ),
         Lang::Uk => format!("✅ Альбом завершено: надіслано {ok}, з помилками {failed}."),
     }
 }
@@ -870,7 +932,7 @@ pub fn album_failed_list(lang: Lang, titles: &[String], extra: usize) -> String 
             | Lang::Fr
             | Lang::Nl
             | Lang::Cz
-            | Lang::Be => format!(" and {extra} more"),
+            | Lang::Be => lformat!(lang, " and {extra} more", extra = extra),
             Lang::Uk => format!(" і ще {extra}"),
         }
     } else {
@@ -885,8 +947,11 @@ pub fn album_failed_list(lang: Lang, titles: &[String], extra: usize) -> String 
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!(
-            "⚠ Failed: {list}{more}.\nSend /alb again — the finished tracks will come from cache instantly."
+        | Lang::Be => lformat!(
+            lang,
+            "⚠ Failed: {list}{more}.\nSend /alb again — the finished tracks will come from cache instantly.",
+            list = list,
+            more = more
         ),
         Lang::Uk => format!(
             "⚠ Не вдалося: {list}{more}.\nПовтори виклик /alb — успішні треки будуть взяті з кешу миттєво."
@@ -916,7 +981,11 @@ pub fn album_search_results(lang: Lang, query: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("<b>Albums for</b> «{query}»\nPick one:"),
+        | Lang::Be => lformat!(
+            lang,
+            "<b>Albums for</b> «{query}»\nPick one:",
+            query = query
+        ),
         Lang::Uk => format!("<b>Альбоми за запитом</b> «{query}»\nОбери альбом:"),
     }
 }
@@ -940,7 +1009,7 @@ pub fn album_tracks_count(lang: Lang, count: u32) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!(" · {count} tracks"),
+        | Lang::Be => lformat!(lang, " · {count} tracks", count = count),
         Lang::Uk => format!(" · {count} треків"),
     }
 }
@@ -955,10 +1024,19 @@ pub fn stats(lang: Lang, stats: &Stats, uptime: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!(
-            "<b>Stats</b>\nCached tracks: <b>{}</b>\nKnown users: <b>{}</b>\nSuccessful sends: <b>{}</b>\nUptime: <b>{uptime}</b>",
-            stats.tracks, stats.users, stats.sends
-        ),
+        | Lang::Be => {
+            // Mixed positional + named placeholders: substitute by hand so the
+            // English template stays byte-identical as the translation key.
+            let mut result = template(
+                lang,
+                "<b>Stats</b>\nCached tracks: <b>{}</b>\nKnown users: <b>{}</b>\nSuccessful sends: <b>{}</b>\nUptime: <b>{uptime}</b>",
+            )
+            .to_owned();
+            result = result.replacen("{}", &stats.tracks.to_string(), 1);
+            result = result.replacen("{}", &stats.users.to_string(), 1);
+            result = result.replacen("{}", &stats.sends.to_string(), 1);
+            result.replace("{uptime}", uptime)
+        }
         Lang::Uk => format!(
             "<b>Статистика</b>\nТреків у кеші: <b>{}</b>\nКористувачів: <b>{}</b>\nУспішних надсилань: <b>{}</b>\nЧас роботи: <b>{uptime}</b>",
             stats.tracks, stats.users, stats.sends
@@ -980,7 +1058,11 @@ pub fn update_notice(lang: Lang, notes: &str) -> String {
         | Lang::Nl
         | Lang::Cz
         | Lang::Be => {
-            format!("🆕 <b>Bot update</b>\n\n{notes}\n\n💬 Developer channel: @maslougazIA")
+            lformat!(
+                lang,
+                "🆕 <b>Bot update</b>\n\n{notes}\n\n💬 Developer channel: @maslougazIA",
+                notes = notes
+            )
         }
         Lang::Uk => {
             format!("🆕 <b>Оновлення бота</b>\n\n{notes}\n\n💬 Канал розробника: @maslougazIA")
@@ -998,7 +1080,7 @@ pub fn purge_ok(lang: Lang, key: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("🗑 Purged <code>{key}</code> from cache."),
+        | Lang::Be => lformat!(lang, "🗑 Purged <code>{key}</code> from cache.", key = key),
         Lang::Uk => format!("🗑 Видалено <code>{key}</code> з кешу."),
     }
 }
@@ -1024,7 +1106,7 @@ pub fn ban_ok(lang: Lang, user_id: i64, banned: bool) -> String {
             | Lang::Cz
             | Lang::Be,
             true,
-        ) => format!("🚫 User {user_id} banned."),
+        ) => lformat!(lang, "🚫 User {user_id} banned.", user_id = user_id),
         (
             Lang::En
             | Lang::Pl
@@ -1036,7 +1118,7 @@ pub fn ban_ok(lang: Lang, user_id: i64, banned: bool) -> String {
             | Lang::Cz
             | Lang::Be,
             false,
-        ) => format!("✅ User {user_id} unbanned."),
+        ) => lformat!(lang, "✅ User {user_id} unbanned.", user_id = user_id),
         (Lang::Uk, true) => format!("🚫 Користувача {user_id} забанено."),
         (Lang::Uk, false) => format!("✅ Користувача {user_id} розбанено."),
     }
@@ -1068,7 +1150,7 @@ pub fn sent_track(lang: Lang, title: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("✅ Sent: {title}"),
+        | Lang::Be => lformat!(lang, "✅ Sent: {title}", title = title),
         Lang::Uk => format!("✅ Надіслано: {title}"),
     }
 }
@@ -1083,7 +1165,12 @@ pub fn search_results(lang: Lang, query: &str, count: usize) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("🔎 Results for “{query}” ({count}):"),
+        | Lang::Be => lformat!(
+            lang,
+            "🔎 Results for “{query}” ({count}):",
+            query = query,
+            count = count
+        ),
         Lang::Uk => format!("🔎 Результати для «{query}» ({count}):"),
     }
 }
@@ -1146,7 +1233,7 @@ pub fn import_progress(lang: Lang, count: usize) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("🔎 Matching {count} imported tracks…"),
+        | Lang::Be => lformat!(lang, "🔎 Matching {count} imported tracks…", count = count),
         Lang::Uk => format!("🔎 Шукаю {count} імпортованих треків…"),
     }
 }
@@ -1169,7 +1256,11 @@ pub fn import_too_many(lang: Lang, max: usize) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("Too many tracks; import at most {max} at a time."),
+        | Lang::Be => lformat!(
+            lang,
+            "Too many tracks; import at most {max} at a time.",
+            max = max
+        ),
         Lang::Uk => format!("Занадто багато треків; імпортуй не більше {max} за раз."),
     }
 }
@@ -1237,8 +1328,14 @@ pub fn profile_summary(
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!(
-            "📊 <b>Last.fm: {name}</b>\nScrobbles (all time): <b>{playcount}</b>\nLibrary (all time): {tracks} tracks · {albums} albums · {artists} artists"
+        | Lang::Be => lformat!(
+            lang,
+            "📊 <b>Last.fm: {name}</b>\nScrobbles (all time): <b>{playcount}</b>\nLibrary (all time): {tracks} tracks · {albums} albums · {artists} artists",
+            name = name,
+            playcount = playcount,
+            tracks = tracks,
+            albums = albums,
+            artists = artists
         ),
         Lang::Uk => format!(
             "📊 <b>Last.fm: {name}</b>\nСкроблів (весь час): <b>{playcount}</b>\nБібліотека (весь час): {tracks} треків · {albums} альбомів · {artists} виконавців"
@@ -1255,7 +1352,7 @@ pub fn profile_summary(
             | Lang::Fr
             | Lang::Nl
             | Lang::Cz
-            | Lang::Be => format!("\nCountry: {country}"),
+            | Lang::Be => lformat!(lang, "\nCountry: {country}", country = country),
             Lang::Uk => format!("\nКраїна: {country}"),
         };
         body.push_str(&line);
@@ -1270,7 +1367,7 @@ pub fn profile_summary(
             | Lang::Fr
             | Lang::Nl
             | Lang::Cz
-            | Lang::Be => format!("\n\n<b>Top tracks ({period}):</b>"),
+            | Lang::Be => lformat!(lang, "\n\n<b>Top tracks ({period}):</b>", period = period),
             Lang::Uk => format!("\n\n<b>Топ треків ({period}):</b>"),
         };
         body.push_str(&header);
@@ -1319,7 +1416,7 @@ pub fn downloading_track(lang: Lang, track: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("⏳ Downloading: {track}"),
+        | Lang::Be => lformat!(lang, "⏳ Downloading: {track}", track = track),
         Lang::Uk => format!("⏳ Завантажую: {track}"),
     }
 }
@@ -1336,7 +1433,11 @@ pub fn history_title(lang: Lang, period: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("<b>Listening history</b> · {period}\n\n"),
+        | Lang::Be => lformat!(
+            lang,
+            "<b>Listening history</b> · {period}\n\n",
+            period = period
+        ),
         Lang::Uk => format!("<b>Історія прослуховувань</b> · {period}\n\n"),
     }
 }
@@ -1368,7 +1469,7 @@ pub fn history_more(lang: Lang, hidden: i64) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("\n… and {hidden} earlier\n"),
+        | Lang::Be => lformat!(lang, "\n… and {hidden} earlier\n", hidden = hidden),
         Lang::Uk => format!("\n… і ще {hidden} раніше\n"),
     }
 }
@@ -1395,7 +1496,13 @@ pub fn dynamics_subtitle(lang: Lang, cells: usize, buckets: usize, period: &str)
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("{cells} genre-points · {buckets} buckets · {period}"),
+        | Lang::Be => lformat!(
+            lang,
+            "{cells} genre-points · {buckets} buckets · {period}",
+            cells = cells,
+            buckets = buckets,
+            period = period
+        ),
         Lang::Uk => format!("{cells} точок жанрів · {buckets} інтервалів · {period}"),
     }
 }
@@ -1442,7 +1549,12 @@ pub fn digest_enabled(lang: Lang, period: &str, next: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("✅ {period} digest enabled. Next: <b>{next}</b> UTC."),
+        | Lang::Be => lformat!(
+            lang,
+            "✅ {period} digest enabled. Next: <b>{next}</b> UTC.",
+            period = period,
+            next = next
+        ),
         Lang::Uk => format!("✅ {period}-дайджест увімкнено. Наступний: <b>{next}</b> UTC."),
     }
 }
@@ -1461,7 +1573,11 @@ pub fn digest_quiet_set(lang: Lang, window: &str) -> String {
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!("🌙 Quiet hours: <b>{window}</b> UTC."),
+        | Lang::Be => lformat!(
+            lang,
+            "🌙 Quiet hours: <b>{window}</b> UTC.",
+            window = window
+        ),
         Lang::Uk => format!("🌙 Тихі години: <b>{window}</b> за UTC."),
     }
 }
@@ -1481,8 +1597,13 @@ pub fn digest_status(lang: Lang, period: &str, next: &str, quiet: &str, enabled:
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => format!(
-            "📅 Digest: <b>{state}</b>\nPeriod: {period}\nNext: {next} UTC\nQuiet hours: {quiet} UTC"
+        | Lang::Be => lformat!(
+            lang,
+            "📅 Digest: <b>{state}</b>\nPeriod: {period}\nNext: {next} UTC\nQuiet hours: {quiet} UTC",
+            state = state,
+            period = period,
+            next = next,
+            quiet = quiet
         ),
         Lang::Uk => format!(
             "📅 Дайджест: <b>{state}</b>\nПеріод: {period}\nНаступний: {next} UTC\nТихі години: {quiet} UTC"
@@ -1518,7 +1639,7 @@ pub fn digest_period_label(lang: Lang, daily: bool) -> &'static str {
             | Lang::Cz
             | Lang::Be,
             true,
-        ) => "daily",
+        ) => template(lang, "daily"),
         (
             Lang::En
             | Lang::Pl
@@ -1530,7 +1651,7 @@ pub fn digest_period_label(lang: Lang, daily: bool) -> &'static str {
             | Lang::Cz
             | Lang::Be,
             false,
-        ) => "weekly",
+        ) => template(lang, "weekly"),
         (Lang::Uk, true) => "щоденний",
         (Lang::Uk, false) => "щотижневий",
     }
@@ -1554,7 +1675,7 @@ pub fn digest_message(
         | Lang::Fr
         | Lang::Nl
         | Lang::Cz
-        | Lang::Be => "📊 Your digest",
+        | Lang::Be => template(lang, "📊 Your digest"),
         Lang::Uk => "📊 Твій дайджест",
     };
     let listens_label = pick(lang, "Listens", "Прослуховувань");
