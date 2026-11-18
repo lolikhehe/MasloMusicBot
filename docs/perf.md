@@ -202,5 +202,12 @@ These percentiles measure the whole mocked stack under a simultaneous 200-update
 burst (including first-contact Postgres writes for 200 distinct mock users).
 They are **local mock numbers, NOT S1–S4** and must not be compared to the
 production targets. The raw summary is written to `target/e2e-load.json`.
-Other e2e scenarios verify `/help`, `/lyrics` (mock LRCLIB) and a cached-track
-send via mock Telegram `sendAudio`, all against a real running binary.
+Other e2e scenarios verify `/help`, `/lyrics` (mock LRCLIB), `/changelog`,
+`/me`, a cached-track send, webhook mode with a signed secret, and two webhook
+replicas sharing selections and the rate budget — all against a real running
+binary.
+
+`scripts/measure-s1-s4.ps1` stores a timestamped raw `/metrics` scrape on D:.
+An empty scrape right after a restart is expected: the Prometheus recorder only
+renders metrics that have been touched, so the first real message is needed
+before any `music_bot_*` sample appears. No numbers are synthesised.
