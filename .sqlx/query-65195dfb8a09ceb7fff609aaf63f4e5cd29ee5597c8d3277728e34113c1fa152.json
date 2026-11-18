@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM selections WHERE id = $1 AND kind = $2 AND expires_at >= $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "65195dfb8a09ceb7fff609aaf63f4e5cd29ee5597c8d3277728e34113c1fa152"
+}

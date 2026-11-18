@@ -1151,6 +1151,21 @@ impl Db {
         Ok(())
     }
 
+    /// Atomically consume a non-expired selection. Two webhook replicas cannot
+    /// both act on the same one-shot prompt (e.g. a pending `/import`).
+    pub async fn take_selection(&self, id: &str, kind: &str) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "DELETE FROM selections WHERE id = $1 AND kind = $2 AND expires_at >= $3",
+            id,
+            kind,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
     // ---- Persistent download jobs ----------------------------------------
 
     /// Insert a job and atomically claim it for this replica. Returns `false`
@@ -1544,6 +1559,23 @@ mod tests {
         let wrong: Option<serde_json::Value> =
             db.get_selection("abc", "album").await.expect("kind");
         assert!(wrong.is_none());
+        // One-shot prompts are consumed atomically: the second caller loses.
+        db.put_selection(
+            "take-me",
+            "track",
+            7,
+            serde_json::json!({"value": 1}),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("put take");
+        assert!(db.take_selection("take-me", "track").await.expect("take"));
+        assert!(
+            !db.take_selection("take-me", "track")
+                .await
+                .expect("second take must fail")
+        );
+
         db.delete_selection("abc").await.expect("delete");
         assert!(
             db.get_selection::<serde_json::Value>("abc", "track")

@@ -43,7 +43,7 @@ not be editable into messages.
 | `/help` | everyone | How to use the bot |
 | `/settings` | everyone | Language (EN/UK), audio quality (128–320 kbps, or **FLAC** lossless), inline search source (YouTube / SoundCloud / Deezer), tags toggle (album + genre hashtags), HQ cover toggle (1000px), Last.fm stats toggle, genre analyzer toggle |
 | `/alb <name>` | everyone | Find an album by name (Deezer + Apple Music catalogs) and download it track by track |
-| `/import` / playlist file | everyone | Import a playlist from Spotify/TuneMyMusic/Soundiiz exports (CSV/TXT/JSON) or pasted `Artist – Title` lines |
+| `/import [list]` / playlist file | everyone | Import a playlist from Spotify/TuneMyMusic/Soundiiz exports (CSV/TXT/JSON) or pasted `Artist – Title` lines. Bare `/import` waits for the file/list in the next message (`cancel` aborts) |
 | `/profile` / `/lastfmstats [period]` | everyone | Last.fm scrobble stats (enable **Last.fm stats** in `/settings` and connect `/lastfm <nick>`) |
 | `/collage <tracks\|albums\|artists> [3x3..10x10] [period]` | everyone | PNG collage of your most played tracks/albums/artists with playcounts |
 | `/genres [5..20] [period]` | everyone | PNG bar chart of your genres; `period` = `week`, `month`, `3m`, `6m`, `year` or `all` (enable **Genre analyzer** in `/settings`) |

@@ -12,7 +12,7 @@ use common::error::HandlerResult;
 use common::i18n;
 use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{Document, Message};
+use teloxide::types::{Document, Message, ParseMode};
 use tracing::warn;
 
 const MAX_TRACKS: usize = 60;
@@ -210,6 +210,24 @@ fn parse_entries(content: &str) -> Vec<Entry> {
     from_lines(trimmed)
 }
 
+/// `/import` with no arguments: wait for the next message from this user.
+/// Telegram cannot send a command and a document in one update, so the playlist
+/// always arrives separately.
+pub async fn handle_import_prompt(
+    state: &AppState,
+    bot: &Bot,
+    msg: &Message,
+    lang: Lang,
+) -> HandlerResult {
+    if let Some(user) = msg.from.as_ref() {
+        state.begin_import(user.id.0 as i64).await?;
+    }
+    bot.send_message(msg.chat.id, i18n::import_waiting(lang))
+        .parse_mode(ParseMode::Html)
+        .await?;
+    Ok(())
+}
+
 pub async fn handle_import_args(
     state: &AppState,
     bot: &Bot,
@@ -218,11 +236,33 @@ pub async fn handle_import_args(
     lang: Lang,
 ) -> HandlerResult {
     let Some(content) = arg.map(str::trim).filter(|value| !value.is_empty()) else {
-        bot.send_message(msg.chat.id, i18n::import_usage(lang))
-            .await?;
-        return Ok(());
+        return handle_import_prompt(state, bot, msg, lang).await;
     };
     process(state, bot, msg, lang, content).await
+}
+
+fn is_import_cancel(text: &str) -> bool {
+    matches!(
+        text.trim().trim_start_matches('/').to_lowercase().as_str(),
+        "cancel" | "off" | "скасувати" | "скасуй"
+    )
+}
+
+/// The message that followed a bare `/import`. Plain text is treated as
+/// `Artist – Title` lines; files go through `handle_document` instead.
+pub async fn handle_import_text(
+    state: &AppState,
+    bot: &Bot,
+    msg: &Message,
+    text: &str,
+    lang: Lang,
+) -> HandlerResult {
+    if is_import_cancel(text) {
+        bot.send_message(msg.chat.id, i18n::import_cancelled(lang))
+            .await?;
+        return Ok(());
+    }
+    process(state, bot, msg, lang, text.trim()).await
 }
 
 pub async fn handle_document(
@@ -338,6 +378,16 @@ async fn process(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recognizes_import_cancel_words() {
+        for text in ["cancel", "/cancel", "OFF", " скасувати ", "Скасуй"] {
+            assert!(is_import_cancel(text), "{text} must cancel the prompt");
+        }
+        for text in ["Metallica – One", "cancel my subscription", ""] {
+            assert!(!is_import_cancel(text), "{text} is playlist content");
+        }
+    }
 
     #[test]
     fn parses_plain_lines() {

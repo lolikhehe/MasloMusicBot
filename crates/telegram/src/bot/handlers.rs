@@ -78,6 +78,11 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     let document = msg.document().cloned();
     if let Some(document) = document {
         request_metrics.count();
+        // A bare `/import` was answered with a file. Consume the one-shot marker
+        // so a later unrelated message is not mistaken for playlist content.
+        if let Some(user) = msg.from.as_ref() {
+            let _ = state.take_pending_import(user.id.0 as i64).await?;
+        }
         return crate::bot::import::handle_document(state, bot, msg, &document).await;
     }
     let Some(text) = msg.text() else {
@@ -86,6 +91,10 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     request_metrics.count();
 
     if text.trim_start().starts_with('/') {
+        // Any command cancels a waiting `/import`; `/import` re-arms it below.
+        if let Some(user) = msg.from.as_ref() {
+            let _ = state.take_pending_import(user.id.0 as i64).await?;
+        }
         // An admin must be able to enable the group before it is allowed.
         let groupmode = text
             .trim_start()
@@ -143,6 +152,12 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
         )
         .await?;
         return Ok(());
+    }
+
+    // A bare `/import` asked for the playlist in the next message. Plain text
+    // here is `Artist – Title` lines, not a search query or a track link.
+    if state.take_pending_import(user_id).await? {
+        return crate::bot::import::handle_import_text(&state, &bot, &msg, text, lang).await;
     }
 
     // Spec §10: user texts must not be logged beyond debugging, so we log the

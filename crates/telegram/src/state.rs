@@ -92,6 +92,8 @@ pub mod selection {
     pub const ALBUM: &str = "album";
     pub const ALBUM_REF: &str = "album_ref";
     pub const LYRICS: &str = "lyrics";
+    /// One-shot `/import` prompt: the next message from this user is a playlist.
+    pub const PENDING_IMPORT: &str = "pending_import";
 }
 
 impl AppState {
@@ -192,6 +194,30 @@ impl AppState {
 
     pub async fn delete_selection(&self, id: &str) -> AppResult<()> {
         self.db.delete_selection(id).await
+    }
+
+    /// Remember that a user answered `/import` with no arguments: the next
+    /// message (a file or pasted track lines) is the playlist itself. The
+    /// marker lives in Postgres, so a follow-up delivered to another replica
+    /// still resolves. Keyed by user: a new `/import` replaces the old prompt.
+    pub async fn begin_import(&self, user_id: i64) -> AppResult<()> {
+        let key = format!("import:{user_id}");
+        self.put_selection(
+            &key,
+            selection::PENDING_IMPORT,
+            user_id,
+            &serde_json::json!({}),
+        )
+        .await
+    }
+
+    /// Atomically consume the pending prompt. Returns false once it has been
+    /// used or expired, so a stray message can never be imported twice.
+    pub async fn take_pending_import(&self, user_id: i64) -> AppResult<bool> {
+        let key = format!("import:{user_id}");
+        self.db
+            .take_selection(&key, selection::PENDING_IMPORT)
+            .await
     }
 
     /// Remember a successfully sent track for argument-less `/lyrics`.

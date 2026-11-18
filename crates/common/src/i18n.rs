@@ -35,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/convert auto|m4a|mp3|flac|opus — output format for next downloads\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/convert auto|m4a|mp3|flac|opus — формат наступних завантажень\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/groupmode on|off — адмін: дозволити бота в цій групі\n/history [період] — остання історія прослуховувань\n/dynamics [період] — графік динаміки жанрів за часом\n/digest daily|weekly|off — персональний дайджест у приватні повідомлення\n/digest quiet HH-HH|off — тихі години за UTC",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/convert auto|m4a|mp3|flac|opus — output format for next downloads\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import [список] — імпорт плейлиста; без аргументу наступне повідомлення (файл або рядки «Виконавець – Назва») вважається списком\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/convert auto|m4a|mp3|flac|opus — формат наступних завантажень\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/groupmode on|off — адмін: дозволити бота в цій групі\n/history [період] — остання історія прослуховувань\n/dynamics [період] — графік динаміки жанрів за часом\n/digest daily|weekly|off — персональний дайджест у приватні повідомлення\n/digest quiet HH-HH|off — тихі години за UTC",
     );
     if is_admin {
         format!(
@@ -854,8 +854,24 @@ pub fn preparing_inline(lang: Lang) -> &'static str {
 pub fn import_usage(lang: Lang) -> &'static str {
     pick(
         lang,
-        "Send /import followed by a playlist (Artist – Title lines), or upload a CSV/TXT/JSON playlist file from Spotify export, TuneMyMusic or Soundiiz.",
-        "Надішли /import і список треків («Виконавець – Назва»), або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz.",
+        "Send /import followed by a playlist (Artist – Title lines), or just /import and then send the file or the list in the next message.",
+        "Надішли /import і список треків («Виконавець – Назва»), або просто /import — і в наступному повідомленні надішли файл чи список.",
+    )
+}
+
+pub fn import_waiting(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "📥 Waiting for the playlist. Send a CSV/TXT/JSON file (Spotify, TuneMyMusic, Soundiiz export) or paste lines like <code>Artist – Title</code>. Send <code>cancel</code> to abort.",
+        "📥 Чекаю плейлист. Надішли файл CSV/TXT/JSON (експорт Spotify, TuneMyMusic, Soundiiz) або встав рядки вигляду <code>Виконавець – Назва</code>. Надішли <code>cancel</code>, щоб скасувати.",
+    )
+}
+
+pub fn import_cancelled(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "🛑 Playlist import cancelled.",
+        "🛑 Імпорт плейлиста скасовано.",
     )
 }
 
@@ -1221,6 +1237,8 @@ mod tests {
             assert!(!digest_not_enabled(lang).is_empty());
             assert!(!digest_status(lang, "daily", "2026-11-19 09:00", "none", true).is_empty());
             assert!(!digest_message(lang, "daily", 1, 1, &[], &[]).is_empty());
+            assert!(!import_waiting(lang).is_empty());
+            assert!(!import_cancelled(lang).is_empty());
         }
     }
 

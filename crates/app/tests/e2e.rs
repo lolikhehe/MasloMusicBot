@@ -243,6 +243,44 @@ async fn changelog_and_user_stats_are_answered() {
 }
 
 #[tokio::test]
+async fn bare_import_waits_for_the_playlist_in_the_next_message() {
+    let bot = spawn_bot().await;
+    inject_text(&bot.api, 30, 130, "/import");
+
+    wait_until(10_000, || async { !messages(&bot.api).is_empty() })
+        .await
+        .expect("no /import prompt");
+    let prompt = messages(&bot.api)[0]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    assert!(
+        prompt.contains("Waiting") || prompt.contains("Чекаю"),
+        "expected a waiting prompt, got: {prompt}"
+    );
+
+    // The follow-up is playlist text, not a track search query. Public search
+    // is unavailable in the harness, so the pipeline answers "no tracks".
+    inject_text(
+        &bot.api,
+        31,
+        130,
+        "Metallica – Enter Sandman\nNirvana – Come As You Are",
+    );
+    wait_until(10_000, || async { messages(&bot.api).len() >= 2 })
+        .await
+        .expect("the follow-up message was not treated as a playlist");
+    let answer = messages(&bot.api)[1]["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    assert!(
+        answer.contains("tracks") || answer.contains("треків"),
+        "unexpected import answer: {answer}"
+    );
+}
+
+#[tokio::test]
 async fn cached_track_is_sent_without_download() {
     let bot = spawn_bot().await;
     let db = Db::connect(&database_url()).await.expect("db");
