@@ -123,6 +123,25 @@ pub async fn postprocess_audio(
 
 type InflightResult = Result<PreparedAudio, Arc<DownloadError>>;
 
+/// Removes this `(track, quality)` entry from the in-flight map on **every**
+/// exit path, including a panic in the leader. Without the guard a panicked
+/// leader would leave waiters blocked forever on a broadcast nobody sends to.
+struct InflightGuard<'a> {
+    inflight: &'a Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>>,
+    key: (TrackKey, u32),
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        let mut map = self
+            .inflight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.remove(&self.key);
+        metrics::gauge!("music_bot_downloads_queued").set(map.len() as f64);
+    }
+}
+
 pub struct DownloadManager {
     config: Arc<Config>,
     db: Db,
@@ -168,7 +187,7 @@ impl DownloadManager {
 
     pub async fn touch_cached(&self, key: &TrackKey, quality: u32) {
         // The reply to the user must not wait for this bookkeeping write:
-        // it can take as long as an SQLite roundtrip takes on a busy disk.
+        // it can take as long as a Postgres roundtrip takes on a busy host.
         let db = self.db.clone();
         let key = key.clone();
         tokio::spawn(async move {
@@ -243,7 +262,7 @@ impl DownloadManager {
         if let Some(cached) = self.search_cache.get(&cache_key).await {
             return Ok(cached);
         }
-        // L2: SQLite-backed search cache survives restarts (10-30 min TTL).
+        // L2: Postgres-backed search cache survives restarts (10 min TTL).
         if let Ok(Some(payload)) = self.db.get_search_cache(source.as_str(), &normalized).await
             && let Ok(parsed) = serde_json::from_str::<Vec<SearchResult>>(&payload)
         {
@@ -463,30 +482,38 @@ impl DownloadManager {
         }
 
         if let Some(mut rx) = receiver {
+            // A leader that hangs (or whose process dies mid-download) must not
+            // block its waiters forever. Bound the wait by the same timeout the
+            // download itself has, plus a small grace margin.
+            let wait_timeout = self.config.download_timeout + Duration::from_secs(10);
             loop {
-                match rx.recv().await {
-                    Ok(Ok(prepared)) => return Ok(prepared),
-                    Ok(Err(error)) => return Err((*error).clone()),
-                    Err(broadcast::error::RecvError::Closed) => {
+                match tokio::time::timeout(wait_timeout, rx.recv()).await {
+                    Ok(Ok(Ok(prepared))) => return Ok(prepared),
+                    Ok(Ok(Err(error))) => return Err((*error).clone()),
+                    Ok(Err(broadcast::error::RecvError::Closed)) => {
                         // The leader disappeared without publishing. Try again.
                         return Box::pin(self.prepare(request, quality, user_id, hq_cover)).await;
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                    Err(_) => {
+                        return Err(DownloadError::SourceUnavailable(
+                            "timed out waiting for the running download".to_owned(),
+                        ));
+                    }
                 }
             }
         }
 
         let sender = sender.expect("leader sender must exist");
+        // Guard must outlive the send so waiters receive the result before the
+        // entry is removed; dropping at function end does exactly that.
+        let _guard = InflightGuard {
+            inflight: &self.inflight,
+            key: cache_key.clone(),
+        };
         let result = self.prepare_leader(request, quality, hq_cover).await;
         let broadcast_result = result.clone().map_err(|error| Arc::new(error.clone()));
         let _ = sender.send(broadcast_result);
-        let mut inflight = self
-            .inflight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        inflight.remove(&cache_key);
-        metrics::gauge!("music_bot_downloads_queued").set(inflight.len() as f64);
-        drop(inflight);
         result
     }
 
@@ -789,6 +816,43 @@ fn merge_meta(requested: Option<&TrackMeta>, downloaded: &TrackMeta) -> TrackMet
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inflight_guard_removes_entry_on_drop_and_panic() {
+        let map: Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>> =
+            Mutex::new(HashMap::new());
+        let key = (TrackKey::new("youtube:guard"), 192u32);
+        let (tx, _rx) = broadcast::channel::<InflightResult>(1);
+        map.lock().expect("lock").insert(key.clone(), tx);
+
+        {
+            let _guard = InflightGuard {
+                inflight: &map,
+                key: key.clone(),
+            };
+            assert_eq!(map.lock().expect("lock").len(), 1);
+        }
+        assert!(
+            map.lock().expect("lock").is_empty(),
+            "guard must clean up on normal exit"
+        );
+
+        // Panic path: the guard still runs Drop while the stack unwinds.
+        let (tx, _rx) = broadcast::channel::<InflightResult>(1);
+        map.lock().expect("lock").insert(key.clone(), tx);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = InflightGuard {
+                inflight: &map,
+                key: key.clone(),
+            };
+            panic!("simulated leader panic");
+        }));
+        assert!(result.is_err());
+        assert!(
+            map.lock().expect("lock").is_empty(),
+            "guard must clean up on panic too"
+        );
+    }
 
     #[test]
     fn fallback_chain_starts_with_original_then_open_catalogs() {

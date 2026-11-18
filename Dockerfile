@@ -50,7 +50,9 @@ COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod 755 /usr/local/bin/docker-entrypoint \
  && mkdir -p /data && chown -R bot:bot /data
 
-ENV DATABASE_URL=postgresql://musicbot:devpass@postgres:5432/musicbot \
+# Image default is intentionally NOT a working credential: compose/.env must
+# supply DATABASE_URL with the real password.
+ENV DATABASE_URL=postgresql://musicbot:CHANGE_ME@postgres:5432/musicbot \
     TMP_DIR=/data/tmp \
     TMPDIR=/data/tmp \
     # yt-dlp keeps a small cache; container root fs is read-only, keep it on the volume

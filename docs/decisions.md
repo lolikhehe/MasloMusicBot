@@ -1,5 +1,33 @@
 # Decisions & known limitations
 
+## Review fixes (v2.6.1)
+
+- **In-flight RAII guard**: a leader that panics used to leave its
+  `(track_key, quality)` entry in the map forever, so every later request for
+  that track waited on a broadcast that would never arrive. `InflightGuard`
+  now removes the entry in `Drop` (normal exit *and* unwind), and followers
+  wait with a timeout bounded by `DOWNLOAD_TIMEOUT_SECS + 10 s`. Covered by a
+  unit test for both the normal and panic paths.
+- **yt-dlp auto-update verifies a hash**: the entrypoint downloads the
+  release's `SHA2-256SUMS` and compares it with `sha256sum` **before** executing
+  anything. The previous version check ran the freshly downloaded binary,
+  which silently defeated the SHA pin in the Dockerfile. A previously
+  installed binary is re-verified on each start too.
+- **Loopback-only listeners**: host ports 9090 (`/metrics`, `/alert`) and 8080
+  (webhook receiver) are published as `127.0.0.1:...:...`. The Rust gateway
+  reaches 8080 over the internal Docker network, so no public host port is
+  needed. Prometheus and Alertmanager were already loopback-bound.
+- **Defense in depth**: `metadata()`, `search()` and `playlist()` now pass
+  `--` before the target, like `download()` already did.
+- **Doc/code drift**: license metadata is Apache-2.0 (matches `LICENSE`), the
+  Dockerfile no longer ships a working `devpass` default, `ASSUMPTIONS.md`
+  describes the Postgres `search_cache`, and the unused in-process
+  `rate_limit` module was deleted. Historical SQLite notes in earlier
+  decision entries are kept as history; they do not describe current runtime.
+- **Accepted trade-off**: one Postgres UPSERT per rate-limit check is kept for
+  cross-replica correctness. It is a hot spot only at large scale; batching
+  would lose precision and is deliberately deferred.
+
 ## Webhook gateway (2026-11-18)
 
 - The public HTTPS endpoint is a separate Rust binary (`crates/gateway`) rather

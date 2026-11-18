@@ -44,9 +44,12 @@ services:
         condition: service_healthy
     volumes:
       - bot-data:/data
+    # Both listeners are unauthenticated: /metrics and the webhook receiver.
+    # Keep them on loopback; the Rust gateway reaches 8080 over the internal
+    # Docker network, so no public host port is needed.
     ports:
-      - "9090:9090"
-      - "8080:8080"
+      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:8080:8080"
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=512m

@@ -21,8 +21,9 @@ These defaults were taken where the spec leaves room, per the agent rule in §13
   on the next "wrong file identifier" error and the track re-downloads once).
 - **Quality-aware cache** — the `tracks` PK is `(track_key, quality)` rather than §8's `(source, source_id,
   quality)`. `track_key` already encodes the source; adding quality keeps served copies honest per kbps.
-- **`search_cache` (SQLite)** — §8 schema retained; queries TTL 10 minutes; L1 moka in front of it.
-- **`hits` counter** — incremented synchronously per cache hit (one UPSERT), not batched.
+- **`search_cache` (Postgres)** — §8 schema retained; queries TTL 10 minutes; L1 moka in front of it. The current branch uses Postgres for every shared table; SQLite was the earlier single-process design and is no longer used at runtime.
+- **`hits` counter** — incremented synchronously per rate-limit check (one UPSERT in Postgres) so all replicas share the same per-user budget. This is a deliberate hot spot: at very large scale, batch it locally and flush periodically, accepting a small loss of precision.
+- **Rate limiter** — the in-process `telegram::rate_limit` module was removed; `SharedLimiter` in `state.rs` is the only limiter and it delegates to Postgres.
 - **Album confirmation** — collections (>1 track) first ask with an inline keyboard
   ("Download all? ✅ / ✖"), enforced cap `MAX_COLLECTION_TRACKS` (25), 2–3 parallel downloads,
   one progress message edited at most once per 2 s.
