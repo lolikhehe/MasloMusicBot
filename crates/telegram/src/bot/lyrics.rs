@@ -252,7 +252,8 @@ pub async fn handle_alt_source_callback(
     let _ = bot
         .edit_message_text(message.chat.id, message.id, text)
         .parse_mode(ParseMode::Html)
-        .reply_markup(keyboard(lang, id, has_lrc, false))
+        // Keep the toggle so the user can switch back to the first source.
+        .reply_markup(keyboard(lang, id, has_lrc, true))
         .await;
     state
         .put_selection(

@@ -27,6 +27,12 @@ into the new Postgres volume with a small SQL script (generating `INSERT`
 statements with Python's `sqlite3` module, then `psql -f`). New deployments
 start with an empty cache and repopulate it on the next download.
 
+v2.2 added `user_genre_events` (migration 0002). The migration's guarded
+backfill had no source rows at the moment it ran, so the 9 existing genre
+events and 2 counted tracks were imported from the old SQLite file afterwards
+with `migrate_genres.sql` + a LATERAL `jsonb_array_elements_text` backfill. New
+installations backfill automatically during migration 0002.
+
 Deployment note: Docker Desktop's WSL disk image (`docker_data.vhdx`,
 `ext4.vhdx`) was moved off the system drive to `D:\DockerDesktopWSL`. Docker
 Desktop 4.95 does not reliably relocate the WSL data folder via its
