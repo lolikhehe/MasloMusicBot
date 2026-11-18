@@ -60,6 +60,8 @@ not be editable into messages.
 | `/groupmode on\|off` | admins | Opt the current group into bot responses |
 
 Operator scripts: `scripts/backup-postgres.ps1` (nightly-style dump kept 7 days on D:) and `scripts/measure-s1-s4.ps1` (raw metrics capture). See `docs/backup-and-restore.md` and `docs/perf.md`.
+
+A Rust-only HTTPS webhook gateway (automatic Let's Encrypt + secret-verified reverse proxy) lives in `crates/gateway`; see `docs/webhook-gateway.md` for the GitHub Education / domain / VM walkthrough.
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |
 

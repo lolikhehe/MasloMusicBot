@@ -64,6 +64,31 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # Rust-only webhook gateway. Needs a public DNS A record pointing at this
+  # host and ports 80/443 open. Enable with --profile webhook.
+  gateway:
+    profiles: ["webhook"]
+    build:
+      context: .
+      dockerfile: Dockerfile.gateway
+    image: maslomusicbot-gateway:latest
+    environment:
+      DOMAINS: ${WEBHOOK_DOMAIN:-music.example.com}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+      ACME_PROD: ${ACME_PROD:-false}
+      BOT_UPSTREAM: http://bot:8080
+      WEBHOOK_PATH: /telegram/webhook
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - acme-cache:/cache
+    depends_on:
+      - bot
+    restart: unless-stopped
+
   # Local Bot API server (files >50MB, --local shared volume). Requires
   # TELEGRAM_API_ID/TELEGRAM_API_HASH from https://my.telegram.org in .env.
   # NOTE: one-time logOut from the cloud API is required (see README).
@@ -87,3 +112,4 @@ volumes:
   bot-data:
   botapi:
   pg-data:
+  acme-cache:

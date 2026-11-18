@@ -1,5 +1,19 @@
 # Decisions & known limitations
 
+## Webhook gateway (2026-11-18)
+
+- The public HTTPS endpoint is a separate Rust binary (`crates/gateway`) rather
+  than nginx/Caddy. `rustls-acme` obtains and renews a Let's Encrypt cert with
+  the TLS-ALPN-01 challenge on port 443; a tiny axum server on port 80 only
+  redirects to HTTPS. The only other job is a constant-time secret check plus
+  a buffered proxy to `http://bot:8080`.
+- Cloudflare-style proxying must be DNS-only: TLS-ALPN-01 needs a direct TLS
+  connection to the gateway. The walkthrough in `docs/webhook-gateway.md`
+  starts on Let's Encrypt staging and switches to production before telling
+  Telegram about the webhook, because `setWebhook` rejects staging certs.
+- This is operator tooling, not a bot behaviour change, so `VERSION` and
+  `PATCH_NOTES` are intentionally unchanged.
+
 ## v2.4 — output format, loudnorm, playlists, opt-in groups (2026-11-18)
 
 - `/convert` and `/normalize` persist per-user preferences (migration 0004).

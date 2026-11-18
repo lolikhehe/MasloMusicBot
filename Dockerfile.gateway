@@ -1,0 +1,22 @@
+# Rust-only webhook gateway: automatic Let's Encrypt TLS + reverse proxy.
+# Build: docker build -f Dockerfile.gateway -t maslomusicbot-gateway:latest .
+FROM rust:1-slim-bookworm AS builder
+WORKDIR /app
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY . .
+RUN cargo build --release --locked -p gateway --bin webhook-gateway
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin gateway
+WORKDIR /app
+COPY --from=builder /app/target/release/webhook-gateway /usr/local/bin/webhook-gateway
+RUN mkdir -p /cache && chown -R gateway:gateway /cache
+
+USER gateway
+EXPOSE 80 443
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/webhook-gateway"]

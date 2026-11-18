@@ -1,0 +1,26 @@
+[package]
+name = "gateway"
+description = "Rust-only HTTPS webhook gateway: automatic Let's Encrypt TLS + reverse proxy to the Telegram bot"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "webhook-gateway"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+axum-server = "0.8"
+common.workspace = true
+reqwest.workspace = true
+rustls-acme = { version = "0.15", features = ["axum", "tokio"] }
+serde.workspace = true
+serde_json.workspace = true
+subtle = "2"
+tokio.workspace = true
+tokio-stream = "0.1"
+tracing.workspace = true
+tracing-subscriber.workspace = true
