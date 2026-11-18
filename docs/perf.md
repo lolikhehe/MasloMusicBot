@@ -225,3 +225,21 @@ This closes the *process* gap for S3 (many replicas sharing state) but the
 numbers it produces are local mock numbers. S1–S4 remain **NOT MEASURED** until
 the same collection is repeated against a staging bot with real Telegram
 traffic and real sources.
+
+## v2.5.1 optimization pass (structural, no new latency claims)
+
+- Cache-hit (S1) path: `record_listen` and `record_genres` are now written by a
+  detached task **after** the audio has been handed to Telegram. Previously a
+  cache hit awaited two Postgres writes before the handler returned — the same
+  class of avoidable wait that `touch_track` had already removed. History/genre
+  counters are best-effort metadata, so a crash loses a row, never a download.
+- `/dynamics`: the sparse `(bucket, genre)` cells are indexed once in a
+  `HashMap`; the renderer no longer rescans all events for every series point.
+- Deploy: the gateway image now uses `cargo-chef` like the bot image, so a
+  gateway-only change reuses the compiled dependency layer. CI builds all three
+  images (bot, gateway, load-test mock). All three builds verified locally.
+
+These are structural improvements. The last local mock run measured handler
+p95 ≈ 0.0047 s / p99 ≈ 0.005 s at 20 RPS across three replicas during the v2.5
+stand verification — that was **before** this pass and is not a before/after
+comparison. S1–S4 stay **NOT MEASURED** end-to-end.

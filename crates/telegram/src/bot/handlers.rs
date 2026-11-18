@@ -151,7 +151,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     let input = entity_url(&msg).map_or(Cow::Borrowed(text), Cow::Owned);
     info!(user_id, "handling input");
 
-    let result = match parse_input(&input) {
+    match parse_input(&input) {
         ParsedInput::Track(request) => {
             handle_track(
                 &state,
@@ -207,8 +207,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
             .await?;
             Ok(())
         }
-    };
-    result
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -721,40 +720,43 @@ async fn try_cache_send(
             state
                 .remember_track(user_id, &caption_meta, key, cached.provider)
                 .await;
-            if let Err(error) = state
-                .db
-                .record_listen(
-                    user_id,
-                    key.as_str(),
-                    &caption_meta.title,
-                    caption_meta.performer.as_deref(),
-                    &caption_meta.genres,
-                )
-                .await
-            {
-                warn!(%error, key = %key, "could not record listen for cache hit");
-            }
+            // The audio is already with Telegram. All remaining bookkeeping is
+            // best-effort metadata: do NOT add two Postgres round trips to the
+            // cache-hit (S1) path. One detached task handles listen + genres;
+            // losing it on a crash only costs a history row, never a download.
             metrics::counter!("music_bot_cache_hits_total").increment(1);
-            if genre_analysis {
-                let track_key = key.to_string();
-                if caption_meta.genres.is_empty() && !tags_enabled {
-                    let state = state.clone();
-                    let mut meta = cached.meta.clone();
-                    tokio::spawn(async move {
-                        enrich_tags(&state, &mut meta, true).await;
-                        let _ = state
-                            .db
-                            .record_genres(user_id, &track_key, &meta.genres)
-                            .await;
-                    });
-                } else if let Err(error) = state
+            let record_state = state.clone();
+            let record_key = key.to_string();
+            let record_meta = caption_meta.clone();
+            tokio::spawn(async move {
+                let mut genres = record_meta.genres.clone();
+                if genre_analysis && genres.is_empty() && !tags_enabled {
+                    let mut enriched = record_meta.clone();
+                    enrich_tags(&record_state, &mut enriched, true).await;
+                    genres = enriched.genres;
+                }
+                if let Err(error) = record_state
                     .db
-                    .record_genres(user_id, &track_key, &caption_meta.genres)
+                    .record_listen(
+                        user_id,
+                        &record_key,
+                        &record_meta.title,
+                        record_meta.performer.as_deref(),
+                        &genres,
+                    )
                     .await
                 {
-                    warn!(%error, key = %key, "could not record genres for cache hit");
+                    warn!(%error, key = %record_key, "could not record listen for cache hit");
                 }
-            }
+                if genre_analysis
+                    && let Err(error) = record_state
+                        .db
+                        .record_genres(user_id, &record_key, &genres)
+                        .await
+                {
+                    warn!(%error, key = %record_key, "could not record genres for cache hit");
+                }
+            });
             Ok(true)
         }
         Err(error) if send::is_invalid_file_id(&error) => {
@@ -917,19 +919,26 @@ async fn deliver_track_inner(
     state
         .remember_track(user_id, &prepared.meta, &request.key, request.provider)
         .await;
-    if let Err(error) = state
-        .db
-        .record_listen(
-            user_id,
-            request.key.as_str(),
-            &prepared.meta.title,
-            prepared.meta.performer.as_deref(),
-            &prepared.meta.genres,
-        )
-        .await
-    {
-        warn!(%error, key = %request.key, "could not record listen for upload");
-    }
+    // Same reasoning as the cache-hit path: the upload already succeeded, so
+    // history bookkeeping must not delay the handler's response.
+    let record_state = state.clone();
+    let record_key = request.key.to_string();
+    let record_meta = prepared.meta.clone();
+    tokio::spawn(async move {
+        if let Err(error) = record_state
+            .db
+            .record_listen(
+                user_id,
+                &record_key,
+                &record_meta.title,
+                record_meta.performer.as_deref(),
+                &record_meta.genres,
+            )
+            .await
+        {
+            warn!(%error, key = %record_key, "could not record listen for upload");
+        }
+    });
     Ok(Delivery::Uploaded)
 }
 

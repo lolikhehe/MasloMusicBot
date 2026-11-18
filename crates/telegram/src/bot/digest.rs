@@ -41,9 +41,7 @@ fn parse_quiet(value: &str) -> Option<(i16, i16)> {
     ((0..24).contains(&start) && (0..24).contains(&end)).then_some((start, end))
 }
 
-fn quiet_from_schedule(
-    schedule: Option<&common::domain::DigestSchedule>,
-) -> (i16, i16) {
+fn quiet_from_schedule(schedule: Option<&common::domain::DigestSchedule>) -> (i16, i16) {
     schedule
         .map(|row| (row.quiet_start_utc, row.quiet_end_utc))
         .unwrap_or((0, 0))
@@ -71,11 +69,7 @@ pub async fn handle_digest(
                     lang,
                     i18n::digest_period_label(lang, row.period == "daily"),
                     &time::utc_stamp(row.next_send_at),
-                    &i18n::digest_window_label(
-                        lang,
-                        row.quiet_start_utc,
-                        row.quiet_end_utc,
-                    ),
+                    &i18n::digest_window_label(lang, row.quiet_start_utc, row.quiet_end_utc),
                     row.enabled,
                 ),
                 None => i18n::digest_not_enabled(lang).to_owned(),
@@ -130,14 +124,7 @@ pub async fn handle_digest(
                 .unwrap_or_else(|| ("daily".to_owned(), true, next_send_time(now, false)));
             state
                 .db
-                .set_digest_schedule(
-                    user_id,
-                    &period,
-                    enabled,
-                    next,
-                    quiet_start,
-                    quiet_end,
-                )
+                .set_digest_schedule(user_id, &period, enabled, next, quiet_start, quiet_end)
                 .await?;
             let text = i18n::digest_quiet_set(
                 lang,

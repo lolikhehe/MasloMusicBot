@@ -48,12 +48,9 @@ impl MockServer {
     pub async fn start(
         handler: impl Fn(&HttpRequest, &Shared) -> Option<String> + Send + Sync + 'static,
     ) -> Self {
-        Self::start_on(
-            "127.0.0.1:0".parse().expect("loopback addr"),
-            handler,
-        )
-        .await
-        .expect("bind mock server")
+        Self::start_on("127.0.0.1:0".parse().expect("loopback addr"), handler)
+            .await
+            .expect("bind mock server")
     }
 
     pub async fn start_on(
@@ -134,13 +131,13 @@ async fn serve_connection(
         }
         raw.extend_from_slice(&chunk[..read]);
     }
-    let body = String::from_utf8_lossy(
-        &raw[header_end..(header_end + content_length).min(raw.len())],
-    )
-    .to_string();
+    let body =
+        String::from_utf8_lossy(&raw[header_end..(header_end + content_length).min(raw.len())])
+            .to_string();
     let request = HttpRequest { method, path, body };
-    let response = handler(&request, shared)
-        .unwrap_or_else(|| "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned());
+    let response = handler(&request, shared).unwrap_or_else(|| {
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned()
+    });
     let _ = socket.write_all(response.as_bytes()).await;
 }
 
@@ -218,7 +215,11 @@ pub fn bot_api_response(
             let chat_id = payload["chat_id"].clone();
             let id = message_id.fetch_add(1, Ordering::Relaxed);
             if method == "sendmessage" {
-                shared.messages.lock().expect("messages").push(payload.clone());
+                shared
+                    .messages
+                    .lock()
+                    .expect("messages")
+                    .push(payload.clone());
             } else if method == "sendaudio" {
                 shared.audios.lock().expect("audios").push(payload.clone());
             }

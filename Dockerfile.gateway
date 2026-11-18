@@ -1,18 +1,31 @@
+# syntax=docker/dockerfile:1
 # Rust-only webhook gateway: automatic Let's Encrypt TLS + reverse proxy.
 # Build: docker build -f Dockerfile.gateway -t maslomusicbot-gateway:latest .
-FROM rust:1-slim-bookworm AS builder
+# cargo-chef caches the dependency layer, so a gateway-only edit no longer
+# recompiles the whole workspace from scratch on every deploy.
+
+FROM lukemathwalker/cargo-chef:latest-rust-1-slim-bookworm AS chef
 WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+ENV SQLX_OFFLINE=true
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev ca-certificates \
  && rm -rf /var/lib/apt/lists/*
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --locked -p gateway --bin webhook-gateway
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin gateway
+  && apt-get install -y --no-install-recommends ca-certificates tini \
+  && rm -rf /var/lib/apt/lists/* \
+  && useradd --system --uid 10002 --create-home --shell /usr/sbin/nologin gateway
 WORKDIR /app
 COPY --from=builder /app/target/release/webhook-gateway /usr/local/bin/webhook-gateway
 RUN mkdir -p /cache && chown -R gateway:gateway /cache

@@ -57,5 +57,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
-      - name: build image
+      - name: build bot image
         run: docker build -t maslomusicbot:ci .
+
+      - name: build gateway image
+        run: docker build -f Dockerfile.gateway -t maslomusicbot-gateway:ci .
+
+      - name: build load-test mock image
+        run: docker build -f load/Dockerfile.mock -t maslomusicbot-mock-api:ci .

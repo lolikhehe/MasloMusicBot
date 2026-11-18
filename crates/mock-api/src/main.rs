@@ -65,9 +65,7 @@ async fn main() -> std::io::Result<()> {
                     .fetch_add(nanos, Ordering::Relaxed);
                 Some(json_response(json!({"ok": true, "update_id": id})))
             }
-            _ if path.starts_with("/api/") || path.starts_with("/v1/") => {
-                lyrics_response(request)
-            }
+            _ if path.starts_with("/api/") || path.starts_with("/v1/") => lyrics_response(request),
             _ => bot_api_response(request, shared, &message_id),
         }
     })

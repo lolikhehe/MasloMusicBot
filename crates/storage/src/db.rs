@@ -1661,20 +1661,17 @@ mod tests {
         let due = db.due_digests(now, 10).await.expect("due");
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].lang, Lang::Uk);
-        assert!(db
-            .claim_digest(12, now - 10, now + 86_400)
-            .await
-            .expect("claim"));
-        assert!(!db
-            .claim_digest(12, now - 10, now + 86_400)
-            .await
-            .expect("second claim must fail"));
         assert!(
-            db.due_digests(now, 10)
+            db.claim_digest(12, now - 10, now + 86_400)
                 .await
-                .expect("due after")
-                .is_empty()
+                .expect("claim")
         );
+        assert!(
+            !db.claim_digest(12, now - 10, now + 86_400)
+                .await
+                .expect("second claim must fail")
+        );
+        assert!(db.due_digests(now, 10).await.expect("due after").is_empty());
         let schedule = db
             .get_digest_schedule(12)
             .await
@@ -1682,10 +1679,11 @@ mod tests {
             .expect("some");
         assert_eq!(schedule.period, "daily");
         assert!(schedule.last_sent_at.is_some());
-        assert!(db
-            .defer_digest(12, now + 86_400, now + 100_000)
-            .await
-            .expect("defer"));
+        assert!(
+            db.defer_digest(12, now + 86_400, now + 100_000)
+                .await
+                .expect("defer")
+        );
         db.disable_digest(12).await.expect("disable");
         assert!(
             !db.get_digest_schedule(12)

@@ -89,15 +89,7 @@ pub async fn handle_dynamics(
             .await?;
         return Ok(());
     };
-    send_dynamics(
-        state,
-        bot,
-        msg.chat.id,
-        from.id.0 as i64,
-        lang,
-        period,
-    )
-    .await
+    send_dynamics(state, bot, msg.chat.id, from.id.0 as i64, lang, period).await
 }
 
 fn dynamics_keyboard(period: StatsPeriod, lang: Lang) -> InlineKeyboardMarkup {
@@ -154,14 +146,19 @@ pub async fn send_dynamics(
     let bucket = (window / 12).max(3_600);
     let cells = state.db.genre_dynamics(user_id, since, bucket).await?;
     if cells.is_empty() {
-        bot.send_message(chat, i18n::dynamics_empty(lang))
-            .await?;
+        bot.send_message(chat, i18n::dynamics_empty(lang)).await?;
         return Ok(());
     }
 
+    // Index the sparse cells once. The old version rescanned the whole list for
+    // every (genre, bucket) pair — O(genres × buckets × events) on every render.
     let mut totals: HashMap<&str, i64> = HashMap::new();
+    let mut values_by: HashMap<(&str, i64), i64> = HashMap::new();
     for cell in &cells {
-        *totals.entry(&cell.genre).or_default() += cell.listens;
+        *totals.entry(cell.genre.as_str()).or_default() += cell.listens;
+        *values_by
+            .entry((cell.genre.as_str(), cell.bucket))
+            .or_default() += cell.listens;
     }
     let mut top: Vec<&str> = totals.keys().copied().collect();
     top.sort_by(|left, right| {
@@ -181,25 +178,14 @@ pub async fn send_dynamics(
     }
     let labels: Vec<String> = ticks
         .iter()
-        .map(|tick| {
-            time::utc_stamp(*tick)
-                .get(5..10)
-                .unwrap_or("?")
-                .to_owned()
-        })
+        .map(|tick| time::utc_stamp(*tick).get(5..10).unwrap_or("?").to_owned())
         .collect();
 
     let mut series = Vec::with_capacity(top.len());
     for (index, genre) in top.iter().enumerate() {
-        let values = ticks
+        let values: Vec<u64> = ticks
             .iter()
-            .map(|tick| {
-                cells
-                    .iter()
-                    .filter(|cell| cell.genre == **genre && cell.bucket == *tick)
-                    .map(|cell| cell.listens.max(0) as u64)
-                    .sum()
-            })
+            .map(|tick| values_by.get(&(*genre, *tick)).copied().unwrap_or(0).max(0) as u64)
             .collect();
         series.push(collage::LineSeries {
             label: display_genre(genre),
@@ -217,7 +203,7 @@ pub async fn send_dynamics(
     let render_path = path.clone();
     let render_subtitle = subtitle.clone();
     let rendered = tokio::task::spawn_blocking(move || {
-        collage::render_lines(&title, &render_subtitle, &labels, &series, &render_path)
+        collage::render_lines(title, &render_subtitle, &labels, &series, &render_path)
     })
     .await;
     match rendered {
@@ -257,15 +243,7 @@ pub async fn handle_dynamics_callback(
     };
     let user_id = query.from.id.0 as i64;
     let user = state.db.ensure_user(user_id, Lang::En).await?;
-    send_dynamics(
-        state,
-        bot,
-        message.chat.id,
-        user_id,
-        user.lang,
-        period,
-    )
-    .await
+    send_dynamics(state, bot, message.chat.id, user_id, user.lang, period).await
 }
 
 #[cfg(test)]
@@ -274,9 +252,18 @@ mod tests {
 
     #[test]
     fn parses_only_known_periods() {
-        assert_eq!(parse_period(None, StatsPeriod::Month), Some(StatsPeriod::Month));
-        assert_eq!(parse_period(Some("7d"), StatsPeriod::Month), Some(StatsPeriod::Week));
-        assert_eq!(parse_period(Some("all"), StatsPeriod::Month), Some(StatsPeriod::Overall));
+        assert_eq!(
+            parse_period(None, StatsPeriod::Month),
+            Some(StatsPeriod::Month)
+        );
+        assert_eq!(
+            parse_period(Some("7d"), StatsPeriod::Month),
+            Some(StatsPeriod::Week)
+        );
+        assert_eq!(
+            parse_period(Some("all"), StatsPeriod::Month),
+            Some(StatsPeriod::Overall)
+        );
         assert_eq!(parse_period(Some("nope"), StatsPeriod::Month), None);
         assert_eq!(parse_period(Some("7d all"), StatsPeriod::Month), None);
     }

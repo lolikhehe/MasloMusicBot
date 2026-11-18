@@ -422,14 +422,46 @@ pub struct SeriesColor {
 
 /// Eight distinguishable line colors for the genre dynamics chart.
 pub const SERIES_COLORS: [SeriesColor; 8] = [
-    SeriesColor { r: 255, g: 118, b: 92 },
-    SeriesColor { r: 94, g: 200, b: 255 },
-    SeriesColor { r: 154, g: 232, b: 124 },
-    SeriesColor { r: 255, g: 205, b: 92 },
-    SeriesColor { r: 194, g: 150, b: 255 },
-    SeriesColor { r: 255, g: 140, b: 200 },
-    SeriesColor { r: 110, g: 220, b: 200 },
-    SeriesColor { r: 235, g: 160, b: 110 },
+    SeriesColor {
+        r: 255,
+        g: 118,
+        b: 92,
+    },
+    SeriesColor {
+        r: 94,
+        g: 200,
+        b: 255,
+    },
+    SeriesColor {
+        r: 154,
+        g: 232,
+        b: 124,
+    },
+    SeriesColor {
+        r: 255,
+        g: 205,
+        b: 92,
+    },
+    SeriesColor {
+        r: 194,
+        g: 150,
+        b: 255,
+    },
+    SeriesColor {
+        r: 255,
+        g: 140,
+        b: 200,
+    },
+    SeriesColor {
+        r: 110,
+        g: 220,
+        b: 200,
+    },
+    SeriesColor {
+        r: 235,
+        g: 160,
+        b: 110,
+    },
 ];
 
 /// One genre line. `values` is aligned with the `labels` slice passed to
@@ -441,14 +473,7 @@ pub struct LineSeries {
     pub values: Vec<u64>,
 }
 
-fn draw_segment(
-    canvas: &mut RgbaImage,
-    x0: i32,
-    y0: i32,
-    x1: i32,
-    y1: i32,
-    color: Rgba<u8>,
-) {
+fn draw_segment(canvas: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: Rgba<u8>) {
     let dx = x1 - x0;
     let dy = y1 - y0;
     let steps = dx.abs().max(dy.abs()).max(1);
@@ -482,7 +507,15 @@ pub fn render_lines(
     let mut canvas = RgbaImage::from_pixel(WIDTH, HEIGHT, BACKGROUND);
 
     draw(&mut canvas, title, MARGIN as f32, 48.0, 30.0, TEXT, &font);
-    draw(&mut canvas, subtitle, MARGIN as f32, 84.0, 15.0, MUTED, &font);
+    draw(
+        &mut canvas,
+        subtitle,
+        MARGIN as f32,
+        84.0,
+        15.0,
+        MUTED,
+        &font,
+    );
 
     let max_value = series
         .iter()
@@ -516,13 +549,21 @@ pub fn render_lines(
 
     let count = labels.len();
     let slot = (PLOT_RIGHT - PLOT_LEFT) / count as u32;
-    let skip = if count > 12 { (count + 11) / 12 } else { 1 };
+    let skip = if count > 12 { count.div_ceil(12) } else { 1 };
     for (index, label) in labels.iter().enumerate() {
         if index % skip != 0 && index + 1 != count {
             continue;
         }
         let center = PLOT_LEFT as f32 + slot as f32 * index as f32 + slot as f32 / 2.0;
-        draw_centered(&mut canvas, label, center, PLOT_BOTTOM as f32 + 26.0, 13.0, MUTED, &font);
+        draw_centered(
+            &mut canvas,
+            label,
+            center,
+            PLOT_BOTTOM as f32 + 26.0,
+            13.0,
+            MUTED,
+            &font,
+        );
     }
 
     for line in series {
@@ -531,8 +572,7 @@ pub fn render_lines(
         for index in 0..count {
             let value = line.values.get(index).copied().unwrap_or(0);
             let center = PLOT_LEFT as f32 + slot as f32 * index as f32 + slot as f32 / 2.0;
-            let y = PLOT_BOTTOM
-                - ((PLOT_BOTTOM - PLOT_TOP) as u64 * value / max_value) as u32;
+            let y = PLOT_BOTTOM - ((PLOT_BOTTOM - PLOT_TOP) as u64 * value / max_value) as u32;
             let point = (center as i32, y as i32);
             if let Some((x0, y0)) = previous {
                 draw_segment(&mut canvas, x0, y0, point.0, point.1, color);
@@ -646,8 +686,14 @@ mod tests {
                 values: vec![0, 1, 0, 2, 1, 3, 2, 2, 4, 3, 5, 4],
             },
         ];
-        render_lines("Genre dynamics", "24 cells · 12 buckets", &labels, &series, &path)
-            .expect("chart");
+        render_lines(
+            "Genre dynamics",
+            "24 cells · 12 buckets",
+            &labels,
+            &series,
+            &path,
+        )
+        .expect("chart");
         let bytes = std::fs::read(&path).expect("png");
         assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
         let decoded = image::load_from_memory(&bytes).expect("decode");

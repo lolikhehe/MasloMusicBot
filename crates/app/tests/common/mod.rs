@@ -5,4 +5,4 @@
 
 #![allow(dead_code)]
 
-pub use mock_api::{inject_text, lyrics_api, telegram_api, MockServer};
+pub use mock_api::{MockServer, inject_text, lyrics_api, telegram_api};
