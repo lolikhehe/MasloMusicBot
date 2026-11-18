@@ -297,11 +297,13 @@ impl YtDlp {
                 (PathBuf::from(path), info_path)
             }
             None => {
-                // A `ytsearch` query with zero results also exits 0 without
-                // writing any file — surface it as NotFound so the user sees
-                // "track not found" and the catalog fallback chain runs,
-                // instead of the misleading "downloaded but not prepared".
-                if search_miss(&output.stdout, &output.stderr) {
+                // With the bot's flags a zero-result search exits completely
+                // silently: no log lines at all, and the only artifact is a
+                // playlist-stub info json with `playlist_count: 0`. Surface it
+                // as NotFound so the user sees "track not found" and the
+                // catalog fallback chain runs, instead of the misleading
+                // "downloaded but not prepared" Audio error.
+                if search_stub(dir).await {
                     return Err(DownloadError::NotFound);
                 }
                 find_output(dir).await?
@@ -560,15 +562,24 @@ fn stdout_last_line(stdout: &[u8]) -> Option<String> {
     last
 }
 
-/// yt-dlp exits 0 when a search query matches nothing; the only trace is a
-/// "Downloading 0 items" line in its log output.
-fn search_miss(stdout: &[u8], stderr: &[u8]) -> bool {
-    let haystack = format!(
-        "{}{}",
-        String::from_utf8_lossy(stdout).to_ascii_lowercase(),
-        String::from_utf8_lossy(stderr).to_ascii_lowercase(),
-    );
-    haystack.contains("downloading 0 items")
+/// Detect yt-dlp's silent zero-result search exit: with `--no-warnings
+/// --no-progress` it prints nothing at all, exits 0, and leaves a playlist
+/// stub (`playlist_count: 0`) instead of a track info json.
+fn is_zero_count_stub(data: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(data)
+        .ok()
+        .and_then(|value| value.get("playlist_count").and_then(serde_json::Value::as_i64))
+        .is_some_and(|count| count == 0)
+}
+
+async fn search_stub(dir: &Path) -> bool {
+    let Some(info) = find_info_only(dir).await else {
+        return false;
+    };
+    let Ok(data) = tokio::fs::read(&info).await else {
+        return false;
+    };
+    is_zero_count_stub(&data)
 }
 
 async fn find_output(dir: &Path) -> Result<(PathBuf, Option<PathBuf>), DownloadError> {
@@ -644,6 +655,10 @@ fn classify_failure(stderr: &str, timeout: Duration) -> DownloadError {
         || lower.contains("no video formats")
     {
         DownloadError::NotFound
+    } else if lower.contains("drm protected") {
+        // The catalog has the track but refuses to serve it without a DRM
+        // bypass; the bot's policy is to report, not to circumvent.
+        DownloadError::NotFound
     } else if lower.contains("timed out") || lower.contains("timeout") {
         DownloadError::SourceUnavailable(format!("yt-dlp timed out after {}s", timeout.as_secs()))
     } else {
@@ -679,15 +694,15 @@ mod tests {
     }
 
     #[test]
-    fn detects_search_miss_in_zero_exit_output() {
-        assert!(search_miss(
-            b"",
-            b"[youtube:search] Playlist Query: Downloading 0 items\n[download] Finished downloading playlist: Query\n"
-        ));
-        assert!(!search_miss(
-            b"[download] Destination: audio.m4a\n",
-            b"[youtube] Extracting URL\n"
-        ));
+    fn detects_zero_result_search_stub() {
+        // Real shape observed from `ytsearch1:<query>` with no results
+        // (yt-dlp 2026.10.26): a playlist stub, no audio file, exit 0.
+        let stub = br#"{"id":"q","title":"q","_type":"playlist","extractor":"youtube:search","playlist_count":0,"_version":{"version":"2026.10.26"}}"#;
+        assert!(is_zero_count_stub(stub));
+        // A real track info json has no playlist_count at all.
+        let track = br#"{"id":"abc","title":"Song","duration":213,"ext":"m4a"}"#;
+        assert!(!is_zero_count_stub(track));
+        assert!(!is_zero_count_stub(b"not json"));
     }
 
     #[test]
@@ -695,6 +710,16 @@ mod tests {
         assert!(matches!(
             classify_failure("not available in your country", Duration::from_secs(1)),
             DownloadError::RegionLocked
+        ));
+    }
+
+    #[test]
+    fn maps_drm_refusals_to_not_found() {
+        // Real stderr observed on a SoundCloud result: "ERROR: [soundcloud]
+        // 841134535: This video is DRM protected".
+        assert!(matches!(
+            classify_failure("ERROR: This video is DRM protected", Duration::from_secs(1)),
+            DownloadError::NotFound
         ));
     }
 
