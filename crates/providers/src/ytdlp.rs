@@ -296,7 +296,16 @@ impl YtDlp {
                 let info_path = find_info_only(dir).await;
                 (PathBuf::from(path), info_path)
             }
-            None => find_output(dir).await?,
+            None => {
+                // A `ytsearch` query with zero results also exits 0 without
+                // writing any file — surface it as NotFound so the user sees
+                // "track not found" and the catalog fallback chain runs,
+                // instead of the misleading "downloaded but not prepared".
+                if search_miss(&output.stdout, &output.stderr) {
+                    return Err(DownloadError::NotFound);
+                }
+                find_output(dir).await?
+            }
         };
         let info = read_info(&info_path).await?;
         let meta = info.as_ref().map(Info::clone_meta).unwrap_or_default();
@@ -551,6 +560,17 @@ fn stdout_last_line(stdout: &[u8]) -> Option<String> {
     last
 }
 
+/// yt-dlp exits 0 when a search query matches nothing; the only trace is a
+/// "Downloading 0 items" line in its log output.
+fn search_miss(stdout: &[u8], stderr: &[u8]) -> bool {
+    let haystack = format!(
+        "{}{}",
+        String::from_utf8_lossy(stdout).to_ascii_lowercase(),
+        String::from_utf8_lossy(stderr).to_ascii_lowercase(),
+    );
+    haystack.contains("downloading 0 items")
+}
+
 async fn find_output(dir: &Path) -> Result<(PathBuf, Option<PathBuf>), DownloadError> {
     let mut entries = tokio::fs::read_dir(dir).await?;
     let mut audio = Vec::new();
@@ -655,6 +675,18 @@ mod tests {
         assert!(matches!(
             classify_failure("ERROR: Private video", Duration::from_secs(1)),
             DownloadError::Private
+        ));
+    }
+
+    #[test]
+    fn detects_search_miss_in_zero_exit_output() {
+        assert!(search_miss(
+            b"",
+            b"[youtube:search] Playlist Query: Downloading 0 items\n[download] Finished downloading playlist: Query\n"
+        ));
+        assert!(!search_miss(
+            b"[download] Destination: audio.m4a\n",
+            b"[youtube] Extracting URL\n"
         ));
     }
 
