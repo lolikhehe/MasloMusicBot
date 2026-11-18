@@ -13,13 +13,59 @@ pub enum Lang {
     #[default]
     En,
     Uk,
+    Pl,
+    De,
+    Cn,
+    Jp,
+    Fr,
+    Nl,
+    Cz,
+    Be,
 }
 
 impl Lang {
+    /// All languages offered in the settings submenu.
+    pub const ALL: [Self; 10] = [
+        Self::En,
+        Self::Uk,
+        Self::Pl,
+        Self::De,
+        Self::Cn,
+        Self::Jp,
+        Self::Fr,
+        Self::Nl,
+        Self::Cz,
+        Self::Be,
+    ];
+
     pub const fn code(self) -> &'static str {
         match self {
             Self::En => "en",
             Self::Uk => "uk",
+            Self::Pl => "pl",
+            Self::De => "de",
+            Self::Cn => "cn",
+            Self::Jp => "jp",
+            Self::Fr => "fr",
+            Self::Nl => "nl",
+            Self::Cz => "cz",
+            Self::Be => "be",
+        }
+    }
+
+    /// Label shown in the language submenu, in that language itself.
+    pub const fn native_name(self) -> &'static str {
+        match self {
+            Self::En => "English",
+            Self::Uk => "Українська",
+            Self::Pl => "Polski",
+            Self::De => "Deutsch",
+            Self::Cn => "中文",
+            Self::Jp => "日本語",
+            Self::Fr => "Français",
+            Self::Nl => "Nederlands",
+            Self::Cz => "Čeština",
+            Self::Be => "Беларуская",
         }
     }
 
@@ -27,6 +73,14 @@ impl Lang {
         match value.trim().to_ascii_lowercase().as_str() {
             "en" | "english" => Some(Self::En),
             "uk" | "ua" | "ukrainian" => Some(Self::Uk),
+            "pl" | "polish" => Some(Self::Pl),
+            "de" | "german" => Some(Self::De),
+            "cn" | "zh" | "chinese" => Some(Self::Cn),
+            "jp" | "ja" | "japanese" => Some(Self::Jp),
+            "fr" | "french" => Some(Self::Fr),
+            "nl" | "dutch" => Some(Self::Nl),
+            "cz" | "cs" | "czech" => Some(Self::Cz),
+            "be" | "belarusian" => Some(Self::Be),
             _ => None,
         }
     }
@@ -38,12 +92,12 @@ impl Lang {
         match code {
             Some(value) => {
                 let value = value.trim().to_ascii_lowercase();
-                if value.starts_with("uk") || value.starts_with("ru") || value.starts_with("be") {
+                if value.starts_with("uk") || value.starts_with("ru") {
                     Self::Uk
                 } else if value.starts_with("en") {
                     Self::En
                 } else {
-                    fallback
+                    Self::from_code(&value).unwrap_or(fallback)
                 }
             }
             None => fallback,
@@ -546,6 +600,15 @@ impl SearchResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_offered_language_round_trips() {
+        for lang in Lang::ALL {
+            assert_eq!(Lang::from_code(lang.code()), Some(lang));
+            assert!(!lang.native_name().is_empty());
+        }
+        assert_eq!(Lang::ALL.len(), 10);
+    }
 
     #[test]
     fn artist_prefix_is_stripped_from_title() {

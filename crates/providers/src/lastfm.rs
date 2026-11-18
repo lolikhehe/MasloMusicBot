@@ -59,17 +59,83 @@ impl StatsPeriod {
 
     pub fn label(self, lang: Lang) -> &'static str {
         match (self, lang) {
-            (Self::Week, Lang::En) => "7 days",
+            (
+                Self::Week,
+                Lang::En
+                | Lang::Pl
+                | Lang::De
+                | Lang::Cn
+                | Lang::Jp
+                | Lang::Fr
+                | Lang::Nl
+                | Lang::Cz
+                | Lang::Be,
+            ) => "7 days",
             (Self::Week, Lang::Uk) => "7 днів",
-            (Self::Month, Lang::En) => "1 month",
+            (
+                Self::Month,
+                Lang::En
+                | Lang::Pl
+                | Lang::De
+                | Lang::Cn
+                | Lang::Jp
+                | Lang::Fr
+                | Lang::Nl
+                | Lang::Cz
+                | Lang::Be,
+            ) => "1 month",
             (Self::Month, Lang::Uk) => "1 місяць",
-            (Self::ThreeMonths, Lang::En) => "3 months",
+            (
+                Self::ThreeMonths,
+                Lang::En
+                | Lang::Pl
+                | Lang::De
+                | Lang::Cn
+                | Lang::Jp
+                | Lang::Fr
+                | Lang::Nl
+                | Lang::Cz
+                | Lang::Be,
+            ) => "3 months",
             (Self::ThreeMonths, Lang::Uk) => "3 місяці",
-            (Self::SixMonths, Lang::En) => "6 months",
+            (
+                Self::SixMonths,
+                Lang::En
+                | Lang::Pl
+                | Lang::De
+                | Lang::Cn
+                | Lang::Jp
+                | Lang::Fr
+                | Lang::Nl
+                | Lang::Cz
+                | Lang::Be,
+            ) => "6 months",
             (Self::SixMonths, Lang::Uk) => "6 місяців",
-            (Self::Year, Lang::En) => "12 months",
+            (
+                Self::Year,
+                Lang::En
+                | Lang::Pl
+                | Lang::De
+                | Lang::Cn
+                | Lang::Jp
+                | Lang::Fr
+                | Lang::Nl
+                | Lang::Cz
+                | Lang::Be,
+            ) => "12 months",
             (Self::Year, Lang::Uk) => "12 місяців",
-            (Self::Overall, Lang::En) => "all time",
+            (
+                Self::Overall,
+                Lang::En
+                | Lang::Pl
+                | Lang::De
+                | Lang::Cn
+                | Lang::Jp
+                | Lang::Fr
+                | Lang::Nl
+                | Lang::Cz
+                | Lang::Be,
+            ) => "all time",
             (Self::Overall, Lang::Uk) => "весь час",
         }
     }

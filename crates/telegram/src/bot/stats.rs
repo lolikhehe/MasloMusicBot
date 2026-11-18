@@ -368,11 +368,44 @@ async fn send_collage(
         })
         .collect();
     let label = match (kind, context.lang) {
-        (StatsKind::Tracks, Lang::En) => "Top tracks",
+        (
+            StatsKind::Tracks,
+            Lang::En
+            | Lang::Pl
+            | Lang::De
+            | Lang::Cn
+            | Lang::Jp
+            | Lang::Fr
+            | Lang::Nl
+            | Lang::Cz
+            | Lang::Be,
+        ) => "Top tracks",
         (StatsKind::Tracks, Lang::Uk) => "Топ треків",
-        (StatsKind::Albums, Lang::En) => "Top albums",
+        (
+            StatsKind::Albums,
+            Lang::En
+            | Lang::Pl
+            | Lang::De
+            | Lang::Cn
+            | Lang::Jp
+            | Lang::Fr
+            | Lang::Nl
+            | Lang::Cz
+            | Lang::Be,
+        ) => "Top albums",
         (StatsKind::Albums, Lang::Uk) => "Топ альбомів",
-        (StatsKind::Artists, Lang::En) => "Top artists",
+        (
+            StatsKind::Artists,
+            Lang::En
+            | Lang::Pl
+            | Lang::De
+            | Lang::Cn
+            | Lang::Jp
+            | Lang::Fr
+            | Lang::Nl
+            | Lang::Cz
+            | Lang::Be,
+        ) => "Top artists",
         (StatsKind::Artists, Lang::Uk) => "Топ виконавців",
     };
     let title = format!("{label} · {}", period.label(context.lang));

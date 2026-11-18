@@ -199,18 +199,39 @@ pub fn settings_keyboard(
         i18n::genre_chart_label(lang),
         "gn:c:10",
     )]);
-    rows.push(
-        [Lang::En, Lang::Uk]
-            .into_iter()
-            .map(|candidate| {
-                let mark = if candidate == lang { "✓ " } else { "" };
-                InlineKeyboardButton::callback(
-                    format!("{mark}{}", i18n::language_button(candidate)),
-                    format!("s:lang:{}", candidate.code()),
-                )
-            })
-            .collect(),
-    );
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{} {}",
+            i18n::language_menu_button(lang),
+            i18n::language_button(lang)
+        ),
+        "s:langmenu",
+    )]);
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// Separate language submenu: every offered language gets its own button and
+/// the current choice is marked. `s:langback` returns to `/settings`.
+pub fn language_keyboard(lang: Lang) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Lang::ALL
+        .chunks(2)
+        .map(|chunk| {
+            chunk
+                .iter()
+                .map(|candidate| {
+                    let mark = if *candidate == lang { "✓ " } else { "" };
+                    InlineKeyboardButton::callback(
+                        format!("{mark}{}", candidate.native_name()),
+                        format!("s:lang:{}", candidate.code()),
+                    )
+                })
+                .collect()
+        })
+        .collect();
+    rows.push(vec![InlineKeyboardButton::callback(
+        i18n::back_button(lang),
+        "s:langback",
+    )]);
     InlineKeyboardMarkup::new(rows)
 }
 

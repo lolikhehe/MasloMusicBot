@@ -1,6 +1,6 @@
 //! Inline keyboard callbacks: search choices and per-user settings.
 
-use crate::bot::commands::settings_keyboard;
+use crate::bot::commands::{language_keyboard, settings_keyboard};
 use crate::bot::handlers::{
     ask_album_confirmation, deliver_album, deliver_track, edit_html, error_text, escape_html,
 };
@@ -63,6 +63,47 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
     } else if let Some(id) = data.strip_prefix("alx:") {
         handle_album_cancel(&state, &bot, &query, id, user.lang).await?;
     } else if let Some(payload) = data.strip_prefix("s:") {
+        let Some(message) = query.regular_message() else {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            return Ok(());
+        };
+        if payload == "langmenu" || payload == "langback" {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            let (text, markup) = if payload == "langmenu" {
+                (
+                    i18n::language_menu_title(user.lang).to_owned(),
+                    language_keyboard(user.lang),
+                )
+            } else {
+                (
+                    i18n::settings_title(
+                        user.lang,
+                        user.quality,
+                        user.lang,
+                        user.search_source,
+                        user.tags_enabled,
+                        user.lastfm_user.as_deref(),
+                        user.hq_cover,
+                        user.lastfm_stats,
+                        user.genre_analysis,
+                    ),
+                    settings_keyboard(
+                        user.lang,
+                        user.quality,
+                        user.search_source,
+                        user.tags_enabled,
+                        user.hq_cover,
+                        user.lastfm_stats,
+                        user.genre_analysis,
+                    ),
+                )
+            };
+            bot.edit_message_text(message.chat.id, message.id, text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
+                .await?;
+            return Ok(());
+        }
         match payload.split_once(':') {
             Some((setting, value)) => {
                 if let Some(updated) = apply_setting(&state, user_id, &user, setting, value).await?
