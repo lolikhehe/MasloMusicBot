@@ -65,3 +65,8 @@ jobs:
 
       - name: build load-test mock image
         run: docker build -f load/Dockerfile.mock -t maslomusicbot-mock-api:ci .
+
+      - name: validate compose files
+        run: |
+          docker compose config --quiet
+          docker compose -f load/docker-compose.load.yml config --quiet

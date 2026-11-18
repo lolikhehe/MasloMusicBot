@@ -108,8 +108,39 @@ services:
       - botapi:/var/lib/telegram-bot-api
     restart: unless-stopped
 
+  # Production monitoring. /metrics already exists on the bot (port 9090);
+  # these two services scrape it and page into the bot's own /alert log sink.
+  # Bound to loopback on the host on purpose: no authentication is configured.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prom-data:/prometheus
+    ports:
+      - "127.0.0.1:19090:9090"
+    depends_on:
+      - bot
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "127.0.0.1:19094:9093"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   bot-data:
   botapi:
   pg-data:
   acme-cache:
+  prom-data:

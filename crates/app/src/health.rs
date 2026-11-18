@@ -70,6 +70,24 @@ async fn respond(
             "text/plain; version=0.0.4; charset=utf-8",
             Cow::Owned(handle.render()),
         ),
+        // Alertmanager webhook sink. Keeps the monitoring stack self-contained:
+        // no extra service/image, alerts land in the bot's structured logs.
+        "/alert" => {
+            let raw = String::from_utf8_lossy(&buf[..read]);
+            let payload = raw
+                .split_once("\r\n\r\n")
+                .map(|(_, body)| body)
+                .unwrap_or("");
+            tracing::warn!(
+                alert = %payload.chars().take(512).collect::<String>(),
+                "alertmanager notification"
+            );
+            (
+                "200 OK",
+                "application/json",
+                Cow::Borrowed("{\"status\":\"ok\"}"),
+            )
+        }
         _ => ("404 Not Found", "text/plain", Cow::Borrowed("not found")),
     };
 

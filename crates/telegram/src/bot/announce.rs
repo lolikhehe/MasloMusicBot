@@ -1,11 +1,12 @@
-//! One-shot release-notes broadcast.
+//! Major-version release-notes broadcast.
 //!
-//! Called once at startup, after Telegram connectivity is confirmed. The
-//! current `VERSION` is compared against the `announced_version` row in `meta`;
-//! when it differs, every known (non-banned) user gets a short PM with the
-//! changelog and the row is updated, so a restart with the same build never
-//! messages anyone twice. Delivery is best-effort: one blocked/unreachable user
-//! cannot stop the rest, and the version is still recorded after the sweep.
+//! Called once at startup, after Telegram connectivity is confirmed. Patch and
+//! minor releases are intentionally silent — users got spammed by every small
+//! deploy. A notice goes out only when the integer major version increases
+//! (2.x → 3.0), carrying `PATCH_NOTES.md` as one accumulated changelog.
+//! The `announced_version` row in `meta` remembers the last announced build,
+//! so a restart never messages anyone twice. Delivery is best-effort: one
+//! blocked/unreachable user cannot stop the rest.
 
 use crate::bot::send;
 use crate::state::AppState;
@@ -19,8 +20,26 @@ const ANNOUNCED_VERSION_KEY: &str = "announced_version";
 /// Stay below Telegram's group-wide message rate limits on large user bases.
 const SEND_DELAY: Duration = Duration::from_millis(80);
 
+/// Integer major component of a dotted version (`"2.5.1"` → `2`).
+fn major_of(version: &str) -> Option<u64> {
+    version.trim().split('.').next()?.parse::<u64>().ok()
+}
+
+/// One notice per major version. `None` means a fresh installation, which gets
+/// the current major's notes once. A rollback never re-announces.
+fn notice_due(current: &str, announced: Option<&str>) -> bool {
+    let Some(current_major) = major_of(current) else {
+        return false;
+    };
+    match announced.and_then(major_of) {
+        None => true,
+        Some(previous_major) => current_major > previous_major,
+    }
+}
+
 pub async fn announce_update(bot: &Bot, state: &AppState) -> AppResult<()> {
-    if state.db.get_meta(ANNOUNCED_VERSION_KEY).await? == Some(VERSION.to_owned()) {
+    let announced = state.db.get_meta(ANNOUNCED_VERSION_KEY).await?;
+    if !notice_due(VERSION, announced.as_deref()) {
         return Ok(());
     }
 
@@ -45,4 +64,30 @@ pub async fn announce_update(bot: &Bot, state: &AppState) -> AppResult<()> {
         sent, failed, "update notice broadcast complete"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_major_component() {
+        assert_eq!(major_of("2.5.1"), Some(2));
+        assert_eq!(major_of("3.0.0"), Some(3));
+        assert_eq!(major_of("10.1"), Some(10));
+        assert_eq!(major_of("garbage"), None);
+    }
+
+    #[test]
+    fn announces_only_major_bumps() {
+        assert!(notice_due("2.5.1", None), "fresh install gets one notice");
+        assert!(!notice_due("2.6.0", Some("2.5.1")), "minor is silent");
+        assert!(!notice_due("2.5.2", Some("2.5.1")), "patch is silent");
+        assert!(notice_due("3.0.0", Some("2.5.1")), "major bump announces");
+        assert!(
+            !notice_due("2.6.0", Some("3.0.0")),
+            "rollback must not announce"
+        );
+        assert!(!notice_due("bad", Some("2.5.1")));
+    }
 }
