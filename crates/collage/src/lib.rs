@@ -311,9 +311,10 @@ pub struct BarItem {
     pub value: u64,
 }
 
-/// Render a vertical bar chart (the genre analyzer). `items` are expected to be
-/// already sorted by value, highest first. The title/subtitle sit in the header;
-/// each bar carries its value and a wrapped label underneath.
+/// Render a horizontal bar chart (the genre analyzer). `items` are expected to
+/// be already sorted by value, highest first. Horizontal rows give the genre
+/// name its own full-height column, so long names no longer wrap into tiny
+/// stacked captions under narrow bars.
 pub fn render_bars(
     title: &str,
     subtitle: &str,
@@ -324,84 +325,89 @@ pub fn render_bars(
         return Err("no bars to render".to_owned());
     }
     let font = font();
-    let bars = items.len() as u32;
-    const HEADER_H: u32 = 116;
-    const PLOT_H: u32 = 400;
-    const LABEL_H: u32 = 150;
-    const FOOTER_H: u32 = 34;
-    let width = (MARGIN * 2 + bars * 128).clamp(1_000, 2_400);
-    let height = HEADER_H + PLOT_H + LABEL_H + FOOTER_H;
-    let slot = (width - MARGIN * 2) / bars;
-    let bar_width = (slot as f32 * 0.62).clamp(28.0, 110.0) as u32;
-    let plot_bottom = HEADER_H + PLOT_H;
+    const WIDTH: u32 = 1200;
+    const HEADER_H: u32 = 96;
+    const FOOTER_H: u32 = 40;
+    const LABEL_ZONE: u32 = 460;
+    let rows = items.len() as u32;
+    let row_h: u32 = if rows > 12 { 38 } else { 44 };
+    let height = HEADER_H + rows * row_h + FOOTER_H;
+    let plot_left = MARGIN + LABEL_ZONE;
+    // Reserve room on the right so the count never clips off-canvas.
+    let plot_width = WIDTH - plot_left - MARGIN - 80;
     let max_value = items
         .iter()
         .map(|item| item.value)
         .max()
         .unwrap_or(1)
         .max(1);
-    let mut canvas = RgbaImage::from_pixel(width, height, BACKGROUND);
+    let mut canvas = RgbaImage::from_pixel(WIDTH, height, BACKGROUND);
 
-    draw(&mut canvas, title, MARGIN as f32, 48.0, 30.0, TEXT, &font);
+    draw(&mut canvas, title, MARGIN as f32, 46.0, 26.0, TEXT, &font);
     draw(
         &mut canvas,
         subtitle,
         MARGIN as f32,
-        82.0,
-        15.0,
+        74.0,
+        14.0,
         MUTED,
         &font,
     );
+    // Axis at the left edge of every bar.
     fill_rect(
         &mut canvas,
-        MARGIN,
-        plot_bottom,
-        width - MARGIN * 2,
+        plot_left - 2,
+        HEADER_H,
         1,
+        rows * row_h,
         Rgba([70, 76, 92, 255]),
     );
 
     for (index, item) in items.iter().enumerate() {
-        let center = MARGIN as f32 + slot as f32 * index as f32 + slot as f32 / 2.0;
-        let bar_height = (((PLOT_H - 42) as u64 * item.value / max_value).max(3)) as u32;
-        let bar_top = plot_bottom - bar_height;
-        let bar_left = center as u32 - bar_width / 2;
-        fill_rect(
+        let row_top = HEADER_H + index as u32 * row_h;
+        let baseline = row_top as f32 + row_h as f32 / 2.0 + 6.0;
+        // One line per genre, truncated only when absurdly long.
+        let label = wrap(&item.label, (LABEL_ZONE - 30) as f32, 1, 17.0, &font)
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        draw(
             &mut canvas,
-            bar_left,
-            bar_top,
-            bar_width,
-            bar_height,
-            ACCENT,
-        );
-        draw_centered(
-            &mut canvas,
-            &item.value.to_string(),
-            center,
-            bar_top as f32 - 10.0,
-            15.0,
+            &label,
+            MARGIN as f32 + 6.0,
+            baseline,
+            17.0,
             TEXT,
             &font,
         );
-        let lines = wrap(&item.label, slot as f32 - 10.0, 3, 13.0, &font);
-        for (line_index, line) in lines.iter().enumerate() {
-            draw_centered(
-                &mut canvas,
-                line,
-                center,
-                plot_bottom as f32 + 24.0 + line_index as f32 * 16.0,
-                13.0,
-                MUTED,
-                &font,
-            );
-        }
+
+        let bar_thickness = row_h - 18;
+        let bar_top = row_top + (row_h - bar_thickness) / 2;
+        let bar_len = ((plot_width as u64 * item.value / max_value).max(6)) as u32;
+        fill_rect(
+            &mut canvas,
+            plot_left,
+            bar_top,
+            bar_len,
+            bar_thickness,
+            ACCENT,
+        );
+        draw(
+            &mut canvas,
+            &item.value.to_string(),
+            (plot_left + bar_len + 10) as f32,
+            baseline,
+            15.0,
+            MUTED,
+            &font,
+        );
     }
 
     draw(
         &mut canvas,
         "MasloMusicBot · genre analyzer",
         MARGIN as f32,
-        height as f32 - 12.0,
+        height as f32 - 14.0,
         12.0,
         MUTED,
         &font,
@@ -650,7 +656,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("genres.png");
         let items: Vec<BarItem> = [
-            ("Alternative Rock", 12),
+            ("progressive psychedelic trance with a very long name", 12),
             ("Hard Rock", 9),
             ("Metal", 8),
             ("Electronic", 5),
@@ -666,7 +672,9 @@ mod tests {
         let bytes = std::fs::read(&path).expect("png");
         assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
         let decoded = image::load_from_memory(&bytes).expect("decode");
-        assert!(decoded.width() >= 1_000 && decoded.height() > 600);
+        // 96 header + 5 rows * 44 + 40 footer; each row fits one full label.
+        assert_eq!(decoded.width(), 1200);
+        assert_eq!(decoded.height(), 356);
     }
 
     #[test]
