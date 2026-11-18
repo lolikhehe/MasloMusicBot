@@ -65,6 +65,14 @@ not be editable into messages.
 
 Operator scripts: `scripts/backup-postgres.ps1` (nightly-style dump kept 7 days on D:), `scripts/measure-s1-s4.ps1` (raw metrics capture) and `scripts/run-load-test.ps1` (full k6 → mock API → 3 replicas stand with Prometheus percentiles and alerts). See `docs/backup-and-restore.md`, `docs/perf.md` and `load/README.md`.
 
+Production monitoring runs by default: Prometheus at `http://127.0.0.1:19090` and Alertmanager at `http://127.0.0.1:19094` (loopback only, no auth). Config and alert rules live in `monitoring/`. A real percentile query:
+
+```promql
+histogram_quantile(0.95, sum by (le) (rate(music_bot_request_seconds_bucket[5m])))
+```
+
+Alerts are delivered to `POST /alert` on the bot's metrics listener and appear in `docker logs music-bot-bot-1`. Replace that receiver in `monitoring/alertmanager.yml` with Slack/PagerDuty when an external pager exists. Metrics appear only after the first real request; a fresh restart has an empty scrape.
+
 A Rust-only HTTPS webhook gateway (automatic Let's Encrypt + secret-verified reverse proxy) lives in `crates/gateway`; see `docs/webhook-gateway.md` for the GitHub Education / domain / VM walkthrough.
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |
