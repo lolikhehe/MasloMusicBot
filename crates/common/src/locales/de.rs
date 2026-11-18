@@ -128,7 +128,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("Das Genre-Diagramm konnte nicht erstellt werden.")
         }
         "Your genres" => Some("Deine Genres"),
-        "{tracks} tracks · {genres} genres" => Some("{tracks} Tracks · {genres} Genres"),
+        "{listens} listens · {genres} genres" => Some("{listens} Wiedergaben · {genres} Genres"),
         "Usage: /genres [5..20] — number of bars." => {
             Some("Verwendung: /genres [5..20] — Anzahl der Balken.")
         }

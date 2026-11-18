@@ -441,7 +441,7 @@ pub fn genre_chart_title(lang: Lang) -> &'static str {
     pick(lang, "Your genres", "Твої жанри")
 }
 
-pub fn genre_chart_subtitle(lang: Lang, tracks: i64, genres: usize) -> String {
+pub fn genre_chart_subtitle(lang: Lang, listens: i64, genres: usize) -> String {
     match lang {
         Lang::En
         | Lang::Pl
@@ -453,11 +453,11 @@ pub fn genre_chart_subtitle(lang: Lang, tracks: i64, genres: usize) -> String {
         | Lang::Cz
         | Lang::Be => lformat!(
             lang,
-            "{tracks} tracks · {genres} genres",
-            tracks = tracks,
+            "{listens} listens · {genres} genres",
+            listens = listens,
             genres = genres
         ),
-        Lang::Uk => format!("{tracks} треків · {genres} жанрів"),
+        Lang::Uk => format!("{listens} прослуховувань · {genres} жанрів"),
     }
 }
 

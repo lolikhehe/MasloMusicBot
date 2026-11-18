@@ -19,6 +19,8 @@ const BACKGROUND: Rgba<u8> = Rgba([16, 18, 24, 255]);
 const CELL_COLOR: Rgba<u8> = Rgba([34, 38, 48, 255]);
 const ACCENT: Rgba<u8> = Rgba([255, 118, 92, 255]);
 const TEXT: Rgba<u8> = Rgba([238, 240, 246, 255]);
+/// Row labels: dimmer than the title so the header keeps its hierarchy.
+const LABEL_TEXT: Rgba<u8> = Rgba([200, 205, 216, 255]);
 const MUTED: Rgba<u8> = Rgba([154, 161, 178, 255]);
 
 #[derive(Debug, Clone)]
@@ -96,6 +98,21 @@ fn draw_centered(
     font: &FontRef<'_>,
 ) {
     let x = center_x - measure(text, size, font) / 2.0;
+    draw(canvas, text, x, baseline, size, color, font);
+}
+
+/// Right-aligned text: a fixed column of counts reads cleaner than numbers
+/// dancing after each bar end.
+fn draw_right(
+    canvas: &mut RgbaImage,
+    text: &str,
+    right_x: f32,
+    baseline: f32,
+    size: f32,
+    color: Rgba<u8>,
+    font: &FontRef<'_>,
+) {
+    let x = right_x - measure(text, size, font);
     draw(canvas, text, x, baseline, size, color, font);
 }
 
@@ -189,10 +206,14 @@ fn wrap(
         lines.truncate(max_lines);
     }
     if let Some(last) = lines.last_mut() {
+        // Only mark the line when characters were actually dropped; adding the
+        // ellipsis unconditionally put "…" after every short label too.
+        let mut truncated = false;
         while measure(last, size, font) > max_width && !last.is_empty() {
             last.pop();
+            truncated = true;
         }
-        if !last.is_empty() && measure(&format!("{last}…"), size, font) <= max_width {
+        if truncated && !last.is_empty() {
             last.push('…');
         }
     }
@@ -312,9 +333,9 @@ pub struct BarItem {
 }
 
 /// Render a horizontal bar chart (the genre analyzer). `items` are expected to
-/// be already sorted by value, highest first. Horizontal rows give the genre
-/// name its own full-height column, so long names no longer wrap into tiny
-/// stacked captions under narrow bars.
+/// be already sorted by value, highest first. Labels are right-aligned against
+/// the plot so the label→bar gutter is constant; each count sits at its bar's
+/// right tip (outside only when the bar is too short to hold it).
 pub fn render_bars(
     title: &str,
     subtitle: &str,
@@ -326,15 +347,24 @@ pub fn render_bars(
     }
     let font = font();
     const WIDTH: u32 = 1200;
-    const HEADER_H: u32 = 96;
-    const FOOTER_H: u32 = 40;
-    const LABEL_ZONE: u32 = 460;
+    const HEADER_H: u32 = 118;
+    const PADDING_BOTTOM: u32 = 56;
+    const LABEL_FONT: f32 = 22.0;
+    const COUNT_FONT: f32 = 18.0;
     let rows = items.len() as u32;
-    let row_h: u32 = if rows > 12 { 38 } else { 44 };
-    let height = HEADER_H + rows * row_h + FOOTER_H;
-    let plot_left = MARGIN + LABEL_ZONE;
-    // Reserve room on the right so the count never clips off-canvas.
-    let plot_width = WIDTH - plot_left - MARGIN - 80;
+    let row_h: u32 = if rows > 12 { 44 } else { 54 };
+    let height = HEADER_H + rows * row_h + PADDING_BOTTOM;
+    // Label column fits the longest label; absurdly long ones truncate.
+    let longest = items
+        .iter()
+        .map(|item| measure(&item.label, LABEL_FONT, &font))
+        .fold(0.0_f32, f32::max);
+    let label_zone = (longest + 16.0).min(520.0) as u32;
+    let plot_left = MARGIN + label_zone + 26;
+    // Counts live at the bar tip, so the longest bar may run to the right
+    // margin; a short bar's outside count cannot clip because plot_left
+    // stays far below the canvas width.
+    let plot_width = WIDTH - MARGIN - plot_left;
     let max_value = items
         .iter()
         .map(|item| item.value)
@@ -343,45 +373,35 @@ pub fn render_bars(
         .max(1);
     let mut canvas = RgbaImage::from_pixel(WIDTH, height, BACKGROUND);
 
-    draw(&mut canvas, title, MARGIN as f32, 46.0, 26.0, TEXT, &font);
+    draw(&mut canvas, title, MARGIN as f32, 56.0, 36.0, TEXT, &font);
     draw(
         &mut canvas,
         subtitle,
         MARGIN as f32,
-        74.0,
-        14.0,
+        86.0,
+        17.0,
         MUTED,
         &font,
-    );
-    // Axis at the left edge of every bar.
-    fill_rect(
-        &mut canvas,
-        plot_left - 2,
-        HEADER_H,
-        1,
-        rows * row_h,
-        Rgba([70, 76, 92, 255]),
     );
 
     for (index, item) in items.iter().enumerate() {
         let row_top = HEADER_H + index as u32 * row_h;
-        let baseline = row_top as f32 + row_h as f32 / 2.0 + 6.0;
-        // One line per genre, truncated only when absurdly long.
-        let label = wrap(&item.label, (LABEL_ZONE - 30) as f32, 1, 17.0, &font)
+        let baseline = row_top as f32 + row_h as f32 / 2.0 + 7.0;
+        let label = wrap(&item.label, label_zone as f32, 1, LABEL_FONT, &font)
             .into_iter()
             .next()
             .unwrap_or_default();
-        draw(
+        draw_right(
             &mut canvas,
             &label,
-            MARGIN as f32 + 6.0,
+            (plot_left - 20) as f32,
             baseline,
-            17.0,
-            TEXT,
+            LABEL_FONT,
+            LABEL_TEXT,
             &font,
         );
 
-        let bar_thickness = row_h - 18;
+        let bar_thickness = row_h - 24;
         let bar_top = row_top + (row_h - bar_thickness) / 2;
         let bar_len = ((plot_width as u64 * item.value / max_value).max(6)) as u32;
         fill_rect(
@@ -392,23 +412,38 @@ pub fn render_bars(
             bar_thickness,
             ACCENT,
         );
-        draw(
-            &mut canvas,
-            &item.value.to_string(),
-            (plot_left + bar_len + 10) as f32,
-            baseline,
-            15.0,
-            MUTED,
-            &font,
-        );
+        // The count lives at the bar tip, never stranded in a far column.
+        let count = item.value.to_string();
+        let tip = (plot_left + bar_len) as f32;
+        if bar_len as f32 >= measure(&count, COUNT_FONT, &font) + 30.0 {
+            draw_right(
+                &mut canvas,
+                &count,
+                tip - 12.0,
+                baseline,
+                COUNT_FONT,
+                Rgba([26, 18, 16, 255]),
+                &font,
+            );
+        } else {
+            draw(
+                &mut canvas,
+                &count,
+                tip + 12.0,
+                baseline,
+                COUNT_FONT,
+                MUTED,
+                &font,
+            );
+        }
     }
 
-    draw(
+    draw_right(
         &mut canvas,
         "MasloMusicBot · genre analyzer",
-        MARGIN as f32,
-        height as f32 - 14.0,
-        12.0,
+        (WIDTH - MARGIN) as f32,
+        height as f32 - 27.0,
+        15.0,
         MUTED,
         &font,
     );
@@ -668,13 +703,13 @@ mod tests {
             value,
         })
         .collect();
-        render_bars("Your genres", "25 tracks · 5 genres", &items, &path).expect("chart");
+        render_bars("Your genres", "25 listens · 5 genres", &items, &path).expect("chart");
         let bytes = std::fs::read(&path).expect("png");
         assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
         let decoded = image::load_from_memory(&bytes).expect("decode");
-        // 96 header + 5 rows * 44 + 40 footer; each row fits one full label.
+        // 118 header + 5 rows * 54 + 56 padding; each row fits one full label.
         assert_eq!(decoded.width(), 1200);
-        assert_eq!(decoded.height(), 356);
+        assert_eq!(decoded.height(), 444);
     }
 
     #[test]

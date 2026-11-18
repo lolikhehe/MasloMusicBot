@@ -120,7 +120,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         ),
         "Could not build the genre chart." => Some("Impossible de créer le graphique des genres."),
         "Your genres" => Some("Vos genres"),
-        "{tracks} tracks · {genres} genres" => Some("{tracks} morceaux · {genres} genres"),
+        "{listens} listens · {genres} genres" => Some("{listens} écoutes · {genres} genres"),
         "Usage: /genres [5..20] — number of bars." => {
             Some("Utilisation : /genres [5..20] — nombre de barres.")
         }

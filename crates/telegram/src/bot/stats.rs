@@ -555,7 +555,9 @@ async fn send_genre_chart(
             .await?;
         return Ok(());
     }
-    let total_tracks = state.db.genre_track_count_since(user_id, since).await?;
+    // The bars count listen events, so the subtitle must sum them too — a
+    // distinct-track total (83) next to bars summing to 223 looked wrong.
+    let total_listens: i64 = rows.iter().map(|(_, listens)| *listens).sum();
     let items: Vec<collage::BarItem> = rows
         .iter()
         .map(|(genre, listens)| collage::BarItem {
@@ -566,7 +568,7 @@ async fn send_genre_chart(
     let title = i18n::genre_chart_title(lang);
     let subtitle = format!(
         "{} · {}",
-        i18n::genre_chart_subtitle(lang, total_tracks, items.len()),
+        i18n::genre_chart_subtitle(lang, total_listens, items.len()),
         period.label(lang)
     );
     let path = state

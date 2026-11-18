@@ -702,19 +702,6 @@ impl Db {
             .collect())
     }
 
-    /// Distinct tracks counted within a time window.
-    pub async fn genre_track_count_since(&self, id: i64, since: i64) -> AppResult<i64> {
-        let count = sqlx::query_scalar!(
-            "SELECT COUNT(*) FROM user_genre_tracks WHERE user_id = $1 AND created_at >= $2",
-            id,
-            since
-        )
-        .fetch_one(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(count.unwrap_or_default())
-    }
-
     /// Counters for `/me`. Durations are taken from the cached metadata of
     /// distinct counted tracks (best known quality), never from disk.
     pub async fn user_stats(&self, id: i64) -> AppResult<UserStats> {

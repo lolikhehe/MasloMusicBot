@@ -120,7 +120,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         ),
         "Could not build the genre chart." => Some("ジャンルチャートを作成できませんでした。"),
         "Your genres" => Some("あなたのジャンル"),
-        "{tracks} tracks · {genres} genres" => Some("{tracks}曲 · {genres}ジャンル"),
+        "{listens} listens · {genres} genres" => Some("{listens} 回再生 · {genres} ジャンル"),
         "Usage: /genres [5..20] — number of bars." => {
             Some("使い方: /genres [5..20] — 棒グラフの本数。")
         }

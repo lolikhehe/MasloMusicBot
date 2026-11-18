@@ -120,7 +120,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Could not build the genre chart." => Some("无法生成流派图表。"),
         "Your genres" => Some("你的流派"),
-        "{tracks} tracks · {genres} genres" => Some("{tracks} 首歌曲 · {genres} 个流派"),
+        "{listens} listens · {genres} genres" => Some("{listens} 次播放 · {genres} 个流派"),
         "Usage: /genres [5..20] — number of bars." => Some("用法：/genres [5..20] — 柱子数量。"),
         "📊 Last.fm stats + collages" => Some("📊 Last.fm 统计 + 拼贴图"),
         "🎵 Last.fm is not configured on this bot yet." => Some("🎵 本机器人尚未配置 Last.fm。"),
