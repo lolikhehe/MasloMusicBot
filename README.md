@@ -205,5 +205,5 @@ The crate split mirrors the spec's §7.1 dependency direction; `common` serves e
 - **Slow first download, instant repeats**: that is the cache working as designed.
 - **`docker compose up` shows env warnings**: `.env` is optional; create it to silence them, but never commit it.
 
-See `docs/decisions.md`, `docs/ASSUMPTIONS.md`, `docs/perf.md` for the technical detail and the
+See `docs/decisions.md`, `docs/ASSUMPTIONS.md`, `docs/perf.md` and `docs/comparison-python.md` (honest comparison with typical Python bots) for the technical detail and the
 honest list of what is measured and what is not.
