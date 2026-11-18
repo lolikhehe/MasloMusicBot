@@ -19,6 +19,42 @@ use tracing::{debug, info, warn};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Request counter + latency histogram for every message the bot handles.
+///
+/// Commands in private chats used to return from `handle_message` before the
+/// old counter/histogram lines, so a load scenario made of `/help`, `/me` and
+/// `/lyrics` produced an empty `/metrics` scrape. The `Drop` guard records the
+/// latency on *all* exit paths, including early command returns and documents.
+struct RequestMetrics {
+    started: Instant,
+    counted: bool,
+}
+
+impl RequestMetrics {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            counted: false,
+        }
+    }
+
+    fn count(&mut self) {
+        if !self.counted {
+            metrics::counter!("music_bot_requests_total").increment(1);
+            self.counted = true;
+        }
+    }
+}
+
+impl Drop for RequestMetrics {
+    fn drop(&mut self) {
+        if self.counted {
+            metrics::histogram!("music_bot_request_seconds")
+                .record(self.started.elapsed().as_secs_f64());
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Delivery {
     Cached,
@@ -36,14 +72,18 @@ fn entity_url(msg: &Message) -> Option<String> {
 }
 
 pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerResult {
+    let mut request_metrics = RequestMetrics::new();
+
     // Playlist files: CSV/TXT/JSON exports from Spotify transfer tools.
     let document = msg.document().cloned();
     if let Some(document) = document {
+        request_metrics.count();
         return crate::bot::import::handle_document(state, bot, msg, &document).await;
     }
     let Some(text) = msg.text() else {
         return Ok(());
     };
+    request_metrics.count();
 
     if text.trim_start().starts_with('/') {
         // An admin must be able to enable the group before it is allowed.
@@ -105,8 +145,6 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
         return Ok(());
     }
 
-    metrics::counter!("music_bot_requests_total").increment(1);
-    let started = Instant::now();
     // Spec §10: user texts must not be logged beyond debugging, so we log the
     // routing decision rather than the text itself. Borrowed when there is no
     // hidden URL entity, which is the common case.
@@ -170,7 +208,6 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
             Ok(())
         }
     };
-    metrics::histogram!("music_bot_request_seconds").record(started.elapsed().as_secs_f64());
     result
 }
 

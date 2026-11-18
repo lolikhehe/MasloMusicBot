@@ -49,8 +49,12 @@ docker compose -f load/docker-compose.load.yml run --rm -e RPS=50 -e DURATION=2m
   That is injector latency, *not* bot latency. Its threshold (`<500 ms`) only
   guards the harness itself.
 - **Prometheus** scrapes `music_bot_request_seconds` (and download/upload
-  histograms) from all three replicas. The p95/p99 printed by the script are
-  real `histogram_quantile` results over the whole run.
+  histograms) from all three replicas. The recorder is configured with explicit
+  buckets in `common::metrics::install()`, so these are true Prometheus
+  histograms with `_bucket` series and `histogram_quantile` works across
+  replicas. The p95/p99 printed by the script are real results over the run.
+  Also note that commands in private chats are instrumented at the top of
+  `handle_message`; otherwise a command-only workload produces empty `/metrics`.
 
 `docs/perf.md` S1–S4 stay **NOT MEASURED** until these commands are run against
 a staging deployment with real Telegram traffic. Local mock numbers from this

@@ -6,7 +6,15 @@ use anyhow::Result;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 pub fn install() -> Result<PrometheusHandle> {
-    let handle = PrometheusBuilder::new().install_recorder()?;
+    // Buckets make the exporter emit true Prometheus histograms (`_bucket`
+    // series). Without them every histogram becomes a summary with client-side
+    // quantiles, so `histogram_quantile` over several replicas returns NO
+    // SAMPLES. Values are seconds: S1 targets < 0.3 s, cold paths up to 30 s.
+    let handle = PrometheusBuilder::new()
+        .set_buckets(&[
+            0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+        ])?
+        .install_recorder()?;
 
     metrics::describe_counter!("music_bot_requests_total", "Incoming user requests");
     metrics::describe_counter!("music_bot_cache_hits_total", "Served directly from cache");

@@ -37,6 +37,7 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
+      POSTGRES_USER: musicbot
       POSTGRES_PASSWORD: devpass
       POSTGRES_DB: musicbot
     healthcheck:

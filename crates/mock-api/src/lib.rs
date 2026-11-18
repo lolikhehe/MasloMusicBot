@@ -193,6 +193,18 @@ pub fn bot_api_response(
                 "has_main_web_app": false
             }
         }))),
+        // Teloxide's polling listener probes this at startup. The catch-all
+        // `{"result": true}` cannot be deserialized as WebhookInfo and produced
+        // a misleading ERROR log on every replica.
+        "getwebhookinfo" => Some(json_response(json!({
+            "ok": true,
+            "result": {
+                "url": "",
+                "has_custom_certificate": false,
+                "pending_update_count": 0,
+                "allowed_updates": ["message"]
+            }
+        }))),
         "getupdates" => {
             let update = shared.updates.lock().expect("updates").pop_front();
             Some(json_response(json!({

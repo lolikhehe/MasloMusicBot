@@ -67,7 +67,7 @@ function Query-Prometheus {
 Write-Host "`nReal bot percentiles from Prometheus (NOT k6 injection latency):"
 Write-Host ('  handler p95 (s) : ' + (Query-Prometheus 'histogram_quantile(0.95, sum by (le) (rate(music_bot_request_seconds_bucket[5m])))'))
 Write-Host ('  handler p99 (s) : ' + (Query-Prometheus 'histogram_quantile(0.99, sum by (le) (rate(music_bot_request_seconds_bucket[5m])))'))
-Write-Host ('  cache-hit p95(s): ' + (Query-Prometheus 'histogram_quantile(0.95, sum by (le) (rate(music_bot_request_seconds_bucket{job="music-bot"}[5m])))'))
+Write-Host ('  cold download p95: ' + (Query-Prometheus 'histogram_quantile(0.95, sum by (le) (rate(music_bot_download_seconds_bucket[5m])))'))
 Write-Host ('  errors / downloads: ' + (Query-Prometheus 'sum(rate(music_bot_download_errors_total[5m])) / clamp_min(sum(rate(music_bot_downloads_total[5m])), 1)'))
 Write-Host '  injected (mock): ' + (Query-Prometheus 'mock_injected_total')
 Write-Host '  alerts firing: ' + (Query-Prometheus 'sum(ALERTS{alertstate="firing"})')
