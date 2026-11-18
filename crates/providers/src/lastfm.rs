@@ -296,7 +296,11 @@ impl LastFmClient {
             tracks: u64::from(info.track_count.unwrap_or(0)),
             albums: u64::from(info.album_count.unwrap_or(0)),
             artists: u64::from(info.artist_count.unwrap_or(0)),
-            country: info.country.filter(|value| !value.is_empty()),
+            // Last.fm sends the literal "None" for users without a country.
+            country: info.country.filter(|value| {
+                let value = value.trim();
+                !value.is_empty() && !value.eq_ignore_ascii_case("none")
+            }),
         })
     }
 

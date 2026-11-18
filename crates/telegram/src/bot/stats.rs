@@ -69,27 +69,69 @@ async fn context(
     Ok(Some(Context { client, nick, lang }))
 }
 
-fn collage_keyboard(lang: Lang, period: StatsPeriod) -> InlineKeyboardMarkup {
-    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
-    for (label_en, label_uk, kind) in [
-        ("Tracks", "Треки", StatsKind::Tracks),
-        ("Albums", "Альбоми", StatsKind::Albums),
-        ("Artists", "Виконавці", StatsKind::Artists),
-    ] {
-        let label = if lang == Lang::Uk { label_uk } else { label_en };
-        rows.push(
-            [3u8, 5, 8, 10]
-                .into_iter()
-                .map(|grid| {
-                    InlineKeyboardButton::callback(
-                        format!("{label} {grid}×{grid}"),
-                        format!("lf:c:{}:{grid}:{}", kind.as_str(), period.as_str()),
-                    )
-                })
-                .collect(),
-        );
-    }
-    InlineKeyboardMarkup::new(rows)
+/// First level of the `/profile` menu: short labels that fit a phone screen.
+/// A 12-button grid with names like "Треки 10×10" gets truncated by Telegram.
+fn collage_kind_keyboard(lang: Lang, period: StatsPeriod) -> InlineKeyboardMarkup {
+    let (tracks, albums, artists) = if lang == Lang::Uk {
+        ("🎵 Треки", "💿 Альбоми", "👤 Виконавці")
+    } else {
+        ("🎵 Tracks", "💿 Albums", "👤 Artists")
+    };
+    InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback(tracks, format!("lf:m:tracks:{}", period.as_str())),
+        InlineKeyboardButton::callback(albums, format!("lf:m:albums:{}", period.as_str())),
+        InlineKeyboardButton::callback(artists, format!("lf:m:artists:{}", period.as_str())),
+    ]])
+}
+
+/// Second level: grid sizes for the chosen kind, plus a back button.
+fn collage_grid_keyboard(lang: Lang, kind: StatsKind, period: StatsPeriod) -> InlineKeyboardMarkup {
+    let back = if lang == Lang::Uk {
+        "« Назад"
+    } else {
+        "« Back"
+    };
+    InlineKeyboardMarkup::new(vec![
+        [3u8, 5, 8, 10]
+            .into_iter()
+            .map(|grid| {
+                InlineKeyboardButton::callback(
+                    format!("{grid}×{grid}"),
+                    format!("lf:c:{}:{grid}:{}", kind.as_str(), period.as_str()),
+                )
+            })
+            .collect(),
+        vec![InlineKeyboardButton::callback(
+            back,
+            format!("lf:b:{}", period.as_str()),
+        )],
+    ])
+}
+
+/// Edit the existing `/profile` message in place when navigating the menu.
+/// `kind = None` rebuilds the first level (the back button).
+pub async fn handle_collage_menu_callback(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    kind: Option<StatsKind>,
+    period: StatsPeriod,
+) -> HandlerResult {
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    let user = state
+        .db
+        .ensure_user(query.from.id.0 as i64, Lang::En)
+        .await?;
+    let markup = match kind {
+        Some(kind) => collage_grid_keyboard(user.lang, kind, period),
+        None => collage_kind_keyboard(user.lang, period),
+    };
+    bot.edit_message_reply_markup(message.chat.id, message.id)
+        .reply_markup(markup)
+        .await?;
+    Ok(())
 }
 
 pub async fn handle_profile(
@@ -151,7 +193,7 @@ pub async fn handle_profile(
     );
     bot.send_message(msg.chat.id, text)
         .parse_mode(ParseMode::Html)
-        .reply_markup(collage_keyboard(lang, period))
+        .reply_markup(collage_kind_keyboard(lang, period))
         .await?;
     Ok(())
 }
@@ -586,4 +628,59 @@ pub async fn handle_collage_callback(
         lang: user.lang,
     };
     send_collage(state, bot, message.chat.id, &context, kind, grid, period).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use teloxide::types::InlineKeyboardButtonKind;
+
+    #[test]
+    fn profile_menu_labels_fit_and_callbacks_round_trip() {
+        let kind_menu = collage_kind_keyboard(Lang::Uk, StatsPeriod::ThreeMonths);
+        let row = &kind_menu.inline_keyboard[0];
+        assert_eq!(row.len(), 3, "one button per stat kind");
+        for button in row {
+            assert!(
+                button.text.chars().count() <= 12,
+                "kind label gets truncated: {}",
+                button.text
+            );
+            let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+                panic!("kind button must be a callback");
+            };
+            let parts: Vec<&str> = data.strip_prefix("lf:m:").unwrap().split(':').collect();
+            assert_eq!(parts.len(), 2);
+            assert!(StatsKind::parse(parts[0]).is_some());
+            assert!(StatsPeriod::parse(parts[1]).is_some());
+        }
+
+        let grid_menu =
+            collage_grid_keyboard(Lang::Uk, StatsKind::Tracks, StatsPeriod::ThreeMonths);
+        assert_eq!(grid_menu.inline_keyboard.len(), 2, "sizes row + back row");
+        let sizes = &grid_menu.inline_keyboard[0];
+        assert_eq!(sizes.len(), 4);
+        for button in sizes {
+            assert!(
+                button.text.chars().count() <= 5,
+                "grid label gets truncated: {}",
+                button.text
+            );
+            let InlineKeyboardButtonKind::CallbackData(data) = &button.kind else {
+                panic!("grid button must be a callback");
+            };
+            let parts: Vec<&str> = data.strip_prefix("lf:c:").unwrap().split(':').collect();
+            assert_eq!(parts.len(), 3);
+            assert!(
+                parts[1]
+                    .parse::<u8>()
+                    .is_ok_and(|grid| (3..=10).contains(&grid))
+            );
+        }
+        let back = &grid_menu.inline_keyboard[1][0];
+        assert!(
+            matches!(&back.kind, InlineKeyboardButtonKind::CallbackData(data) if data.starts_with("lf:b:")),
+            "back button must return to the first level"
+        );
+    }
 }

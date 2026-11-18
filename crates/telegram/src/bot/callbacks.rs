@@ -118,6 +118,36 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         crate::bot::lyrics::handle_lrc_callback(&state, &bot, &query, id).await?;
     } else if let Some(id) = data.strip_prefix("ly:alt:") {
         crate::bot::lyrics::handle_alt_source_callback(&state, &bot, &query, id).await?;
+    } else if let Some(payload) = data.strip_prefix("lf:m:") {
+        // First level of the /profile menu: pick a kind, show grid sizes.
+        let parts: Vec<&str> = payload.split(':').collect();
+        if parts.len() == 2
+            && let (Some(kind), Some(period)) = (
+                providers::lastfm::StatsKind::parse(parts[0]),
+                providers::lastfm::StatsPeriod::parse(parts[1]),
+            )
+        {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            crate::bot::stats::handle_collage_menu_callback(
+                &state,
+                &bot,
+                &query,
+                Some(kind),
+                period,
+            )
+            .await?;
+        } else {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+        }
+    } else if let Some(payload) = data.strip_prefix("lf:b:") {
+        // Back to the first level of the /profile menu.
+        if let Some(period) = providers::lastfm::StatsPeriod::parse(payload) {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            crate::bot::stats::handle_collage_menu_callback(&state, &bot, &query, None, period)
+                .await?;
+        } else {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+        }
     } else if let Some(payload) = data.strip_prefix("lf:c:") {
         let parts: Vec<&str> = payload.split(':').collect();
         if parts.len() == 3
