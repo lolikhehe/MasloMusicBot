@@ -61,17 +61,26 @@ fn csv_rows(input: &str) -> Vec<Vec<String>> {
     rows
 }
 
+/// Header keys differ across exporters: `Track Name`, `track_name`,
+/// `Artist Name(s)`, `artists`. Strip separators so they all match.
+fn normalize_key(key: &str) -> String {
+    key.to_ascii_lowercase()
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect()
+}
+
 fn title_key(key: &str) -> bool {
     matches!(
-        key.to_ascii_lowercase().as_str(),
-        "title" | "name" | "track" | "track_name" | "trackname" | "song"
+        normalize_key(key).as_str(),
+        "title" | "name" | "track" | "trackname" | "song"
     )
 }
 
 fn artist_key(key: &str) -> bool {
     matches!(
-        key.to_ascii_lowercase().as_str(),
-        "artist" | "artist_name" | "artistname" | "artists" | "performer"
+        normalize_key(key).as_str(),
+        "artist" | "artistname" | "artistnames" | "artists" | "performer"
     )
 }
 
@@ -431,6 +440,23 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].title, "One");
         assert_eq!(entries[0].artist.as_deref(), Some("Metallica"));
+    }
+
+    #[test]
+    fn parses_spotify_extended_export_csv() {
+        // Real Spotify "extended" privacy export: positional columns, headers
+        // with spaces and parentheses (and a UTF-8 BOM). The title must come
+        // from "Track Name", artist from "Artist Name(s)" — not from the
+        // "Track URI" / "ISRC" columns that the old fallback used.
+        let csv = "\u{feff}Track URI,ISRC,Track Name,Album Name,Artist Name(s),Duration (ms)\n\
+                   spotify:track:abc,DEA123,L'Amour Toujours,Tecno Fes,\"GIGI D'AGOSTINO\",423186\n\
+                   spotify:track:def,GBB456,Bubblegum Bitch,Electra Heart,MARINA,154666";
+        let entries = parse_entries(csv);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].title, "L'Amour Toujours");
+        assert_eq!(entries[0].artist.as_deref(), Some("GIGI D'AGOSTINO"));
+        assert_eq!(entries[1].title, "Bubblegum Bitch");
+        assert_eq!(entries[1].artist.as_deref(), Some("MARINA"));
     }
 
     #[test]
