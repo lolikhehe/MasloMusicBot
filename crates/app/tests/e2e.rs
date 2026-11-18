@@ -144,6 +144,34 @@ async fn lyrics_command_uses_public_mock_sources() {
 }
 
 #[tokio::test]
+async fn changelog_and_user_stats_are_answered() {
+    let bot = spawn_bot().await;
+    inject_text(&bot.api, 20, 120, "/changelog");
+    inject_text(&bot.api, 21, 120, "/me");
+
+    wait_until(10_000, || async { messages(&bot.api).len() >= 2 })
+        .await
+        .expect("no answers to /changelog and /me");
+    let texts: Vec<String> = messages(&bot.api)
+        .iter()
+        .filter_map(|message| message["text"].as_str().map(str::to_owned))
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("What's new") || text.contains("Що нового")),
+        "changelog must be shown: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("Your stats") || text.contains("Ваша статистика")),
+        "user stats must be shown: {texts:?}"
+    );
+    assert!(texts.iter().any(|text| text.contains("@maslougazIA")));
+}
+
+#[tokio::test]
 async fn cached_track_is_sent_without_download() {
     let bot = spawn_bot().await;
     let db = Db::connect(&database_url()).await.expect("db");

@@ -1,4 +1,5 @@
-//! `/lyrics` command: public, token-free lyrics lookup.
+//! `/lyrics` command: public, token-free lyrics lookup, with an optional
+//! downloadable `.lrc` file and a "other source" button.
 
 use crate::bot::{handlers, send};
 use crate::state::AppState;
@@ -6,9 +7,21 @@ use common::domain::Lang;
 use common::error::HandlerResult;
 use common::i18n;
 use providers::lyrics::{Lyrics, LyricsSource};
+use serde::{Deserialize, Serialize};
 use teloxide::prelude::*;
-use teloxide::types::{Message, ParseMode};
-use tracing::warn;
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode};
+
+/// Serializable lyrics snapshot stored in Postgres for button callbacks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LyricsSelection {
+    pub artist: Option<String>,
+    pub title: String,
+    pub lang: String,
+    pub text: String,
+    pub source: String,
+    pub synced: bool,
+    pub lrc: Option<String>,
+}
 
 /// Resolve a lyrics query from, in priority order: explicit arguments, a reply
 /// to an audio message, the last track sent to this user.
@@ -57,6 +70,48 @@ pub fn split_query(query: &str) -> (Option<String>, String) {
     (None, query.chars().take(150).collect())
 }
 
+fn selection(artist: Option<&str>, title: &str, lang: Lang, found: &Lyrics) -> LyricsSelection {
+    LyricsSelection {
+        artist: artist.map(str::to_owned),
+        title: title.to_owned(),
+        lang: lang.code().to_owned(),
+        text: found.text.clone(),
+        source: found.source.as_str().to_owned(),
+        synced: found.is_synced(),
+        lrc: found.lrc.clone(),
+    }
+}
+
+fn body(selection: &LyricsSelection) -> String {
+    let lang = Lang::from_code(&selection.lang).unwrap_or(Lang::En);
+    let mut text = i18n::lyrics_header(lang, &selection.source, selection.synced);
+    text.push_str(&handlers::escape_html(&selection.text));
+    text.push_str(&i18n::lyrics_footer(lang));
+    text
+}
+
+fn keyboard(
+    lang: Lang,
+    selection_id: &str,
+    has_lrc: bool,
+    has_other: bool,
+) -> InlineKeyboardMarkup {
+    let mut buttons: Vec<InlineKeyboardButton> = Vec::new();
+    if has_lrc {
+        buttons.push(InlineKeyboardButton::callback(
+            i18n::lyrics_lrc_button(lang),
+            format!("ly:lrc:{selection_id}"),
+        ));
+    }
+    if has_other {
+        buttons.push(InlineKeyboardButton::callback(
+            i18n::lyrics_other_source_button(lang),
+            format!("ly:alt:{selection_id}"),
+        ));
+    }
+    InlineKeyboardMarkup::new(vec![buttons])
+}
+
 pub async fn handle_lyrics(
     state: &AppState,
     bot: &Bot,
@@ -69,43 +124,144 @@ pub async fn handle_lyrics(
         return Ok(());
     };
 
-    let key = format!("{}|{}", artist.as_deref().unwrap_or(""), title).to_lowercase();
-    let found = if let Some(cached) = state.lyrics_cache.get(&key).await {
-        cached
-    } else {
-        let fetched = state.lyrics.fetch(artist.as_deref(), &title).await;
-        if fetched.is_none() {
-            warn!(title = %title, "no lyrics found in public sources");
-        }
-        state.lyrics_cache.insert(key, fetched.clone()).await;
-        fetched
-    };
-
-    let Some(Lyrics { text, source }) = found else {
+    let found = state.lyrics.fetch(artist.as_deref(), &title).await;
+    let Some(found) = found else {
         send::send_html(bot, msg.chat.id, i18n::lyrics_not_found(lang)).await?;
         return Ok(());
     };
+    send_lyrics(state, bot, msg.chat.id, &artist, &title, lang, &found).await
+}
 
-    let mut body = i18n::lyrics_header(
-        lang,
-        source.as_str(),
-        matches!(source, LyricsSource::LrclibSynced),
-    );
-    body.push_str(&handlers::escape_html(&text));
-    body.push_str(&i18n::lyrics_footer(lang));
-    match bot
-        .send_message(msg.chat.id, body)
+/// Send a lyrics answer and store the buttons' payload in Postgres so any
+/// replica can serve the follow-up callback.
+pub async fn send_lyrics(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    artist: &Option<String>,
+    title: &str,
+    lang: Lang,
+    found: &Lyrics,
+) -> HandlerResult {
+    let snapshot = selection(artist.as_deref(), title, lang, found);
+    let selection_id = state.new_selection_id();
+    state
+        .put_selection(
+            &selection_id,
+            crate::state::selection::LYRICS,
+            chat.0,
+            &snapshot,
+        )
+        .await?;
+
+    let has_lrc = snapshot.lrc.is_some();
+    let has_other = found.source != LyricsSource::LyricsOvh;
+    let text = body(&snapshot);
+    let result = bot
+        .send_message(chat, text.clone())
         .parse_mode(ParseMode::Html)
-        .await
-    {
-        Ok(_) => {}
-        Err(error) => {
-            warn!(%error, "could not send lyrics with HTML; retrying as plain text");
-            let mut plain = format!("📝 {} — {title}\n\n{text}", source.as_str());
-            plain.push_str(&i18n::lyrics_footer(lang));
-            send::send_html(bot, msg.chat.id, plain).await?;
-        }
+        .reply_markup(keyboard(lang, &selection_id, has_lrc, has_other))
+        .await;
+    if result.is_err() {
+        let mut plain = format!("📝 {} — {title}\n\n{}", snapshot.source, snapshot.text);
+        plain.push_str(&i18n::lyrics_footer(lang));
+        send::send_html(bot, chat, plain).await?;
     }
+    Ok(())
+}
+
+pub async fn handle_lrc_callback(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    id: &str,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    let Some(saved) = state
+        .get_selection::<LyricsSelection>(id, crate::state::selection::LYRICS)
+        .await?
+    else {
+        return Ok(());
+    };
+    let Some(lrc) = saved.lrc.clone() else {
+        return Ok(());
+    };
+    let lang = Lang::from_code(&saved.lang).unwrap_or(Lang::En);
+    let file_name = format!(
+        "{}.lrc",
+        saved
+            .title
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            })
+            .collect::<String>()
+    );
+    let input = InputFile::memory(lrc.into_bytes()).file_name(file_name);
+    bot.send_document(message.chat.id, input)
+        .caption(i18n::lyrics_lrc_sent(lang))
+        .await?;
+    Ok(())
+}
+
+pub async fn handle_alt_source_callback(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    id: &str,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    let Some(saved) = state
+        .get_selection::<LyricsSelection>(id, crate::state::selection::LYRICS)
+        .await?
+    else {
+        return Ok(());
+    };
+    let lang = Lang::from_code(&saved.lang).unwrap_or(Lang::En);
+    let alternate = if saved.source.starts_with("LRCLIB") {
+        state
+            .lyrics
+            .fetch_ovh(saved.artist.as_deref(), &saved.title)
+            .await
+    } else {
+        state
+            .lyrics
+            .fetch_lrclib(saved.artist.as_deref(), &saved.title)
+            .await
+    };
+    let Some(found) = alternate else {
+        bot.edit_message_text(
+            message.chat.id,
+            message.id,
+            i18n::lyrics_no_other_source(lang),
+        )
+        .await?;
+        return Ok(());
+    };
+    let snapshot = selection(saved.artist.as_deref(), &saved.title, lang, &found);
+    let has_lrc = snapshot.lrc.is_some();
+    let text = body(&snapshot);
+    let _ = bot
+        .edit_message_text(message.chat.id, message.id, text)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(keyboard(lang, id, has_lrc, false))
+        .await;
+    state
+        .put_selection(
+            id,
+            crate::state::selection::LYRICS,
+            query.from.id.0 as i64,
+            &snapshot,
+        )
+        .await?;
     Ok(())
 }
 

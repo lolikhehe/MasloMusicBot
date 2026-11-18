@@ -81,12 +81,38 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             }
         }
     } else if let Some(value) = data.strip_prefix("gn:c:") {
-        if let Ok(bars) = value.parse::<u8>() {
-            let _ = bot.answer_callback_query(query.id.clone()).await;
-            crate::bot::stats::handle_genre_chart_callback(&state, &bot, &query, bars).await?;
-        } else {
-            let _ = bot.answer_callback_query(query.id.clone()).await;
+        let (bars, period) = value
+            .split_once(':')
+            .map(|(bars, period)| {
+                (
+                    bars.parse::<u8>().ok(),
+                    providers::lastfm::StatsPeriod::parse(period),
+                )
+            })
+            .unwrap_or((
+                value.parse::<u8>().ok(),
+                Some(providers::lastfm::StatsPeriod::Overall),
+            ));
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        if let (Some(bars), Some(period)) = (bars, period) {
+            crate::bot::stats::handle_genre_chart_callback(&state, &bot, &query, bars, period)
+                .await?;
         }
+    } else if let Some(value) = data.strip_prefix("gn:p:") {
+        let parts: Vec<&str> = value.split(':').collect();
+        let parsed = parts
+            .first()
+            .and_then(|period| providers::lastfm::StatsPeriod::parse(period))
+            .zip(parts.get(1).and_then(|bars| bars.parse::<u8>().ok()));
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        if let Some((period, bars)) = parsed {
+            crate::bot::stats::handle_genre_chart_callback(&state, &bot, &query, bars, period)
+                .await?;
+        }
+    } else if let Some(id) = data.strip_prefix("ly:lrc:") {
+        crate::bot::lyrics::handle_lrc_callback(&state, &bot, &query, id).await?;
+    } else if let Some(id) = data.strip_prefix("ly:alt:") {
+        crate::bot::lyrics::handle_alt_source_callback(&state, &bot, &query, id).await?;
     } else if let Some(payload) = data.strip_prefix("lf:c:") {
         let parts: Vec<&str> = payload.split(':').collect();
         if parts.len() == 3

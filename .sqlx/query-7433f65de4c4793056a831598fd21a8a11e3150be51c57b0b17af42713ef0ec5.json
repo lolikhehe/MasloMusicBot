@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n                 (SELECT COUNT(*) FROM user_genre_tracks WHERE user_id = $1) AS tracks,\n                 (SELECT COALESCE(SUM(listens), 0)::BIGINT FROM user_genres WHERE user_id = $1) AS listens,\n                 (SELECT COUNT(*) FROM user_genres WHERE user_id = $1) AS genres,\n                 (SELECT COALESCE(SUM(duration), 0)::BIGINT FROM (\n                      SELECT MAX(t.duration_secs) AS duration\n                      FROM user_genre_tracks g\n                      JOIN tracks t ON t.track_key = g.track_key\n                      WHERE g.user_id = $1\n                      GROUP BY g.track_key\n                  ) d) AS seconds",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tracks",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "listens",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "genres",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "seconds",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7433f65de4c4793056a831598fd21a8a11e3150be51c57b0b17af42713ef0ec5"
+}

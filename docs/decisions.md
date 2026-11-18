@@ -1,5 +1,27 @@
 # Decisions & known limitations
 
+## v2.2 — lyrics files, source switching, period charts, user/admin commands (2026-11-18)
+
+- LRCLIB's `syncedLyrics` is now kept twice: stripped for the chat message and
+  verbatim (control chars removed, 8 000 char cap) for an optional `.lrc`
+  download. The file is built from in-memory bytes with `InputFile::memory`;
+  nothing is written to disk. The "other source" button stores a lyrics
+  snapshot in the shared `selections` table, so it works with webhooks and
+  multiple replicas.
+- `/genres [bars] [period]` uses a new `user_genre_events` table (migration
+  0002) instead of filtering the all-time aggregate by `updated_at`, which
+  would have counted "recently updated genres" rather than recent listens.
+  A guarded one-time backfill repopulates events from existing
+  `user_genre_tracks` + `tracks.genres`; a malformed legacy JSON blob is
+  logged and skipped rather than blocking startup.
+- `/me` derives audio time from the cached duration of distinct tracks counted
+  by the analyzer. It is an estimate of known metadata, not a scrobble log.
+- `/broadcast` is deliberately not gated by `meta.announced_version`: it is an
+  explicit admin action, and the 80 ms pacing follows the release notice path.
+- No new UI language was added in this batch (Russian was explicitly ruled
+  out). Instead, the shared `pick()` strings gained a coverage test for both
+  supported languages; a full third translation is a separate task.
+
 ## v2.1 — lyrics, Postgres, compile-time SQL, webhooks (promoted to main 2026-11-18)
 
 - `lyricsgenius` was rejected: it is a Python scraper of Genius HTML, and the

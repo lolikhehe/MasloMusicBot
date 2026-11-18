@@ -35,12 +35,12 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри",
     );
     if is_admin {
         format!(
-            "{base}\n\n<b>Admin</b>\n/stats — counters\n/ban &lt;id&gt;\n/unban &lt;id&gt;\n/purge &lt;key or url&gt;"
+            "{base}\n\n<b>Admin</b>\n/stats — counters\n/ban &lt;id&gt;\n/unban &lt;id&gt;\n/purge &lt;key or url&gt;\n/broadcast &lt;text&gt; — one-off notice to all known users"
         )
     } else {
         base.to_owned()
@@ -89,6 +89,68 @@ pub fn lyrics_no_last(lang: Lang) -> &'static str {
         lang,
         "Send a track first, reply to an audio message, or pass a query: <code>/lyrics Artist — Title</code>.",
         "Спочатку надішліть трек, відповідайте на аудіоповідомлення або вкажіть запит: <code>/lyrics Виконавець — Назва</code>.",
+    )
+}
+
+pub fn lyrics_lrc_button(lang: Lang) -> &'static str {
+    pick(lang, "📄 Download .lrc", "📄 Завантажити .lrc")
+}
+
+pub fn lyrics_other_source_button(lang: Lang) -> &'static str {
+    pick(lang, "🔄 Other source", "🔄 Інше джерело")
+}
+
+pub fn lyrics_lrc_sent(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "📄 LRC file saved. Drop it next to the audio in your player.",
+        "📄 Файл LRC збережено. Покладіть його поруч з аудіо у плеєрі.",
+    )
+}
+
+pub fn lyrics_no_other_source(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "😕 The other public source has no lyrics for this track.",
+        "😕 Інше публічне джерело не має тексту для цього треку.",
+    )
+}
+
+pub fn changelog_title(lang: Lang) -> &'static str {
+    pick(lang, "<b>What's new</b>\n\n", "<b>Що нового</b>\n\n")
+}
+
+pub fn user_stats(lang: Lang, tracks: i64, listens: i64, genres: i64, seconds: i64) -> String {
+    let hours = seconds as f64 / 3600.0;
+    let title = pick(lang, "<b>Your stats</b>", "<b>Ваша статистика</b>");
+    let counted = pick(lang, "Tracks counted", "Треків враховано");
+    let listens_label = pick(lang, "Listens", "Прослуховувань");
+    let genres_label = pick(lang, "Genres", "Жанрів");
+    let time_label = pick(lang, "Audio time", "Час аудіо");
+    format!(
+        "{title}\n\n{counted}: <b>{tracks}</b>\n{listens_label}: <b>{listens}</b>\n{genres_label}: <b>{genres}</b>\n{time_label}: <b>{hours:.1} h</b>\n\n{}",
+        crate::version::DEV_CHANNEL_HANDLE
+    )
+}
+
+pub fn broadcast_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/broadcast &lt;text&gt;</code>",
+        "Використання: <code>/broadcast &lt;текст&gt;</code>",
+    )
+}
+
+pub fn broadcast_result(lang: Lang, sent: usize, failed: usize) -> String {
+    let label = pick(lang, "Broadcast complete", "Розсилка завершена");
+    format!("{label}: {sent} ✓ / {failed} ✗")
+}
+
+pub fn genre_chart_usage_period(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/genres [5..20] [week|month|3m|6m|year|all]</code>",
+        "Використання: <code>/genres [5..20] [week|month|3m|6m|year|all]</code>",
     )
 }
 
@@ -815,6 +877,26 @@ mod tests {
             assert!(!error(lang, &DownloadError::NotFound).is_empty());
             assert!(!stats(lang, &Stats::default(), "0s").is_empty());
             assert!(!sent_to_private(lang).is_empty());
+            assert!(!lyrics_usage(lang).is_empty());
+            assert!(!lyrics_lrc_button(lang).is_empty());
+            assert!(!lyrics_other_source_button(lang).is_empty());
+            assert!(!lyrics_lrc_sent(lang).is_empty());
+            assert!(!lyrics_no_other_source(lang).is_empty());
+            assert!(!changelog_title(lang).is_empty());
+            assert!(!broadcast_usage(lang).is_empty());
+            assert!(!genre_chart_usage_period(lang).is_empty());
+            assert!(!user_stats(lang, 1, 2, 3, 3600).is_empty());
+        }
+    }
+
+    #[test]
+    fn every_language_uses_the_developer_handle() {
+        for lang in [Lang::En, Lang::Uk] {
+            assert!(
+                user_stats(lang, 1, 1, 1, 1).contains(DEV_CHANNEL_HANDLE),
+                "user stats must carry the developer channel"
+            );
+            assert!(lyrics_footer(lang).contains(DEV_CHANNEL_HANDLE));
         }
     }
 

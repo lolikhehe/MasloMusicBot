@@ -457,6 +457,17 @@ pub struct Stats {
     pub sends: i64,
 }
 
+/// Per-user counters for `/me`. Only tracks counted by the opt-in genre
+/// analyzer are known individually; `listens` comes from the aggregate table.
+#[derive(Debug, Clone, Default)]
+pub struct UserStats {
+    pub tracks: i64,
+    pub listens: i64,
+    pub genres: i64,
+    /// Sum of the best-known duration of each distinct counted track, in secs.
+    pub seconds: i64,
+}
+
 /// One search result before the user picks it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {

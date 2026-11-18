@@ -45,6 +45,18 @@ impl StatsPeriod {
         }
     }
 
+    /// Cutoff for local genre events; `None` means "all time".
+    pub fn window_secs(self) -> Option<i64> {
+        match self {
+            Self::Week => Some(7 * 86_400),
+            Self::Month => Some(30 * 86_400),
+            Self::ThreeMonths => Some(90 * 86_400),
+            Self::SixMonths => Some(180 * 86_400),
+            Self::Year => Some(365 * 86_400),
+            Self::Overall => None,
+        }
+    }
+
     pub fn label(self, lang: Lang) -> &'static str {
         match (self, lang) {
             (Self::Week, Lang::En) => "7 days",

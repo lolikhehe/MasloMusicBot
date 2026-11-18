@@ -35,6 +35,12 @@ pub enum Command {
     /// `/lyrics [Artist — Title]` — public lyrics lookup; falls back to the
     /// last delivered track or an audio reply.
     Lyrics(Option<String>),
+    /// `/changelog` — show release notes without a broadcast.
+    Changelog,
+    /// `/me` — the caller's own counters.
+    UserStats,
+    /// `/broadcast <text>` — admin-only one-off notice.
+    Broadcast(Option<String>),
     Unknown(String),
 }
 
@@ -71,6 +77,9 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "lyrics" | "lyric" | "текст" | "лірика" => {
             Command::Lyrics((!args.is_empty()).then_some(args))
         }
+        "changelog" | "зміни" => Command::Changelog,
+        "me" | "mystats" | "моястатистика" => Command::UserStats,
+        "broadcast" | "розсилка" => Command::Broadcast((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
         "purge" => Command::Purge((!args.is_empty()).then_some(args)),
@@ -360,6 +369,56 @@ pub async fn handle_command(
         Command::Lyrics(query) => {
             crate::bot::lyrics::handle_lyrics(state, bot, msg, query, lang).await?;
         }
+        Command::Changelog => {
+            let mut text = i18n::changelog_title(lang).to_owned();
+            text.push_str(&crate::bot::handlers::escape_html(
+                common::version::PATCH_NOTES,
+            ));
+            send_plain(bot, msg.chat.id, text).await?;
+        }
+        Command::UserStats => {
+            if !msg.chat.is_private() {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            let stats = state.db.user_stats(user_id).await?;
+            send_plain(
+                bot,
+                msg.chat.id,
+                i18n::user_stats(
+                    lang,
+                    stats.tracks,
+                    stats.listens,
+                    stats.genres,
+                    stats.seconds,
+                ),
+            )
+            .await?;
+        }
+        Command::Broadcast(text) => {
+            if !is_admin {
+                send_plain(bot, msg.chat.id, i18n::admin_only(lang)).await?;
+                return Ok(());
+            }
+            let Some(text) = text.filter(|text| !text.trim().is_empty()) else {
+                send_plain(bot, msg.chat.id, i18n::broadcast_usage(lang)).await?;
+                return Ok(());
+            };
+            let body = crate::bot::handlers::escape_html(text.trim());
+            let mut sent = 0usize;
+            let mut failed = 0usize;
+            for (target, _) in state.db.active_user_ids().await? {
+                match send_plain(bot, ChatId(target), body.clone()).await {
+                    Ok(()) => sent += 1,
+                    Err(error) => {
+                        failed += 1;
+                        warn!(%error, user_id = target, "broadcast delivery failed");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+            }
+            send_plain(bot, msg.chat.id, i18n::broadcast_result(lang, sent, failed)).await?;
+        }
         Command::AlbumSearch(query) => {
             if !msg.chat.is_private() {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
@@ -528,6 +587,16 @@ mod tests {
         assert_eq!(
             parse_command("/alb", "bot"),
             Some(Command::AlbumSearch(None))
+        );
+        assert_eq!(parse_command("/changelog", "bot"), Some(Command::Changelog));
+        assert_eq!(parse_command("/me", "bot"), Some(Command::UserStats));
+        assert_eq!(
+            parse_command("/broadcast hello everyone", "bot"),
+            Some(Command::Broadcast(Some("hello everyone".into())))
+        );
+        assert_eq!(
+            parse_command("/lyrics Artist — Title", "bot"),
+            Some(Command::Lyrics(Some("Artist — Title".into())))
         );
     }
 }

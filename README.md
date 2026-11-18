@@ -46,8 +46,12 @@ not be editable into messages.
 | `/import` / playlist file | everyone | Import a playlist from Spotify/TuneMyMusic/Soundiiz exports (CSV/TXT/JSON) or pasted `Artist – Title` lines |
 | `/profile` / `/lastfmstats [period]` | everyone | Last.fm scrobble stats (enable **Last.fm stats** in `/settings` and connect `/lastfm <nick>`) |
 | `/collage <tracks\|albums\|artists> [3x3..10x10] [period]` | everyone | PNG collage of your most played tracks/albums/artists with playcounts |
-| `/genres [5..20]` | everyone | PNG bar chart of the genres in your downloads (deduplicated per track; enable **Genre analyzer** in `/settings`) |
+| `/genres [5..20] [period]` | everyone | PNG bar chart of your genres; `period` = `week`, `month`, `3m`, `6m`, `year` or `all` (enable **Genre analyzer** in `/settings`) |
+| `/lyrics [Artist — Title]` | everyone | Public lyrics with a downloadable `.lrc` file and an "other source" button |
+| `/changelog` | everyone | Show the current release notes |
+| `/me` | everyone | Your own counters: tracks, listens, genres, audio time |
 | `/stats` | admins | Tracks cached, users seen, uptime |
+| `/broadcast <text>` | admins | One-off notice to every known user |
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |
 

@@ -20,6 +20,13 @@ use tracing::warn;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 /// Hard ceiling for one collage cover. Last.fm/Deezer artwork is far smaller;
 /// the cap only stops a misbehaving host from buffering an unbounded body.
 const MAX_COVER_BYTES: u64 = 4 * 1024 * 1024;
@@ -360,15 +367,35 @@ async fn send_collage(
     Ok(())
 }
 
-fn genre_keyboard(bars: u8) -> InlineKeyboardMarkup {
+fn genre_keyboard(bars: u8, period: StatsPeriod, lang: Lang) -> InlineKeyboardMarkup {
     let row: Vec<InlineKeyboardButton> = [5u8, 8, 10, 12, 15, 20]
         .into_iter()
         .map(|value| {
             let check = if value == bars { "✓ " } else { "" };
-            InlineKeyboardButton::callback(format!("{check}{value}"), format!("gn:c:{value}"))
+            InlineKeyboardButton::callback(
+                format!("{check}{value}"),
+                format!("gn:c:{value}:{}", period.as_str()),
+            )
         })
         .collect();
-    InlineKeyboardMarkup::new(vec![row])
+    let periods: Vec<InlineKeyboardButton> = [
+        StatsPeriod::Week,
+        StatsPeriod::Month,
+        StatsPeriod::ThreeMonths,
+        StatsPeriod::SixMonths,
+        StatsPeriod::Year,
+        StatsPeriod::Overall,
+    ]
+    .into_iter()
+    .map(|candidate| {
+        let check = if candidate == period { "✓ " } else { "" };
+        InlineKeyboardButton::callback(
+            format!("{check}{}", candidate.label(lang)),
+            format!("gn:p:{}:{bars}", candidate.as_str()),
+        )
+    })
+    .collect();
+    InlineKeyboardMarkup::new(vec![row, periods])
 }
 
 fn genre_display(value: &str) -> String {
@@ -405,19 +432,25 @@ pub async fn handle_genres(
             .await?;
         return Ok(());
     }
-    let bars = match arg
-        .and_then(|value| value.split_whitespace().next())
-        .map(str::parse::<u8>)
-    {
-        None => 10,
-        Some(Ok(value)) => value.clamp(5, 20),
-        Some(Err(_)) => {
-            bot.send_message(msg.chat.id, i18n::genre_chart_usage(lang))
-                .await?;
-            return Ok(());
-        }
-    };
-    send_genre_chart(state, bot, msg.chat.id, user_id, &user, bars).await
+    let tokens: Vec<&str> = arg.unwrap_or("").split_whitespace().collect();
+    let invalid = tokens
+        .iter()
+        .any(|value| value.parse::<u8>().is_err() && StatsPeriod::parse(value).is_none());
+    if invalid || tokens.len() > 2 {
+        bot.send_message(msg.chat.id, i18n::genre_chart_usage_period(lang))
+            .await?;
+        return Ok(());
+    }
+    let bars = tokens
+        .iter()
+        .find_map(|value| value.parse::<u8>().ok())
+        .unwrap_or(10)
+        .clamp(5, 20);
+    let period = tokens
+        .iter()
+        .find_map(|value| StatsPeriod::parse(value))
+        .unwrap_or(StatsPeriod::Overall);
+    send_genre_chart(state, bot, msg.chat.id, user_id, &user, bars, period).await
 }
 
 async fn send_genre_chart(
@@ -427,6 +460,7 @@ async fn send_genre_chart(
     user_id: i64,
     user: &UserRecord,
     bars: u8,
+    period: StatsPeriod,
 ) -> HandlerResult {
     let lang = user.lang;
     if !user.genre_analysis {
@@ -434,13 +468,17 @@ async fn send_genre_chart(
             .await?;
         return Ok(());
     }
-    let rows = state.db.top_genres(user_id, usize::from(bars)).await?;
+    let since = unix_now() - period.window_secs().unwrap_or(0);
+    let rows = state
+        .db
+        .top_genres_since(user_id, usize::from(bars), since)
+        .await?;
     if rows.is_empty() {
         bot.send_message(chat, i18n::genre_chart_empty(lang))
             .await?;
         return Ok(());
     }
-    let total_tracks = state.db.genre_track_count(user_id).await?;
+    let total_tracks = state.db.genre_track_count_since(user_id, since).await?;
     let items: Vec<collage::BarItem> = rows
         .iter()
         .map(|(genre, listens)| collage::BarItem {
@@ -449,7 +487,11 @@ async fn send_genre_chart(
         })
         .collect();
     let title = i18n::genre_chart_title(lang);
-    let subtitle = i18n::genre_chart_subtitle(lang, total_tracks, items.len());
+    let subtitle = format!(
+        "{} · {}",
+        i18n::genre_chart_subtitle(lang, total_tracks, items.len()),
+        period.label(lang)
+    );
     let path = state
         .config
         .tmp_dir
@@ -484,7 +526,7 @@ async fn send_genre_chart(
     let result = bot
         .send_photo(chat, InputFile::file(&path))
         .caption(subtitle)
-        .reply_markup(genre_keyboard(bars))
+        .reply_markup(genre_keyboard(bars, period, lang))
         .await;
     let _ = tokio::fs::remove_file(&path).await;
     if let Err(error) = result {
@@ -499,6 +541,7 @@ pub async fn handle_genre_chart_callback(
     bot: &Bot,
     query: &CallbackQuery,
     bars: u8,
+    period: StatsPeriod,
 ) -> HandlerResult {
     let Some(message) = query.regular_message() else {
         return Ok(());
@@ -512,6 +555,7 @@ pub async fn handle_genre_chart_callback(
         user_id,
         &user,
         bars.clamp(5, 20),
+        period,
     )
     .await
 }

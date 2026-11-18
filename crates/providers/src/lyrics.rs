@@ -35,8 +35,12 @@ impl LyricsSource {
 
 #[derive(Debug, Clone)]
 pub struct Lyrics {
+    /// Plain text for chat messages (LRC timestamps stripped).
     pub text: String,
     pub source: LyricsSource,
+    /// Original time-synced text, kept only for the optional `.lrc` download.
+    /// Never written to disk by the bot.
+    pub lrc: Option<String>,
 }
 
 impl Lyrics {
@@ -84,12 +88,21 @@ impl LyricsClient {
             return None;
         }
 
-        if let Some(lyrics) = self.lrclib_get(artist, title).await {
+        if let Some(lyrics) = self.fetch_lrclib(artist, title).await {
             return Some(lyrics);
         }
-        if let Some(lyrics) = self.lrclib_search(artist, title).await {
-            return Some(lyrics);
-        }
+        self.ovh(artist, title).await
+    }
+
+    /// LRCLIB only — used by the "other source" button.
+    pub async fn fetch_lrclib(&self, artist: Option<&str>, title: &str) -> Option<Lyrics> {
+        self.lrclib_get(artist, title)
+            .await
+            .or(self.lrclib_search(artist, title).await)
+    }
+
+    /// lyrics.ovh only — used by the "other source" button.
+    pub async fn fetch_ovh(&self, artist: Option<&str>, title: &str) -> Option<Lyrics> {
         self.ovh(artist, title).await
     }
 
@@ -140,6 +153,7 @@ impl LyricsClient {
         (!text.is_empty()).then_some(Lyrics {
             text,
             source: LyricsSource::LyricsOvh,
+            lrc: None,
         })
     }
 }
@@ -154,6 +168,7 @@ fn lyrics_from_lrclib(record: LrclibRecord) -> Option<Lyrics> {
             return Some(Lyrics {
                 text,
                 source: LyricsSource::LrclibSynced,
+                lrc: lrc_from_raw(&synced),
             });
         }
     }
@@ -163,11 +178,35 @@ fn lyrics_from_lrclib(record: LrclibRecord) -> Option<Lyrics> {
             return Some(Lyrics {
                 text,
                 source: LyricsSource::LrclibPlain,
+                lrc: None,
             });
         }
     }
     let _ = record.instrumental;
     None
+}
+
+/// Keep the original LRC tags for a downloadable `.lrc` file. Only control
+/// characters are dropped and the size is capped; in particular timestamps
+/// are NOT stripped here (unlike [`clean`], which prepares chat messages).
+pub fn lrc_from_raw(raw: &str) -> Option<String> {
+    const MAX_LRC_CHARS: usize = 8_000;
+    let filtered: String = raw
+        .lines()
+        .map(|line| {
+            line.chars()
+                .filter(|ch| *ch == '\t' || !ch.is_control())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let filtered = filtered.trim();
+    if filtered.is_empty() {
+        return None;
+    }
+    let mut result: String = filtered.chars().take(MAX_LRC_CHARS).collect();
+    result.push('\n');
+    Some(result)
 }
 
 /// Remove LRC timestamps/metadata tags and normalize whitespace. Multi-line
@@ -318,6 +357,17 @@ mod tests {
         assert_eq!(lyrics.text, "From ovh\nline two");
         assert_eq!(lyrics.source, LyricsSource::LyricsOvh);
         task.abort();
+    }
+
+    #[test]
+    fn lrc_file_keeps_timestamps_but_drops_control_chars() {
+        let raw = "[ar:Artist]\n[00:01.00]Hello\r\n[00:02.00]World\u{7}";
+        let lrc = lrc_from_raw(raw).expect("lrc");
+        assert!(lrc.contains("[00:01.00]Hello"));
+        assert!(lrc.contains("[00:02.00]World"));
+        assert!(!lrc.contains('\r'));
+        assert!(!lrc.contains('\u{7}'));
+        assert!(lrc.ends_with('\n'));
     }
 
     #[test]

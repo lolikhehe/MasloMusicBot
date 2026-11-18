@@ -10,7 +10,9 @@
 //! All replicas share this database: selections, search cache, rate limits and
 //! the once-per-version announcement marker work with webhooks and polling.
 
-use common::domain::{CachedTrack, Lang, Provider, Stats, TrackKey, TrackMeta, UserRecord};
+use common::domain::{
+    CachedTrack, Lang, Provider, Stats, TrackKey, TrackMeta, UserRecord, UserStats,
+};
 use common::error::{AppError, AppResult};
 use serde::de::DeserializeOwned;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -497,6 +499,19 @@ impl Db {
             unique.push(genre);
         }
         if !unique.is_empty() {
+            // Timestamped events for period-filtered charts. Same transaction
+            // as the dedupe insert, so a replay never inflates either table.
+            let mut events =
+                QueryBuilder::new("INSERT INTO user_genre_events (user_id, genre, created_at) ");
+            events.push_values(&unique, |mut row, genre| {
+                row.push_bind(id).push_bind(*genre).push_bind(now);
+            });
+            events
+                .build()
+                .execute(&mut *transaction)
+                .await
+                .map_err(db_err)?;
+
             // The only runtime-built statement: the row count depends on the
             // number of tags the source returned.
             let mut builder =
@@ -539,6 +554,73 @@ impl Db {
             .into_iter()
             .map(|row| (row.genre, row.listens))
             .collect())
+    }
+
+    /// Genre counts within a time window, for `/genres [bars] [period]`.
+    pub async fn top_genres_since(
+        &self,
+        id: i64,
+        limit: usize,
+        since: i64,
+    ) -> AppResult<Vec<(String, i64)>> {
+        let rows = sqlx::query!(
+            "SELECT genre, COUNT(*) AS listens FROM user_genre_events
+             WHERE user_id = $1 AND created_at >= $2
+             GROUP BY genre
+             ORDER BY listens DESC, genre ASC
+             LIMIT $3",
+            id,
+            since,
+            limit.clamp(1, 50) as i64
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.genre, row.listens.unwrap_or_default()))
+            .collect())
+    }
+
+    /// Distinct tracks counted within a time window.
+    pub async fn genre_track_count_since(&self, id: i64, since: i64) -> AppResult<i64> {
+        let count = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM user_genre_tracks WHERE user_id = $1 AND created_at >= $2",
+            id,
+            since
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(count.unwrap_or_default())
+    }
+
+    /// Counters for `/me`. Durations are taken from the cached metadata of
+    /// distinct counted tracks (best known quality), never from disk.
+    pub async fn user_stats(&self, id: i64) -> AppResult<UserStats> {
+        let row = sqlx::query!(
+            "SELECT
+                 (SELECT COUNT(*) FROM user_genre_tracks WHERE user_id = $1) AS tracks,
+                 (SELECT COALESCE(SUM(listens), 0)::BIGINT FROM user_genres WHERE user_id = $1) AS listens,
+                 (SELECT COUNT(*) FROM user_genres WHERE user_id = $1) AS genres,
+                 (SELECT COALESCE(SUM(duration), 0)::BIGINT FROM (
+                      SELECT MAX(t.duration_secs) AS duration
+                      FROM user_genre_tracks g
+                      JOIN tracks t ON t.track_key = g.track_key
+                      WHERE g.user_id = $1
+                      GROUP BY g.track_key
+                  ) d) AS seconds",
+            id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(UserStats {
+            tracks: row.tracks.unwrap_or_default(),
+            listens: row.listens.unwrap_or_default(),
+            genres: row.genres.unwrap_or_default(),
+            seconds: row.seconds.unwrap_or_default(),
+        })
     }
 
     /// Number of distinct tracks counted by the analyzer.
@@ -834,6 +916,28 @@ mod tests {
                 .expect("record off again")
         );
         assert_eq!(db.genre_track_count(99).await.expect("count"), 2);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn genre_events_support_periods_and_user_stats(pool: PgPool) {
+        let db = db(pool).await;
+        db.ensure_user(77, Lang::En).await.expect("user");
+        db.set_genre_analysis(77, true).await.expect("toggle");
+        db.record_genres(77, "youtube:a", &["Rock".to_owned(), "Jazz".to_owned()])
+            .await
+            .expect("record a");
+
+        let all = db.top_genres_since(77, 10, 0).await.expect("all time");
+        assert_eq!(all.len(), 2);
+        let now = unix_now();
+        let old = db.top_genres_since(77, 10, now + 60).await.expect("future");
+        assert!(old.is_empty(), "future window must contain no events");
+
+        let stats = db.user_stats(77).await.expect("stats");
+        assert_eq!(stats.tracks, 1);
+        assert_eq!(stats.listens, 2);
+        assert_eq!(stats.genres, 2);
+        assert_eq!(stats.seconds, 0);
     }
 
     #[sqlx::test(migrations = "../../migrations")]

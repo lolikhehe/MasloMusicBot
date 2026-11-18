@@ -89,6 +89,7 @@ pub mod selection {
     pub const TRACK: &str = "track";
     pub const ALBUM: &str = "album";
     pub const ALBUM_REF: &str = "album_ref";
+    pub const LYRICS: &str = "lyrics";
 }
 
 impl AppState {
