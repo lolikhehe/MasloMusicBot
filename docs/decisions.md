@@ -1,6 +1,6 @@
 # Decisions & known limitations
 
-## v2.1 — lyrics, Postgres, compile-time SQL, webhooks (experimental branch)
+## v2.1 — lyrics, Postgres, compile-time SQL, webhooks (promoted to main 2026-11-18)
 
 - `lyricsgenius` was rejected: it is a Python scraper of Genius HTML, and the
   official Genius API returns links rather than full text. Instead `/lyrics`

@@ -1,8 +1,9 @@
-# Horizontal scaling (experimental v2.1)
+# Horizontal scaling (v2.1, promoted to main)
 
-This branch replaces the single-process SQLite setup with a shared Postgres
-backend and an optional webhook listener. It is **experimental**: main remains
-on SQLite + long polling until this design is validated.
+v2.1 replaces the single-process SQLite setup with a shared Postgres backend
+and an optional webhook listener. After the 2026-11-18 promotion, main runs on
+Postgres with long polling by default; webhooks are enabled by setting
+`WEBHOOK_URL`. The design is still young — keep the rollback notes below handy.
 
 ## What had to change
 
