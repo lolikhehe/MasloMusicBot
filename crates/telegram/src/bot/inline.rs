@@ -193,7 +193,9 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
 fn compact_caption(state: &AppState, meta: Option<&TrackMeta>) -> String {
     match meta {
         Some(meta) => i18n::inline_caption(
-            meta.performer.as_deref(),
+            // The artist already rides the audio's performer line; the
+            // parenthesized caption line carries the album when known.
+            meta.album.as_deref().or(meta.performer.as_deref()),
             &meta.hashtags(8),
             &state.bot_username,
         ),

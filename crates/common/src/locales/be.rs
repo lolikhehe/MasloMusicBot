@@ -75,6 +75,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Output format" => Some("Фармат вываду"),
         "ℹ️ Album & artist info" => Some("ℹ️ Пра альбом і выканаўца"),
+        "⚙ Advanced" => Some("⚙ Дадатковае"),
+        "<b>Advanced settings</b>" => Some("<b>Дадатковыя налады</b>"),
         "on" => Some("укл."),
         "off" => Some("выкл."),
         "Usage: <code>/normalize on|off</code> (ffmpeg loudnorm, opt-in)." => Some(

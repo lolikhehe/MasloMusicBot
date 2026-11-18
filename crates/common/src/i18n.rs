@@ -413,6 +413,19 @@ pub fn album_info_label(lang: Lang) -> &'static str {
     pick(lang, "ℹ️ Album & artist info", "ℹ️ Про альбом і виконавця")
 }
 
+pub fn additional_menu_button(lang: Lang) -> &'static str {
+    pick(lang, "⚙ Advanced", "⚙ Додаткове")
+}
+
+/// Title of the advanced settings submenu opened by "⚙ Advanced".
+pub fn additional_title(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "<b>Advanced settings</b>",
+        "<b>Додаткові налаштування</b>",
+    )
+}
+
 pub fn genre_chart_label(lang: Lang) -> &'static str {
     pick(lang, "📊 Genre chart", "📊 Графік жанрів")
 }
@@ -1396,11 +1409,11 @@ pub fn collage_failed(lang: Lang) -> &'static str {
 }
 
 /// Compact caption for inline-delivered audio. Telegram already renders the
-/// track title above the audio, so only the source/artist in parentheses,
-/// genre hashtags and the bot/channel signature go in the caption.
-pub fn inline_caption(performer: Option<&str>, hashtags: &[String], bot_username: &str) -> String {
+/// track title and the artist (performer line), so the parenthesized line
+/// carries the album when known, plus genre hashtags and the signature.
+pub fn inline_caption(label: Option<&str>, hashtags: &[String], bot_username: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
-    if let Some(name) = performer.map(str::trim).filter(|name| !name.is_empty()) {
+    if let Some(name) = label.map(str::trim).filter(|name| !name.is_empty()) {
         lines.push(format!("({name})"));
     }
     if !hashtags.is_empty() {

@@ -75,6 +75,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Output format" => Some("出力形式"),
         "ℹ️ Album & artist info" => Some("ℹ️ アルバムとアーティストの情報"),
+        "⚙ Advanced" => Some("⚙ 詳細設定"),
+        "<b>Advanced settings</b>" => Some("<b>詳細設定</b>"),
         "on" => Some("オン"),
         "off" => Some("オフ"),
         "Usage: <code>/normalize on|off</code> (ffmpeg loudnorm, opt-in)." => {

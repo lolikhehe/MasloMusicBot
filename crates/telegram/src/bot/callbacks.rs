@@ -1,6 +1,6 @@
 //! Inline keyboard callbacks: search choices and per-user settings.
 
-use crate::bot::commands::{language_keyboard, settings_keyboard};
+use crate::bot::commands::{additional_keyboard, language_keyboard, settings_keyboard};
 use crate::bot::handlers::{
     ask_album_confirmation, deliver_album, deliver_track, edit_html, error_text, escape_html,
 };
@@ -68,14 +68,31 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             let _ = bot.answer_callback_query(query.id.clone()).await;
             return Ok(());
         };
-        if payload == "langmenu" || payload == "langback" {
+        if payload == "langmenu"
+            || payload == "langback"
+            || payload == "advmenu"
+            || payload == "advback"
+        {
             let _ = bot.answer_callback_query(query.id.clone()).await;
             let (text, markup) = if payload == "langmenu" {
                 (
                     i18n::language_menu_title(user.lang).to_owned(),
                     language_keyboard(user.lang),
                 )
+            } else if payload == "advmenu" {
+                (
+                    i18n::additional_title(user.lang).to_owned(),
+                    additional_keyboard(
+                        user.lang,
+                        user.tags_enabled,
+                        user.hq_cover,
+                        user.lastfm_stats,
+                        user.genre_analysis,
+                        user.album_info,
+                    ),
+                )
             } else {
+                // Both "langback" and "advback" return to the main view.
                 (
                     i18n::settings_title(
                         user.lang,
@@ -88,16 +105,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                         user.lastfm_stats,
                         user.genre_analysis,
                     ),
-                    settings_keyboard(
-                        user.lang,
-                        user.quality,
-                        user.search_source,
-                        user.tags_enabled,
-                        user.hq_cover,
-                        user.lastfm_stats,
-                        user.genre_analysis,
-                        user.album_info,
-                    ),
+                    settings_keyboard(user.lang, user.quality, user.search_source),
                 )
             };
             bot.edit_message_text(message.chat.id, message.id, text)
@@ -110,7 +118,10 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             Some((setting, value)) => {
                 if let Some(updated) = apply_setting(&state, user_id, &user, setting, value).await?
                 {
-                    refresh_settings(&state, &bot, &query, &updated).await?;
+                    // The toggle settings live in the advanced submenu; refresh
+                    // the view the user is actually looking at.
+                    let advanced = matches!(setting, "tags" | "hq" | "lstats" | "gan" | "ain");
+                    refresh_settings(&state, &bot, &query, &updated, advanced).await?;
                     let _ = bot
                         .answer_callback_query(query.id.clone())
                         .text(i18n::settings_saved(updated.lang))
@@ -514,37 +525,47 @@ async fn refresh_settings(
     bot: &Bot,
     query: &CallbackQuery,
     user: &common::domain::UserRecord,
+    advanced: bool,
 ) -> HandlerResult {
     let Some(message) = query.regular_message() else {
         return Ok(());
     };
-    let mut body = i18n::settings_title(
-        user.lang,
-        user.quality,
-        user.lang,
-        user.search_source,
-        user.tags_enabled,
-        user.lastfm_user.as_deref(),
-        user.hq_cover,
-        user.lastfm_stats,
-        user.genre_analysis,
-    );
-    if !state.config.search_providers.contains(&user.search_source) {
-        body.push_str("\n\n");
-        body.push_str(i18n::search_source_blocked(user.lang));
-    }
-    bot.edit_message_text(message.chat.id, message.id, body)
-        .parse_mode(ParseMode::Html)
-        .reply_markup(settings_keyboard(
+    let (body, markup) = if advanced {
+        (
+            i18n::additional_title(user.lang).to_owned(),
+            additional_keyboard(
+                user.lang,
+                user.tags_enabled,
+                user.hq_cover,
+                user.lastfm_stats,
+                user.genre_analysis,
+                user.album_info,
+            ),
+        )
+    } else {
+        let mut body = i18n::settings_title(
             user.lang,
             user.quality,
+            user.lang,
             user.search_source,
             user.tags_enabled,
+            user.lastfm_user.as_deref(),
             user.hq_cover,
             user.lastfm_stats,
             user.genre_analysis,
-            user.album_info,
-        ))
+        );
+        if !state.config.search_providers.contains(&user.search_source) {
+            body.push_str("\n\n");
+            body.push_str(i18n::search_source_blocked(user.lang));
+        }
+        (
+            body,
+            settings_keyboard(user.lang, user.quality, user.search_source),
+        )
+    };
+    bot.edit_message_text(message.chat.id, message.id, body)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(markup)
         .await?;
     Ok(())
 }

@@ -115,16 +115,10 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
     Some(command)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn settings_keyboard(
     lang: Lang,
     quality: u32,
     search_source: Provider,
-    tags_enabled: bool,
-    hq_cover: bool,
-    lastfm_stats: bool,
-    genre_analysis: bool,
-    album_info: bool,
 ) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = [128u32, 192, 256, 320]
         .chunks(2)
@@ -165,6 +159,32 @@ pub fn settings_keyboard(
             })
             .collect(),
     );
+    rows.push(vec![InlineKeyboardButton::callback(
+        i18n::additional_menu_button(lang),
+        "s:advmenu",
+    )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{} {}",
+            i18n::language_menu_button(lang),
+            i18n::language_button(lang)
+        ),
+        "s:langmenu",
+    )]);
+    InlineKeyboardMarkup::new(rows)
+}
+
+/// Advanced settings submenu: the rarely-used toggles live here so the main
+/// /settings view stays compact. `s:advback` returns to /settings.
+pub fn additional_keyboard(
+    lang: Lang,
+    tags_enabled: bool,
+    hq_cover: bool,
+    lastfm_stats: bool,
+    genre_analysis: bool,
+    album_info: bool,
+) -> InlineKeyboardMarkup {
+    let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
     rows.push(vec![InlineKeyboardButton::callback(
         format!(
             "{}{}",
@@ -210,12 +230,8 @@ pub fn settings_keyboard(
         "gn:c:10",
     )]);
     rows.push(vec![InlineKeyboardButton::callback(
-        format!(
-            "{} {}",
-            i18n::language_menu_button(lang),
-            i18n::language_button(lang)
-        ),
-        "s:langmenu",
+        i18n::back_button(lang),
+        "s:advback",
     )]);
     InlineKeyboardMarkup::new(rows)
 }
@@ -301,11 +317,6 @@ pub async fn handle_command(
                     lang,
                     user_record.quality,
                     user_record.search_source,
-                    user_record.tags_enabled,
-                    user_record.hq_cover,
-                    user_record.lastfm_stats,
-                    user_record.genre_analysis,
-                    user_record.album_info,
                 ))
                 .await?;
         }
