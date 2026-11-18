@@ -409,6 +409,10 @@ pub fn genre_analysis_label(lang: Lang) -> &'static str {
     pick(lang, "🎛 Genre analyzer", "🎛 Аналізатор жанрів")
 }
 
+pub fn album_info_label(lang: Lang) -> &'static str {
+    pick(lang, "ℹ️ Album & artist info", "ℹ️ Про альбом і виконавця")
+}
+
 pub fn genre_chart_label(lang: Lang) -> &'static str {
     pick(lang, "📊 Genre chart", "📊 Графік жанрів")
 }

@@ -115,6 +115,7 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
     Some(command)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn settings_keyboard(
     lang: Lang,
     quality: u32,
@@ -123,6 +124,7 @@ pub fn settings_keyboard(
     hq_cover: bool,
     lastfm_stats: bool,
     genre_analysis: bool,
+    album_info: bool,
 ) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = [128u32, 192, 256, 320]
         .chunks(2)
@@ -194,6 +196,14 @@ pub fn settings_keyboard(
             i18n::genre_analysis_label(lang)
         ),
         format!("s:gan:{}", u8::from(!genre_analysis)),
+    )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        format!(
+            "{}{}",
+            if album_info { "✓ " } else { "" },
+            i18n::album_info_label(lang)
+        ),
+        format!("s:ain:{}", u8::from(!album_info)),
     )]);
     rows.push(vec![InlineKeyboardButton::callback(
         i18n::genre_chart_label(lang),
@@ -295,6 +305,7 @@ pub async fn handle_command(
                     user_record.hq_cover,
                     user_record.lastfm_stats,
                     user_record.genre_analysis,
+                    user_record.album_info,
                 ))
                 .await?;
         }

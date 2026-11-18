@@ -74,6 +74,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("Arrêté : {jobs} téléchargement(s), {prompts} action(s) en attente.")
         }
         "Output format" => Some("Format de sortie"),
+        "ℹ️ Album & artist info" => Some("ℹ️ Infos album et artiste"),
         "on" => Some("activé"),
         "off" => Some("désactivé"),
         "Usage: <code>/normalize on|off</code> (ffmpeg loudnorm, opt-in)." => {

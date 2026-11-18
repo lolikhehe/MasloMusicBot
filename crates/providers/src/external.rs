@@ -31,6 +31,16 @@ impl ArtworkKind {
     }
 }
 
+/// Catalog facts for the album-info message shown before an album download.
+/// Every field is optional; the caption builder shows only what is present.
+#[derive(Debug, Clone, Default)]
+pub struct AlbumFacts {
+    pub artist: Option<String>,
+    pub release_year: Option<String>,
+    pub label: Option<String>,
+    pub genres: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct ExternalResolver {
     client: reqwest::Client,
@@ -435,6 +445,44 @@ impl ExternalResolver {
         })
     }
 
+    /// Catalog facts from Deezer's anonymous `/album/{id}` endpoint (no API
+    /// key). `None` for playlists — they carry no label/genre data — and for
+    /// unknown ids, which Deezer answers with a 200 and no title.
+    pub async fn deezer_album_facts(
+        &self,
+        source_url: Option<&str>,
+    ) -> Result<Option<AlbumFacts>, DownloadError> {
+        let Some(id) = album_id_from_url(source_url, "deezer.com", &["album"]) else {
+            return Ok(None);
+        };
+        let body: DeezerAlbumDetail = self
+            .client
+            .get(format!("https://api.deezer.com/album/{id}"))
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        if body.title.trim().is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(AlbumFacts {
+            artist: body
+                .artist
+                .map(|artist| artist.name)
+                .filter(|name| !name.trim().is_empty()),
+            release_year: body.release_date.as_deref().and_then(deezer_year),
+            label: body.label.filter(|label| !label.trim().is_empty()),
+            genres: body
+                .genres
+                .map(DeezerGenreList::into_names)
+                .unwrap_or_default(),
+        }))
+    }
+
     async fn apple_album(&self, album: &AlbumRef, limit: usize) -> Result<Album, DownloadError> {
         let id = album_id_from_url(album.url.as_deref(), "music.apple.com", &["album"])
             .ok_or_else(|| {
@@ -803,9 +851,82 @@ struct DeezerAlbum {
     tracks: DeezerTrackList,
 }
 
+#[derive(Debug, Deserialize)]
+struct DeezerAlbumDetail {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    artist: Option<DeezerArtist>,
+    #[serde(default)]
+    release_date: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    genres: Option<DeezerGenreList>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeezerGenreList {
+    #[serde(default)]
+    data: Vec<DeezerGenre>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeezerGenre {
+    #[serde(default)]
+    name: Option<String>,
+}
+
+impl DeezerGenreList {
+    fn into_names(self) -> Vec<String> {
+        self.data
+            .into_iter()
+            .filter_map(|genre| genre.name)
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+}
+
+/// Deezer dates arrive as "31-05-2018"; the caption wants just the year.
+fn deezer_year(date: &str) -> Option<String> {
+    date.split('-')
+        .rev()
+        .find(|part| part.len() == 4 && part.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_deezer_album_facts() {
+        let json = r#"{"title":"Night Drive","artist":{"id":13,"name":"Testo"},
+            "release_date":"31-05-2018","label":"Star Records",
+            "genres":{"data":[{"name":"Rock"},{"name":"Pop"},{"name":"  "}]}}"#;
+        let detail: DeezerAlbumDetail = serde_json::from_str(json).expect("json");
+        assert_eq!(detail.title, "Night Drive");
+        assert_eq!(
+            detail.artist.map(|artist| artist.name).as_deref(),
+            Some("Testo")
+        );
+        assert_eq!(
+            deezer_year(detail.release_date.as_deref().unwrap()).as_deref(),
+            Some("2018")
+        );
+        assert_eq!(
+            detail
+                .genres
+                .map(DeezerGenreList::into_names)
+                .unwrap_or_default(),
+            vec!["Rock".to_owned(), "Pop".to_owned()]
+        );
+        // Deezer's "record not found" answer is a 200 with no title.
+        let missing: DeezerAlbumDetail =
+            serde_json::from_str(r#"{"error":{"type":"DataException"}}"#).expect("json");
+        assert!(missing.title.trim().is_empty());
+    }
 
     #[test]
     fn parses_deezer_playlist_search_page() {

@@ -492,6 +492,8 @@ pub struct UserRecord {
     pub lastfm_stats: bool,
     /// Per-user switch for the genre analyzer (/genres).
     pub genre_analysis: bool,
+    /// Per-user switch for the album-info photo sent before album downloads.
+    pub album_info: bool,
     /// Output container chosen by `/convert`: `auto`, `m4a`, `mp3`, `flac`, `opus`.
     pub audio_format: String,
     /// Opt-in ffmpeg loudnorm pass.

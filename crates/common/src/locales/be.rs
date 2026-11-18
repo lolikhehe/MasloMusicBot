@@ -74,6 +74,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("Спынена: спамповак — {jobs}, чакаючых дзеянняў — {prompts}.")
         }
         "Output format" => Some("Фармат вываду"),
+        "ℹ️ Album & artist info" => Some("ℹ️ Пра альбом і выканаўца"),
         "on" => Some("укл."),
         "off" => Some("выкл."),
         "Usage: <code>/normalize on|off</code> (ffmpeg loudnorm, opt-in)." => Some(

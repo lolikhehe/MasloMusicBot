@@ -13,7 +13,8 @@ use std::borrow::Cow;
 use std::time::Instant;
 use teloxide::prelude::*;
 use teloxide::types::{
-    InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntityKind, MessageId, ParseMode,
+    InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, MessageEntityKind, MessageId,
+    ParseMode,
 };
 use tracing::{debug, info, warn};
 
@@ -470,6 +471,7 @@ pub async fn deliver_album(
     tags_enabled: bool,
     hq_cover: bool,
     genre_analysis: bool,
+    album_info: bool,
     job: Option<&crate::bot::jobs::JobGuard>,
 ) -> HandlerResult {
     let total = album.tracks.len();
@@ -481,6 +483,11 @@ pub async fn deliver_album(
         i18n::album_started(lang, &title, total),
     )
     .await;
+
+    // The album-info toggle sends the cover and facts before the first track.
+    if album_info && let Some(meta) = album.tracks.first().and_then(|track| track.meta.as_ref()) {
+        send_album_info(state, bot, chat, &album, meta).await;
+    }
 
     // Hold a slot for the whole download+upload, not just the download part:
     // releasing the user semaphore before the Telegram upload let ~10 large
@@ -573,6 +580,155 @@ pub async fn deliver_album(
     }
     let _ = edit_html(bot, chat, progress, final_text).await;
     Ok(())
+}
+
+/// Cover photo + caption sent before an album's tracks (the
+/// "ℹ️ Album & artist info" toggle in /settings). Best-effort: every source
+/// is optional, a failed fetch only drops its line or the photo.
+async fn send_album_info(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    album: &common::domain::Album,
+    meta: &TrackMeta,
+) {
+    let performer = meta
+        .performer
+        .as_deref()
+        .map(str::trim)
+        .filter(|artist| !artist.is_empty());
+    let facts = state.manager.album_facts(album).await;
+    // The album-level name from the catalog is fresher than a track's performer.
+    let artist = facts
+        .as_ref()
+        .and_then(|facts| facts.artist.as_deref())
+        .map(str::trim)
+        .filter(|artist| !artist.is_empty())
+        .or(performer);
+    let Some(artist) = artist else {
+        return;
+    };
+    let bio = match &state.lastfm {
+        Some(client) => client.artist_bio(artist).await.ok().flatten(),
+        None => None,
+    };
+    let caption = album_info_caption(&album.title, artist, facts.as_ref(), bio.as_deref());
+    let Some(url) = meta
+        .thumbnail_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    else {
+        let _ = send::send_html(bot, chat, caption).await;
+        return;
+    };
+    // Apple artwork is stored at 600x600; the CDN serves the same asset at
+    // any size. Deezer thumbnails are already 1000px (`cover_xl`).
+    let url = url
+        .replace("600x600bb", "1000x1000bb")
+        .replace("100x100bb", "1000x1000bb");
+    match providers::http::fetch_bytes(&state.http, &url, 8 * 1024 * 1024).await {
+        Some(bytes) => {
+            let _ = bot
+                .send_photo(chat, InputFile::memory(bytes))
+                .caption(caption)
+                .parse_mode(ParseMode::Html)
+                .await;
+        }
+        None => {
+            let _ = send::send_html(bot, chat, caption).await;
+        }
+    }
+}
+
+/// Caption for the album-info photo. Deliberately language-neutral (symbols,
+/// names, numbers) so it needs no per-locale strings. The bio is truncated to
+/// keep the whole caption under Telegram's 1024-character limit.
+fn album_info_caption(
+    title: &str,
+    artist: &str,
+    facts: Option<&providers::AlbumFacts>,
+    bio: Option<&str>,
+) -> String {
+    let mut header = format!(
+        "💿 <b>{}</b>\n🎤 {}",
+        escape_html(title.trim()),
+        escape_html(artist.trim())
+    );
+    if let Some(facts) = facts {
+        let mut parts: Vec<String> = Vec::new();
+        if let Some(year) = facts
+            .release_year
+            .as_deref()
+            .map(str::trim)
+            .filter(|year| !year.is_empty())
+        {
+            parts.push(escape_html(year));
+        }
+        if let Some(label) = facts
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+        {
+            parts.push(escape_html(&label.chars().take(60).collect::<String>()));
+        }
+        let genres = facts
+            .genres
+            .iter()
+            .take(3)
+            .map(|genre| escape_html(genre.trim()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !genres.is_empty() {
+            parts.push(genres);
+        }
+        if !parts.is_empty() {
+            let line = parts.join(" · ");
+            header.push_str("\n📅 ");
+            header.push_str(&line);
+        }
+    }
+    let Some(bio) = bio.map(str::trim).filter(|bio| !bio.is_empty()) else {
+        return header;
+    };
+    // Telegram caps photo captions at 1024 characters; keep headroom.
+    let budget = 1000usize.saturating_sub(header.chars().count() + 2);
+    if budget < 80 {
+        return header;
+    }
+    let short: String = bio.chars().take(budget.min(600)).collect();
+    format!("{header}\n\n{}", escape_html(short.trim_end()))
+}
+
+#[cfg(test)]
+mod album_info_tests {
+    use super::*;
+
+    #[test]
+    fn album_info_caption_fits_limit() {
+        let facts = providers::AlbumFacts {
+            release_year: Some("2018".to_owned()),
+            label: Some("Star Records".to_owned()),
+            genres: vec!["Rock".to_owned(), "Pop".to_owned()],
+            ..Default::default()
+        };
+        let bio = "word ".repeat(400);
+        let caption = album_info_caption("Night <Drive>", "Testo & Band", Some(&facts), Some(&bio));
+        assert!(
+            caption.chars().count() <= 1000,
+            "caption stays under Telegram's cap"
+        );
+        assert!(caption.contains("💿 <b>Night &lt;Drive&gt;</b>"));
+        assert!(caption.contains("🎤 Testo &amp; Band"));
+        assert!(caption.contains("📅 2018 · Star Records · Rock, Pop"));
+    }
+
+    #[test]
+    fn album_info_caption_without_extras() {
+        let bare = album_info_caption("Title", "Artist", None, None);
+        assert_eq!(bare, "💿 <b>Title</b>\n🎤 Artist");
+    }
 }
 
 /// Note appended to the caption when a FLAC render exceeded Telegram's size

@@ -74,6 +74,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("Zastaveno: stahování — {jobs}, čekajících akcí — {prompts}.")
         }
         "Output format" => Some("Výstupní formát"),
+        "ℹ️ Album & artist info" => Some("ℹ️ O albu a interpretovi"),
         "on" => Some("zap."),
         "off" => Some("vyp."),
         "Usage: <code>/normalize on|off</code> (ffmpeg loudnorm, opt-in)." => {

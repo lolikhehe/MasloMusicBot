@@ -9,7 +9,7 @@ use common::domain::{
 };
 use common::error::{AppResult, DownloadError};
 use moka::future::Cache;
-use providers::external::ExternalResolver;
+use providers::external::{AlbumFacts, ExternalResolver};
 use providers::ytdlp::YtDlp;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -434,6 +434,25 @@ impl DownloadManager {
             self.ytdlp
                 .playlist(album, self.config.max_collection_tracks)
                 .await
+        }
+    }
+
+    /// Best-effort catalog facts for the album-info message: `None` when the
+    /// source has nothing (non-Deezer albums, playlists, catalog misses).
+    pub async fn album_facts(&self, album: &Album) -> Option<AlbumFacts> {
+        if album.provider != Provider::Deezer {
+            return None;
+        }
+        match self
+            .external
+            .deezer_album_facts(album.source_url.as_deref())
+            .await
+        {
+            Ok(facts) => facts,
+            Err(error) => {
+                warn!(%error, "album facts unavailable");
+                None
+            }
         }
     }
 

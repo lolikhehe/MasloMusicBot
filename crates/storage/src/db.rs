@@ -341,7 +341,8 @@ impl Db {
     async fn user_by_id(&self, id: i64) -> AppResult<Option<UserRecord>> {
         let row = sqlx::query!(
             "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,
-                    hq_cover, lastfm_stats, genre_analysis, audio_format, normalize_audio
+                    hq_cover, lastfm_stats, genre_analysis, album_info, audio_format,
+                    normalize_audio
              FROM users WHERE user_id = $1",
             id
         )
@@ -361,6 +362,7 @@ impl Db {
             hq_cover: row.hq_cover != 0,
             lastfm_stats: row.lastfm_stats != 0,
             genre_analysis: row.genre_analysis != 0,
+            album_info: row.album_info != 0,
             audio_format: row.audio_format,
             normalize_audio: row.normalize_audio != 0,
         }))
@@ -492,6 +494,19 @@ impl Db {
     pub async fn set_genre_analysis(&self, id: i64, enabled: bool) -> AppResult<()> {
         sqlx::query!(
             "UPDATE users SET genre_analysis = $1, last_seen_at = $2 WHERE user_id = $3",
+            i64::from(enabled),
+            unix_now(),
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn set_album_info(&self, id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE users SET album_info = $1, last_seen_at = $2 WHERE user_id = $3",
             i64::from(enabled),
             unix_now(),
             id
@@ -1448,6 +1463,11 @@ mod tests {
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert_eq!(user.lastfm_user.as_deref(), Some("TestUser"));
         assert!(user.hq_cover);
+        assert!(user.album_info);
+        db.set_album_info(42, false).await.expect("album info");
+        let user = db.ensure_user(42, Lang::Uk).await.expect("user");
+        assert!(!user.album_info);
+        db.set_album_info(42, true).await.expect("album info on");
         db.set_lastfm_user(42, None).await.expect("lastfm off");
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert!(user.lastfm_user.is_none());

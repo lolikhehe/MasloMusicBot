@@ -74,6 +74,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("已停止：{jobs} 个下载任务，{prompts} 个待处理操作。")
         }
         "Output format" => Some("输出格式"),
+        "ℹ️ Album & artist info" => Some("ℹ️ 专辑与艺人信息"),
         "on" => Some("开启"),
         "off" => Some("关闭"),
         "Usage: <code>/normalize on|off</code> (ffmpeg loudnorm, opt-in)." => {

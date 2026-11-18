@@ -334,6 +334,44 @@ impl LastFmClient {
         Ok(top.toptags.map(TagList::into_names).unwrap_or_default())
     }
 
+    /// Short artist biography from `artist.getinfo` (`bio.summary`) with the
+    /// trailing "Read more on Last.fm" link stripped. `None` when Last.fm has
+    /// no biography for the name.
+    pub async fn artist_bio(&self, artist: &str) -> Result<Option<String>, DownloadError> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return Ok(None);
+        }
+        let body: ArtistInfoResponse = self
+            .client
+            .get(API_URL)
+            .query(&[
+                ("method", "artist.getinfo"),
+                ("artist", artist),
+                ("api_key", &self.api_key),
+                ("format", "json"),
+                ("autocorrect", "1"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        let bio = body
+            .artist
+            .and_then(|artist| artist.bio)
+            .and_then(|bio| bio.summary)
+            .map(|summary| {
+                let cut = summary.find("<a ").unwrap_or(summary.len());
+                summary[..cut].trim().to_owned()
+            })
+            .filter(|summary| !summary.is_empty());
+        Ok(bio)
+    }
+
     /// Public profile totals: scrobbles, library size and country.
     pub async fn profile(&self, user: &str) -> Result<ProfileSummary, DownloadError> {
         let body: UserInfoResponse = self
@@ -552,6 +590,24 @@ struct TrackInfo {
 struct ArtistTagsResponse {
     #[serde(default)]
     toptags: Option<TagList>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistInfoResponse {
+    #[serde(default)]
+    artist: Option<ArtistBioInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistBioInfo {
+    #[serde(default)]
+    bio: Option<ArtistBio>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistBio {
+    #[serde(default)]
+    summary: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

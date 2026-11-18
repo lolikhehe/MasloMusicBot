@@ -58,6 +58,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             user.tags_enabled,
             user.hq_cover,
             user.genre_analysis,
+            user.album_info,
         )
         .await?;
     } else if let Some(id) = data.strip_prefix("alx:") {
@@ -95,6 +96,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
                         user.hq_cover,
                         user.lastfm_stats,
                         user.genre_analysis,
+                        user.album_info,
                     ),
                 )
             };
@@ -343,6 +345,7 @@ async fn handle_album_confirm(
     tags_enabled: bool,
     hq_cover: bool,
     genre_analysis: bool,
+    album_info: bool,
 ) -> HandlerResult {
     let _ = bot.answer_callback_query(query.id.clone()).await;
     let Some(message) = query.regular_message() else {
@@ -391,6 +394,7 @@ async fn handle_album_confirm(
         tags_enabled,
         hq_cover,
         genre_analysis,
+        album_info,
         Some(&job),
     )
     .await;
@@ -467,6 +471,13 @@ async fn apply_setting(
             state.db.set_genre_analysis(user_id, enabled).await?;
             updated.genre_analysis = enabled;
         }
+        "ain" => {
+            let Some(enabled) = parse_bool(value) else {
+                return Ok(None);
+            };
+            state.db.set_album_info(user_id, enabled).await?;
+            updated.album_info = enabled;
+        }
         "q" => {
             let Ok(quality) = value.parse::<u32>() else {
                 return Ok(None);
@@ -532,6 +543,7 @@ async fn refresh_settings(
             user.hq_cover,
             user.lastfm_stats,
             user.genre_analysis,
+            user.album_info,
         ))
         .await?;
     Ok(())
