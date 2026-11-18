@@ -44,6 +44,12 @@ services:
         condition: service_healthy
     volumes:
       - bot-data:/data
+      # Local Bot API server returns absolute file paths in `getFile`; its
+      # HTTP file endpoint does not serve them in --local mode. Read the files
+      # from its volume directly (gid 101 owns the 0640 files).
+      - botapi:/var/lib/telegram-bot-api:ro
+    group_add:
+      - "101" # telegram-bot-api group in the aiogram image
     # Both listeners are unauthenticated: /metrics and the webhook receiver.
     # Keep them on loopback; the Rust gateway reaches 8080 over the internal
     # Docker network, so no public host port is needed.

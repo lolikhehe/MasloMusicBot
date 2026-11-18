@@ -299,8 +299,18 @@ pub async fn handle_document(
         return Ok(());
     }
     let file = bot.get_file(document.file.id.clone()).await?;
-    let mut bytes = Vec::new();
-    bot.download_file(&file.path, &mut bytes).await?;
+    let bytes = if std::path::Path::new(&file.path).is_absolute() {
+        // Local Bot API server: `getFile` returns an absolute path on its
+        // volume. Its HTTP /file/bot<token>/... endpoint returns 404 in
+        // --local mode, so read the shared volume directly (compose mounts it
+        // read-only and adds the bot to gid 101). Cloud API paths are relative
+        // and still go through Teloxide's HTTP download below.
+        tokio::fs::read(&file.path).await?
+    } else {
+        let mut bytes = Vec::new();
+        bot.download_file(&file.path, &mut bytes).await?;
+        bytes
+    };
     if bytes.len() > 1_000_000 {
         bot.send_message(msg.chat.id, i18n::import_failed(lang))
             .await?;
