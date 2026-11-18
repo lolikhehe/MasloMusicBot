@@ -1,5 +1,22 @@
 # Decisions & known limitations
 
+## v2.4 — output format, loudnorm, playlists, opt-in groups (2026-11-18)
+
+- `/convert` and `/normalize` persist per-user preferences (migration 0004).
+  Post-processing happens on the already-downloaded temp file with ffmpeg; the
+  converted file stays in the same temp directory so the janitor still owns
+  it. Any ffmpeg failure logs a warning and keeps the original audio, because
+  losing a successful download would be worse than delivering the source
+  format. `/convert auto` with loudnorm off is a no-op.
+- `/playlist` searches Deezer's public playlist endpoint and reuses the
+  existing `album_ref` selection + confirmation flow. Apple Music playlists
+  are discoverable by URL (the existing `apple_album` resolver), not by name:
+  the public iTunes Search API does not expose playlist track lists reliably.
+- Group mode is opt-in per chat (migration 0005): a group is silent until an
+  admin runs `/groupmode on`. Private chats are always allowed. The
+  `/groupmode` command itself is reachable while the group is still disabled
+  so an admin can enable it.
+
 ## v2.3 — persistent job ledger, webhook e2e, replica tests, operator scripts (2026-11-18)
 
 - Downloads are now recorded in `download_jobs` (migration 0003). `INSERT … ON

@@ -441,6 +441,82 @@ async fn two_replicas_share_selections_and_rate_limits() {
     assert!(db.rate_limit_hits(limited_user).await.expect("hits") >= 2);
 }
 
+#[tokio::test]
+async fn convert_normalize_and_group_mode_gate() {
+    let bot = spawn_bot().await;
+    let db = Db::connect(&database_url()).await.expect("db");
+    inject_text(&bot.api, 900, 901, "/convert mp3");
+    inject_text(&bot.api, 901, 901, "/normalize on");
+
+    wait_until(10_000, || async { messages(&bot.api).len() >= 2 })
+        .await
+        .expect("no answers to /convert and /normalize");
+    let texts: Vec<String> = messages(&bot.api)
+        .iter()
+        .filter_map(|message| message["text"].as_str().map(str::to_owned))
+        .collect();
+    assert!(texts.iter().any(|text| text.contains("mp3")), "{texts:?}");
+    assert!(
+        texts.iter().any(|text| text.contains("loudnorm")),
+        "{texts:?}"
+    );
+
+    let group_id = -60_000_000 - (std::process::id() as i64 % 100_000);
+    let group_help = |update_id: u64| -> Value {
+        serde_json::json!({
+            "update_id": update_id,
+            "message": {
+                "message_id": update_id,
+                "date": 1_700_000_000u64,
+                "chat": {"id": group_id, "type": "group", "title": "Test group"},
+                "from": {"id": 901, "is_bot": false, "first_name": "Tester", "language_code": "en"},
+                "text": "/me"
+            }
+        })
+    };
+
+    let before = messages(&bot.api).len();
+    bot.api
+        .shared
+        .updates
+        .lock()
+        .expect("updates")
+        .push_back(group_help(910));
+    wait_until(10_000, || async { messages(&bot.api).len() > before })
+        .await
+        .expect("group message was not answered");
+    let last = messages(&bot.api).last().expect("answer")["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    assert!(
+        last.contains("private chat") || last.contains("приватному"),
+        "disabled group must be rejected: {last}"
+    );
+
+    db.set_chat_enabled(group_id, true, 901)
+        .await
+        .expect("enable group");
+    let before = messages(&bot.api).len();
+    bot.api
+        .shared
+        .updates
+        .lock()
+        .expect("updates")
+        .push_back(group_help(911));
+    wait_until(10_000, || async { messages(&bot.api).len() > before })
+        .await
+        .expect("enabled group was not answered");
+    let last = messages(&bot.api).last().expect("answer")["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_owned();
+    assert!(
+        last.contains("Your stats") || last.contains("Ваша статистика"),
+        "enabled group must get /me stats: {last}"
+    );
+}
+
 /// Local mock load harness. These numbers describe the whole mocked stack
 /// (binary + mock Bot API + Postgres on localhost) and are NOT S1–S4 figures.
 #[tokio::test]

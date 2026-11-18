@@ -219,6 +219,11 @@ impl AppState {
             .await;
     }
 
+    /// Private chats are always allowed; groups need an admin's opt-in.
+    pub async fn chat_allowed(&self, chat_id: i64) -> AppResult<bool> {
+        self.db.chat_enabled(chat_id).await
+    }
+
     pub fn new_selection_id(&self) -> String {
         let mut id = uuid::Uuid::new_v4().simple().to_string();
         id.truncate(16);

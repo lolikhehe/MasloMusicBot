@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chats (chat_id, enabled, added_by, created_at)\n             VALUES ($1, $2, $3, $4)\n             ON CONFLICT(chat_id) DO UPDATE SET enabled = excluded.enabled,\n                added_by = excluded.added_by",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bool",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bb9c7f6504edfd2f79458945a7d8dff06e3c5664f583ec08c563aa0e77842e77"
+}

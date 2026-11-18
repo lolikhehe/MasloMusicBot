@@ -35,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/convert auto|m4a|mp3|flac|opus — output format for next downloads\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/groupmode on|off — admin: allow the bot in this group",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/convert auto|m4a|mp3|flac|opus — формат наступних завантажень\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/groupmode on|off — адмін: дозволити бота в цій групі",
     );
     if is_admin {
         format!(
@@ -187,6 +187,84 @@ pub fn cancel_result(lang: Lang, ok: bool) -> &'static str {
             "Активного завдання з таким id немає.",
         ),
     }
+}
+
+pub fn convert_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/convert auto|m4a|mp3|flac|opus</code> — applies to your next downloads.",
+        "Використання: <code>/convert auto|m4a|mp3|flac|opus</code> — застосується до наступних завантажень.",
+    )
+}
+
+pub fn convert_saved(lang: Lang, format: &str, normalize: bool) -> String {
+    let label = pick(lang, "Output format", "Формат");
+    let norm = pick(lang, "on", "увімк.");
+    let plain = pick(lang, "off", "вимк.");
+    format!(
+        "{label}: <b>{format}</b>\nloudnorm: <b>{}</b>",
+        if normalize { norm } else { plain }
+    )
+}
+
+pub fn normalize_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/normalize on|off</code> (ffmpeg loudnorm, opt-in).",
+        "Використання: <code>/normalize on|off</code> (ffmpeg loudnorm, за бажанням).",
+    )
+}
+
+pub fn groupmode_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Admin only. Usage: <code>/groupmode on|off</code>",
+        "Тільки для адмінів. Використання: <code>/groupmode on|off</code>",
+    )
+}
+
+pub fn groupmode_result(lang: Lang, enabled: bool) -> &'static str {
+    match enabled {
+        true => pick(
+            lang,
+            "✅ Group mode enabled.",
+            "✅ Груповий режим увімкнено.",
+        ),
+        false => pick(
+            lang,
+            "🛑 Group mode disabled.",
+            "🛑 Груповий режим вимкнено.",
+        ),
+    }
+}
+
+pub fn playlist_searching(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "🔎 Searching public playlists…",
+        "🔎 Шукаю публічні плейлисти…",
+    )
+}
+
+pub fn playlist_results(lang: Lang, query: &str, count: usize) -> String {
+    let label = pick(lang, "Playlists", "Плейлисти");
+    format!("{label} «{query}» · {count}")
+}
+
+pub fn no_playlists_found(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "😕 No public playlists found.",
+        "😕 Публічних плейлистів не знайдено.",
+    )
+}
+
+pub fn playlist_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/playlist &lt;name&gt;</code> — search public playlists (Deezer). Apple Music links already work as album URLs.",
+        "Використання: <code>/playlist &lt;назва&gt;</code> — пошук публічних плейлистів (Deezer). Посилання Apple Music уже працюють як альбоми.",
+    )
 }
 
 pub fn broadcast_usage(lang: Lang) -> &'static str {
@@ -942,6 +1020,13 @@ mod tests {
             assert!(!broadcast_usage(lang).is_empty());
             assert!(!genre_chart_usage_period(lang).is_empty());
             assert!(!user_stats(lang, 1, 2, 3, 3600).is_empty());
+            assert!(!convert_usage(lang).is_empty());
+            assert!(!normalize_usage(lang).is_empty());
+            assert!(!groupmode_usage(lang).is_empty());
+            assert!(!playlist_usage(lang).is_empty());
+            assert!(!playlist_searching(lang).is_empty());
+            assert!(!playlist_results(lang, "x", 1).is_empty());
+            assert!(!no_playlists_found(lang).is_empty());
         }
     }
 

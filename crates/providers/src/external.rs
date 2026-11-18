@@ -235,6 +235,33 @@ impl ExternalResolver {
         Ok(deezer_albums_from_page(page))
     }
 
+    /// Public Deezer playlist search (no auth). Used by `/playlist <name>`;
+    /// Apple Music playlist URLs continue to resolve through the album path.
+    pub async fn deezer_playlist_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<AlbumSearchResult>, DownloadError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(Vec::new());
+        }
+        let limit = limit.clamp(1, 10).to_string();
+        let page: DeezerPlaylistList = self
+            .client
+            .get("https://api.deezer.com/search/playlist")
+            .query(&[("q", query), ("limit", limit.as_str())])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        Ok(deezer_playlists_from_page(page))
+    }
+
     /// Resolve real artwork for a Last.fm chart row. Last.fm frequently returns
     /// its grey-star placeholder for top tracks/artists, so the Deezer public
     /// catalog is used as a fallback. Returns the largest available image URL.
@@ -537,6 +564,22 @@ fn album_id_from_url(url: Option<&str>, host: &str, kinds: &[&str]) -> Option<St
         .map(|id| (*id).to_owned())
 }
 
+fn deezer_playlists_from_page(page: DeezerPlaylistList) -> Vec<AlbumSearchResult> {
+    page.data
+        .into_iter()
+        .filter(|item| !item.title.trim().is_empty())
+        .map(|item| AlbumSearchResult {
+            provider: Provider::Deezer,
+            url: item
+                .link
+                .unwrap_or_else(|| format!("https://www.deezer.com/playlist/{}", item.id)),
+            title: item.title,
+            artist: item.creator_name,
+            track_count: item.nb_tracks,
+        })
+        .collect()
+}
+
 fn deezer_albums_from_page(page: DeezerAlbumList) -> Vec<AlbumSearchResult> {
     let mut results = Vec::with_capacity(page.data.len());
     for item in page.data {
@@ -732,6 +775,24 @@ struct DeezerAlbumItem {
 }
 
 #[derive(Debug, Deserialize)]
+struct DeezerPlaylistList {
+    #[serde(default)]
+    data: Vec<DeezerPlaylistItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeezerPlaylistItem {
+    id: u64,
+    title: String,
+    #[serde(default)]
+    nb_tracks: Option<u32>,
+    #[serde(default)]
+    creator_name: Option<String>,
+    #[serde(default)]
+    link: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct DeezerAlbum {
     title: String,
     #[serde(default)]
@@ -745,6 +806,22 @@ struct DeezerAlbum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_deezer_playlist_search_page() {
+        let json = r#"{"data":[
+            {"id":42,"title":"Night Drive","nb_tracks":17,"creator_name":"DJ Test",
+             "link":"https://www.deezer.com/playlist/42"},
+            {"id":43,"title":"   ","nb_tracks":1,"creator_name":null,"link":null}
+        ]}"#;
+        let page: DeezerPlaylistList = serde_json::from_str(json).expect("json");
+        let items = deezer_playlists_from_page(page);
+        assert_eq!(items.len(), 1, "blank titles are skipped");
+        assert_eq!(items[0].title, "Night Drive");
+        assert_eq!(items[0].track_count, Some(17));
+        assert_eq!(items[0].artist.as_deref(), Some("DJ Test"));
+        assert_eq!(items[0].url, "https://www.deezer.com/playlist/42");
+    }
 
     #[test]
     fn parses_deezer_search_page() {

@@ -46,6 +46,21 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
     };
 
     if text.trim_start().starts_with('/') {
+        // An admin must be able to enable the group before it is allowed.
+        let groupmode = text
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("/groupmode");
+        if !msg.chat.is_private() && !groupmode && !state.chat_allowed(msg.chat.id.0).await? {
+            let lang = common::domain::Lang::from_telegram_hint(
+                msg.from
+                    .as_ref()
+                    .and_then(|user| user.language_code.as_deref()),
+                state.config.default_lang,
+            );
+            send::send_html(&bot, msg.chat.id, i18n::private_only(lang)).await?;
+            return Ok(());
+        }
         return match commands::parse_command(text, &state.bot_username) {
             Some(Command::Unknown(_)) => {
                 commands::handle_command(&state, &bot, &msg, Command::Help).await
@@ -55,7 +70,7 @@ pub async fn handle_message(state: AppState, bot: Bot, msg: Message) -> HandlerR
         };
     }
 
-    if !msg.chat.is_private() {
+    if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
         let lang = common::domain::Lang::from_telegram_hint(
             msg.from.as_ref().and_then(|u| u.language_code.as_deref()),
             state.config.default_lang,
@@ -796,6 +811,11 @@ async fn deliver_track_inner(
         && job.cancelled().await
     {
         return Err(crate::bot::jobs::JobGuard::cancelled_error().into());
+    }
+
+    if let Ok((format, normalize)) = state.db.audio_prefs(user_id).await {
+        downloader::postprocess_audio(&mut prepared, &format, normalize, &state.config.ffmpeg_path)
+            .await;
     }
 
     metrics::counter!("music_bot_uploads_total").increment(1);

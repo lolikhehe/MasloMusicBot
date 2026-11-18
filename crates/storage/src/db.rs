@@ -303,7 +303,7 @@ impl Db {
     async fn user_by_id(&self, id: i64) -> AppResult<Option<UserRecord>> {
         let row = sqlx::query!(
             "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,
-                    hq_cover, lastfm_stats, genre_analysis
+                    hq_cover, lastfm_stats, genre_analysis, audio_format, normalize_audio
              FROM users WHERE user_id = $1",
             id
         )
@@ -323,6 +323,8 @@ impl Db {
             hq_cover: row.hq_cover != 0,
             lastfm_stats: row.lastfm_stats != 0,
             genre_analysis: row.genre_analysis != 0,
+            audio_format: row.audio_format,
+            normalize_audio: row.normalize_audio != 0,
         }))
     }
 
@@ -460,6 +462,77 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(())
+    }
+
+    pub async fn set_audio_format(&self, id: i64, format: &str) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE users SET audio_format = $1, last_seen_at = $2 WHERE user_id = $3",
+            format,
+            unix_now(),
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn set_normalize_audio(&self, id: i64, enabled: bool) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE users SET normalize_audio = $1, last_seen_at = $2 WHERE user_id = $3",
+            i64::from(enabled),
+            unix_now(),
+            id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn audio_prefs(&self, id: i64) -> AppResult<(String, bool)> {
+        let row = sqlx::query!(
+            "SELECT audio_format, normalize_audio FROM users WHERE user_id = $1",
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(row
+            .map(|row| (row.audio_format, row.normalize_audio != 0))
+            .unwrap_or_else(|| ("auto".to_owned(), false)))
+    }
+
+    pub async fn set_chat_enabled(
+        &self,
+        chat_id: i64,
+        enabled: bool,
+        added_by: i64,
+    ) -> AppResult<()> {
+        sqlx::query!(
+            "INSERT INTO chats (chat_id, enabled, added_by, created_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT(chat_id) DO UPDATE SET enabled = excluded.enabled,
+                added_by = excluded.added_by",
+            chat_id,
+            enabled,
+            added_by,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn chat_enabled(&self, chat_id: i64) -> AppResult<bool> {
+        Ok(
+            sqlx::query_scalar!("SELECT enabled FROM chats WHERE chat_id = $1", chat_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_err)?
+                .unwrap_or(false),
+        )
     }
 
     /// Record one downloaded track for the genre analyzer. The user's toggle is
@@ -1179,6 +1252,33 @@ mod tests {
         assert!(db.allow(7, 2).await.expect("first"));
         assert!(db.allow(7, 2).await.expect("second"));
         assert!(!db.allow(7, 2).await.expect("third"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn audio_prefs_and_group_mode_roundtrip(pool: PgPool) {
+        let db = db(pool).await;
+        db.ensure_user(88, Lang::En).await.expect("user");
+        assert_eq!(
+            db.audio_prefs(88).await.expect("prefs"),
+            ("auto".to_owned(), false)
+        );
+        db.set_audio_format(88, "mp3").await.expect("format");
+        db.set_normalize_audio(88, true).await.expect("normalize");
+        assert_eq!(
+            db.audio_prefs(88).await.expect("prefs"),
+            ("mp3".to_owned(), true)
+        );
+        let user = db.ensure_user(88, Lang::En).await.expect("user");
+        assert_eq!(user.audio_format, "mp3");
+        assert!(user.normalize_audio);
+
+        assert!(!db.chat_enabled(-1001).await.expect("chat"));
+        db.set_chat_enabled(-1001, true, 88).await.expect("enable");
+        assert!(db.chat_enabled(-1001).await.expect("chat"));
+        db.set_chat_enabled(-1001, false, 88)
+            .await
+            .expect("disable");
+        assert!(!db.chat_enabled(-1001).await.expect("chat"));
     }
 
     #[sqlx::test(migrations = "../../migrations")]

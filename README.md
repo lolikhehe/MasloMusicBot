@@ -54,6 +54,10 @@ not be editable into messages.
 | `/broadcast <text>` | admins | One-off notice to every known user |
 | `/queue` | everyone | Last 10 download jobs and their status |
 | `/cancel <id>` | everyone | Ask to cancel a queued/running download |
+| `/convert auto\|m4a\|mp3\|flac\|opus` | everyone | Output container for future downloads |
+| `/normalize on\|off` | everyone | Opt-in ffmpeg loudnorm pass |
+| `/playlist <name>` | everyone | Search public Deezer playlists (Apple Music URLs already work) |
+| `/groupmode on\|off` | admins | Opt the current group into bot responses |
 
 Operator scripts: `scripts/backup-postgres.ps1` (nightly-style dump kept 7 days on D:) and `scripts/measure-s1-s4.ps1` (raw metrics capture). See `docs/backup-and-restore.md` and `docs/perf.md`.
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |

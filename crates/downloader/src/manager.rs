@@ -43,6 +43,84 @@ impl PreparedAudio {
     }
 }
 
+/// Optional ffmpeg post-processing. Failures are non-fatal: the original
+/// prepared audio is kept so a bad ffmpeg invocation cannot lose a download.
+pub async fn postprocess_audio(
+    prepared: &mut PreparedAudio,
+    format: &str,
+    normalize: bool,
+    ffmpeg_path: &str,
+) {
+    let extension: String = match format {
+        "m4a" => "m4a".to_owned(),
+        "mp3" => "mp3".to_owned(),
+        "flac" => "flac".to_owned(),
+        "opus" => "opus".to_owned(),
+        "auto" | "" => {
+            if !normalize {
+                return;
+            }
+            prepared
+                .audio_path
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("m4a")
+                .to_owned()
+        }
+        _ => return,
+    };
+
+    let stem = prepared
+        .audio_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("audio");
+    let target = prepared
+        .audio_path
+        .with_file_name(format!("{stem}.processed.{extension}"));
+
+    let mut command = tokio::process::Command::new(ffmpeg_path);
+    command
+        .arg("-y")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(&prepared.audio_path);
+    if normalize {
+        command.arg("-af").arg("loudnorm=I=-16:TP=-1.5:LRA=11");
+    }
+    match extension.as_str() {
+        "mp3" => {
+            command.args(["-c:a", "libmp3lame", "-b:a", "192k"]);
+        }
+        "m4a" => {
+            command.args(["-c:a", "aac", "-b:a", "192k"]);
+        }
+        "flac" => {
+            command.args(["-c:a", "flac"]);
+        }
+        "opus" => {
+            command.args(["-c:a", "libopus", "-b:a", "128k"]);
+        }
+        _ => {}
+    }
+    command.arg(&target);
+
+    match command.output().await {
+        Ok(output) if output.status.success() && target.exists() => {
+            prepared.audio_path = target;
+            metrics::counter!("music_bot_audio_postprocessed_total").increment(1);
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            warn!(error = %stderr.trim(), "ffmpeg post-processing failed; keeping original audio");
+        }
+        Err(error) => {
+            warn!(%error, "could not spawn ffmpeg; keeping original audio");
+        }
+    }
+}
+
 type InflightResult = Result<PreparedAudio, Arc<DownloadError>>;
 
 pub struct DownloadManager {
@@ -190,6 +268,15 @@ impl DownloadManager {
                 .await;
         }
         Ok(results)
+    }
+
+    /// Public playlist search for `/playlist <name>` (Deezer, no token).
+    pub async fn search_playlists(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<AlbumSearchResult>, DownloadError> {
+        self.external.deezer_playlist_search(query, limit).await
     }
 
     /// Search public album catalogs (Deezer + Apple Music) for `/alb <name>`.

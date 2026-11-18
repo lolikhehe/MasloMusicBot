@@ -237,7 +237,7 @@ pub async fn handle_document(
             .and_then(|user| user.language_code.as_deref()),
         state.config.default_lang,
     );
-    if !msg.chat.is_private() {
+    if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
         return Ok(());
     }
     let name = document

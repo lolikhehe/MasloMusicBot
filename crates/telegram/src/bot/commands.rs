@@ -43,6 +43,11 @@ pub enum Command {
     Broadcast(Option<String>),
     Queue,
     Cancel(Option<String>),
+    Convert(Option<String>),
+    Normalize(Option<String>),
+    Playlist(Option<String>),
+    /// `/groupmode on|off` — admin-only opt-in for this group.
+    GroupMode(Option<String>),
     Unknown(String),
 }
 
@@ -84,6 +89,12 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "broadcast" | "розсилка" => Command::Broadcast((!args.is_empty()).then_some(args)),
         "queue" | "черга" => Command::Queue,
         "cancel" | "скасувати" => Command::Cancel((!args.is_empty()).then_some(args)),
+        "convert" | "формат" => Command::Convert((!args.is_empty()).then_some(args)),
+        "normalize" | "нормалізація" => {
+            Command::Normalize((!args.is_empty()).then_some(args))
+        }
+        "playlist" | "плейлист" => Command::Playlist((!args.is_empty()).then_some(args)),
+        "groupmode" | "група" => Command::GroupMode((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
         "purge" => Command::Purge((!args.is_empty()).then_some(args)),
@@ -342,21 +353,21 @@ pub async fn handle_command(
             }
         }
         Command::Profile(period) => {
-            if !msg.chat.is_private() {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
                 return Ok(());
             }
             crate::bot::stats::handle_profile(state, bot, msg, period.as_deref(), lang).await?;
         }
         Command::Collage(args) => {
-            if !msg.chat.is_private() {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
                 return Ok(());
             }
             crate::bot::stats::handle_collage(state, bot, msg, args.as_deref(), lang).await?;
         }
         Command::Import(content) => {
-            if !msg.chat.is_private() {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
                 return Ok(());
             }
@@ -364,7 +375,7 @@ pub async fn handle_command(
                 .await?;
         }
         Command::GenreStats(args) => {
-            if !msg.chat.is_private() {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
                 return Ok(());
             }
@@ -381,7 +392,7 @@ pub async fn handle_command(
             send_plain(bot, msg.chat.id, text).await?;
         }
         Command::UserStats => {
-            if !msg.chat.is_private() {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
                 return Ok(());
             }
@@ -424,7 +435,7 @@ pub async fn handle_command(
             send_plain(bot, msg.chat.id, i18n::broadcast_result(lang, sent, failed)).await?;
         }
         Command::Queue => {
-            if !msg.chat.is_private() {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
                 return Ok(());
             }
@@ -448,8 +459,130 @@ pub async fn handle_command(
             let ok = state.db.request_cancel(id.trim(), user_id).await?;
             send_plain(bot, msg.chat.id, i18n::cancel_result(lang, ok)).await?;
         }
+        Command::Convert(format) => {
+            let Some(value) = format
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| matches!(value.as_str(), "auto" | "m4a" | "mp3" | "flac" | "opus"))
+            else {
+                send_plain(bot, msg.chat.id, i18n::convert_usage(lang)).await?;
+                return Ok(());
+            };
+            state.db.set_audio_format(user_id, &value).await?;
+            send_plain(
+                bot,
+                msg.chat.id,
+                i18n::convert_saved(lang, &value, user_record.normalize_audio),
+            )
+            .await?;
+        }
+        Command::Normalize(value) => {
+            let Some(enabled) = value.as_deref().and_then(|value| {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "on" | "true" | "1" | "увімк" => Some(true),
+                    "off" | "false" | "0" | "вимк" => Some(false),
+                    _ => None,
+                }
+            }) else {
+                send_plain(bot, msg.chat.id, i18n::normalize_usage(lang)).await?;
+                return Ok(());
+            };
+            state.db.set_normalize_audio(user_id, enabled).await?;
+            send_plain(
+                bot,
+                msg.chat.id,
+                i18n::convert_saved(lang, &user_record.audio_format, enabled),
+            )
+            .await?;
+        }
+        Command::GroupMode(value) => {
+            if !is_admin {
+                send_plain(bot, msg.chat.id, i18n::admin_only(lang)).await?;
+                return Ok(());
+            }
+            let Some(enabled) = value.as_deref().and_then(|value| {
+                match value.trim().to_ascii_lowercase().as_str() {
+                    "on" | "true" | "1" | "увімк" => Some(true),
+                    "off" | "false" | "0" | "вимк" => Some(false),
+                    _ => None,
+                }
+            }) else {
+                send_plain(bot, msg.chat.id, i18n::groupmode_usage(lang)).await?;
+                return Ok(());
+            };
+            state
+                .db
+                .set_chat_enabled(msg.chat.id.0, enabled, user_id)
+                .await?;
+            send_plain(bot, msg.chat.id, i18n::groupmode_result(lang, enabled)).await?;
+        }
+        Command::Playlist(query) => {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            let Some(query) = query
+                .as_deref()
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+            else {
+                send_plain(bot, msg.chat.id, i18n::playlist_usage(lang)).await?;
+                return Ok(());
+            };
+            let progress = bot
+                .send_message(msg.chat.id, i18n::playlist_searching(lang))
+                .await?;
+            let candidates = match state.manager.search_playlists(query, 6).await {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    let _ = bot.delete_message(msg.chat.id, progress.id).await;
+                    warn!(%error, "/playlist catalog search failed");
+                    send_plain(bot, msg.chat.id, i18n::error(lang, &error)).await?;
+                    return Ok(());
+                }
+            };
+            if candidates.is_empty() {
+                bot.edit_message_text(msg.chat.id, progress.id, i18n::no_playlists_found(lang))
+                    .await?;
+                return Ok(());
+            }
+            let mut rows = Vec::with_capacity(candidates.len());
+            for candidate in &candidates {
+                let selection_id = state.new_selection_id();
+                state
+                    .put_selection(
+                        &selection_id,
+                        crate::state::selection::ALBUM_REF,
+                        user_id,
+                        &candidate.into_album_ref(),
+                    )
+                    .await?;
+                rows.push(vec![InlineKeyboardButton::callback(
+                    crate::bot::handlers::truncate(&album_button_label(lang, candidate), 60),
+                    format!("alq:{selection_id}"),
+                )]);
+            }
+            let header = i18n::playlist_results(
+                lang,
+                &crate::bot::handlers::escape_html(query),
+                candidates.len(),
+            );
+            let keyboard = InlineKeyboardMarkup::new(rows);
+            if let Err(error) = bot
+                .edit_message_text(msg.chat.id, progress.id, header.clone())
+                .parse_mode(ParseMode::Html)
+                .reply_markup(keyboard.clone())
+                .await
+            {
+                let _ = bot.delete_message(msg.chat.id, progress.id).await;
+                warn!(%error, "could not edit playlist list; sending a new message");
+                bot.send_message(msg.chat.id, header)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(keyboard)
+                    .await?;
+            }
+        }
         Command::AlbumSearch(query) => {
-            if !msg.chat.is_private() {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
                 send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
                 return Ok(());
             }
