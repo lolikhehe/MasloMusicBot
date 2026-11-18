@@ -684,6 +684,19 @@ async fn try_cache_send(
             state
                 .remember_track(user_id, &caption_meta, key, cached.provider)
                 .await;
+            if let Err(error) = state
+                .db
+                .record_listen(
+                    user_id,
+                    key.as_str(),
+                    &caption_meta.title,
+                    caption_meta.performer.as_deref(),
+                    &caption_meta.genres,
+                )
+                .await
+            {
+                warn!(%error, key = %key, "could not record listen for cache hit");
+            }
             metrics::counter!("music_bot_cache_hits_total").increment(1);
             if genre_analysis {
                 let track_key = key.to_string();
@@ -867,6 +880,19 @@ async fn deliver_track_inner(
     state
         .remember_track(user_id, &prepared.meta, &request.key, request.provider)
         .await;
+    if let Err(error) = state
+        .db
+        .record_listen(
+            user_id,
+            request.key.as_str(),
+            &prepared.meta.title,
+            prepared.meta.performer.as_deref(),
+            &prepared.meta.genres,
+        )
+        .await
+    {
+        warn!(%error, key = %request.key, "could not record listen for upload");
+    }
     Ok(Delivery::Uploaded)
 }
 

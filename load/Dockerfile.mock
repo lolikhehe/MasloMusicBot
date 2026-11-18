@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+# Standalone mock Bot API for the load stand. The bot image itself is the
+# repository's regular Dockerfile; only the injector is different.
+
+FROM lukemathwalker/cargo-chef:latest-rust-1-slim-bookworm AS chef
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+ENV SQLX_OFFLINE=true
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
+COPY . .
+RUN cargo build --release --locked --package mock-api --bin mock-bot-api
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates wget \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/mock-bot-api /usr/local/bin/mock-bot-api
+EXPOSE 8081
+ENTRYPOINT ["/usr/local/bin/mock-bot-api"]

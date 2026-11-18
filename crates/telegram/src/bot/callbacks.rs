@@ -109,6 +109,11 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             crate::bot::stats::handle_genre_chart_callback(&state, &bot, &query, bars, period)
                 .await?;
         }
+    } else if let Some(value) = data.strip_prefix("dyn:p:") {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        if let Some(period) = providers::lastfm::StatsPeriod::parse(value) {
+            crate::bot::history::handle_dynamics_callback(&state, &bot, &query, period).await?;
+        }
     } else if let Some(id) = data.strip_prefix("ly:lrc:") {
         crate::bot::lyrics::handle_lrc_callback(&state, &bot, &query, id).await?;
     } else if let Some(id) = data.strip_prefix("ly:alt:") {

@@ -1,0 +1,15 @@
+[package]
+name = "mock-api"
+description = "Mock Telegram Bot API + lyrics API for e2e tests and the k6 load stand"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mock-bot-api"
+path = "src/main.rs"
+
+[dependencies]
+serde_json.workspace = true
+tokio.workspace = true

@@ -11,7 +11,8 @@
 //! the once-per-version announcement marker work with webhooks and polling.
 
 use common::domain::{
-    CachedTrack, Lang, Provider, Stats, TrackKey, TrackMeta, UserRecord, UserStats,
+    CachedTrack, DigestDue, DigestSchedule, DigestSummary, DynamicsCell, Lang, ListenEntry,
+    Provider, Stats, TrackKey, TrackMeta, UserRecord, UserStats,
 };
 use common::error::{AppError, AppResult};
 use serde::de::DeserializeOwned;
@@ -780,6 +781,308 @@ impl Db {
         Ok(())
     }
 
+    // ---- Listening history, genre dynamics and digests (v2.5) ------------
+
+    /// Append one delivered track to the history. Only metadata is persisted;
+    /// audio, covers and lyrics are never written to disk by the bot.
+    pub async fn record_listen(
+        &self,
+        user_id: i64,
+        track_key: &str,
+        title: &str,
+        performer: Option<&str>,
+        genres: &[String],
+    ) -> AppResult<()> {
+        if title.trim().is_empty() {
+            return Ok(());
+        }
+        let genres = serde_json::to_value(genres).unwrap_or_else(|_| serde_json::json!([]));
+        sqlx::query!(
+            "INSERT INTO listens (user_id, track_key, title, performer, genres, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            user_id,
+            track_key,
+            title,
+            performer,
+            genres,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Most recent listens in a time window, newest first.
+    pub async fn list_listens(
+        &self,
+        user_id: i64,
+        since: i64,
+        limit: i64,
+    ) -> AppResult<Vec<ListenEntry>> {
+        let rows = sqlx::query!(
+            "SELECT title, performer, created_at FROM listens
+             WHERE user_id = $1 AND created_at >= $2
+             ORDER BY created_at DESC, id DESC
+             LIMIT $3",
+            user_id,
+            since,
+            limit.clamp(1, 50)
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ListenEntry {
+                title: row.title,
+                performer: row.performer,
+                created_at: row.created_at,
+            })
+            .collect())
+    }
+
+    pub async fn count_listens(&self, user_id: i64, since: i64) -> AppResult<i64> {
+        let count = sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM listens WHERE user_id = $1 AND created_at >= $2",
+            user_id,
+            since
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(count.unwrap_or_default())
+    }
+
+    /// Genre listens grouped into fixed unix-second buckets. The chart layer
+    /// turns this sparse list into a dense matrix for the selected window.
+    pub async fn genre_dynamics(
+        &self,
+        user_id: i64,
+        since: i64,
+        bucket_secs: i64,
+    ) -> AppResult<Vec<DynamicsCell>> {
+        let rows = sqlx::query!(
+            "SELECT (created_at / $2) * $2 AS bucket, genre, COUNT(*) AS listens
+             FROM user_genre_events
+             WHERE user_id = $1 AND created_at >= $3
+             GROUP BY bucket, genre
+             ORDER BY bucket ASC, listens DESC, genre ASC",
+            user_id,
+            bucket_secs.max(1),
+            since
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DynamicsCell {
+                bucket: row.bucket.unwrap_or_default(),
+                genre: row.genre,
+                listens: row.listens.unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// Create or update a user's digest plan. `last_sent_at` is deliberately
+    /// not cleared, so changing the hour does not re-send an old digest.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_digest_schedule(
+        &self,
+        user_id: i64,
+        period: &str,
+        enabled: bool,
+        next_send_at: i64,
+        quiet_start: i16,
+        quiet_end: i16,
+    ) -> AppResult<()> {
+        let now = unix_now();
+        sqlx::query!(
+            "INSERT INTO digest_schedule
+                (user_id, period, enabled, next_send_at, quiet_start_utc, quiet_end_utc,
+                 created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+             ON CONFLICT(user_id) DO UPDATE SET
+                period = excluded.period,
+                enabled = excluded.enabled,
+                next_send_at = excluded.next_send_at,
+                quiet_start_utc = excluded.quiet_start_utc,
+                quiet_end_utc = excluded.quiet_end_utc,
+                updated_at = excluded.updated_at",
+            user_id,
+            period,
+            enabled,
+            next_send_at,
+            quiet_start,
+            quiet_end,
+            now
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn get_digest_schedule(&self, user_id: i64) -> AppResult<Option<DigestSchedule>> {
+        let row = sqlx::query!(
+            "SELECT period, enabled, next_send_at, last_sent_at, quiet_start_utc, quiet_end_utc
+             FROM digest_schedule WHERE user_id = $1",
+            user_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(row.map(|row| DigestSchedule {
+            period: row.period,
+            enabled: row.enabled,
+            next_send_at: row.next_send_at,
+            last_sent_at: row.last_sent_at,
+            quiet_start_utc: row.quiet_start_utc,
+            quiet_end_utc: row.quiet_end_utc,
+        }))
+    }
+
+    /// Due plans joined with the user's language. The CAS in
+    /// `claim_digest`/`defer_digest` makes the claim safe with N replicas.
+    pub async fn due_digests(&self, now: i64, limit: i64) -> AppResult<Vec<DigestDue>> {
+        let rows = sqlx::query!(
+            "SELECT s.user_id, s.period, s.next_send_at, s.quiet_start_utc, s.quiet_end_utc,
+                    u.language
+             FROM digest_schedule s
+             JOIN users u ON u.user_id = s.user_id
+             WHERE s.enabled AND s.next_send_at <= $1
+             ORDER BY s.next_send_at ASC
+             LIMIT $2",
+            now,
+            limit.clamp(1, 200)
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| DigestDue {
+                user_id: row.user_id,
+                lang: Lang::from_code(&row.language).unwrap_or(Lang::En),
+                period: row.period,
+                next_send_at: row.next_send_at,
+                quiet_start_utc: row.quiet_start_utc,
+                quiet_end_utc: row.quiet_end_utc,
+            })
+            .collect())
+    }
+
+    /// Atomically move a claimed plan to its next slot. Returns false when the
+    /// row was already claimed/deleted by another replica.
+    pub async fn claim_digest(
+        &self,
+        user_id: i64,
+        expected_next: i64,
+        next_send_at: i64,
+    ) -> AppResult<bool> {
+        let now = unix_now();
+        let result = sqlx::query!(
+            "UPDATE digest_schedule
+             SET next_send_at = $3, last_sent_at = $4, updated_at = $4
+             WHERE user_id = $1 AND enabled = true AND next_send_at = $2",
+            user_id,
+            expected_next,
+            next_send_at,
+            now
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Move a due plan forward without marking it sent (quiet hours, retry).
+    pub async fn defer_digest(
+        &self,
+        user_id: i64,
+        expected_next: i64,
+        next_send_at: i64,
+    ) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "UPDATE digest_schedule SET next_send_at = $3, updated_at = $3
+             WHERE user_id = $1 AND enabled = true AND next_send_at = $2",
+            user_id,
+            expected_next,
+            next_send_at
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn disable_digest(&self, user_id: i64) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE digest_schedule SET enabled = false, updated_at = $2 WHERE user_id = $1",
+            user_id,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn digest_summary(&self, user_id: i64, since: i64) -> AppResult<DigestSummary> {
+        let counts = sqlx::query!(
+            "SELECT COUNT(*) AS listens, COUNT(DISTINCT track_key) AS tracks
+             FROM listens WHERE user_id = $1 AND created_at >= $2",
+            user_id,
+            since
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let genre_rows = sqlx::query!(
+            "SELECT g.genre, COUNT(*) AS listens
+             FROM listens l CROSS JOIN LATERAL jsonb_array_elements_text(l.genres) AS g(genre)
+             WHERE l.user_id = $1 AND l.created_at >= $2
+             GROUP BY g.genre
+             ORDER BY listens DESC, g.genre ASC
+             LIMIT 5",
+            user_id,
+            since
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let track_rows = sqlx::query!(
+            "SELECT title, performer, COUNT(*) AS listens
+             FROM listens WHERE user_id = $1 AND created_at >= $2
+             GROUP BY title, performer
+             ORDER BY listens DESC, title ASC
+             LIMIT 5",
+            user_id,
+            since
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(DigestSummary {
+            listens: counts.listens.unwrap_or_default(),
+            tracks: counts.tracks.unwrap_or_default(),
+            genres: genre_rows
+                .into_iter()
+                .map(|row| {
+                    (
+                        row.genre.unwrap_or_default(),
+                        row.listens.unwrap_or_default(),
+                    )
+                })
+                .collect(),
+            top_tracks: track_rows
+                .into_iter()
+                .map(|row| (row.title, row.performer, row.listens.unwrap_or_default()))
+                .collect(),
+        })
+    }
+
     // ---- Shared state for webhooks / multiple replicas -------------------
 
     /// Store a callback selection with a TTL. Every replica reads the same row,
@@ -1311,6 +1614,86 @@ mod tests {
             .expect("finish");
         let jobs = db.list_jobs(42, 10).await.expect("list");
         assert_eq!(jobs[0].2, "cancelled");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn listens_feed_history_dynamics_and_digest(pool: PgPool) {
+        let db = db(pool).await;
+        db.ensure_user(11, Lang::En).await.expect("user");
+        db.set_genre_analysis(11, true).await.expect("toggle");
+        let now = unix_now();
+        db.record_listen(11, "yt:a", "Song A", Some("Artist"), &["Rock".into()])
+            .await
+            .expect("listen a");
+        db.record_listen(11, "yt:b", "Song B", None, &["Jazz".into()])
+            .await
+            .expect("listen b");
+        db.record_genres(11, "yt:a", &["Rock".into()])
+            .await
+            .expect("genres a");
+        db.record_genres(11, "yt:b", &["Jazz".into()])
+            .await
+            .expect("genres b");
+
+        let history = db.list_listens(11, now - 60, 10).await.expect("history");
+        assert_eq!(history.len(), 2);
+        assert_eq!(db.count_listens(11, now - 60).await.expect("count"), 2);
+        assert_eq!(history[0].title, "Song B");
+        let dynamics = db
+            .genre_dynamics(11, now - 60, 3_600)
+            .await
+            .expect("dynamics");
+        assert_eq!(dynamics.len(), 2);
+        let summary = db.digest_summary(11, now - 60).await.expect("summary");
+        assert_eq!(summary.listens, 2);
+        assert_eq!(summary.tracks, 2);
+        assert_eq!(summary.genres.len(), 2);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn digest_schedule_claim_is_atomic(pool: PgPool) {
+        let db = db(pool).await;
+        db.ensure_user(12, Lang::Uk).await.expect("user");
+        let now = unix_now();
+        db.set_digest_schedule(12, "daily", true, now - 10, 23, 7)
+            .await
+            .expect("set");
+        let due = db.due_digests(now, 10).await.expect("due");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].lang, Lang::Uk);
+        assert!(db
+            .claim_digest(12, now - 10, now + 86_400)
+            .await
+            .expect("claim"));
+        assert!(!db
+            .claim_digest(12, now - 10, now + 86_400)
+            .await
+            .expect("second claim must fail"));
+        assert!(
+            db.due_digests(now, 10)
+                .await
+                .expect("due after")
+                .is_empty()
+        );
+        let schedule = db
+            .get_digest_schedule(12)
+            .await
+            .expect("get")
+            .expect("some");
+        assert_eq!(schedule.period, "daily");
+        assert!(schedule.last_sent_at.is_some());
+        assert!(db
+            .defer_digest(12, now + 86_400, now + 100_000)
+            .await
+            .expect("defer"));
+        db.disable_digest(12).await.expect("disable");
+        assert!(
+            !db.get_digest_schedule(12)
+                .await
+                .expect("get")
+                .expect("some")
+                .enabled
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]

@@ -211,3 +211,17 @@ binary.
 An empty scrape right after a restart is expected: the Prometheus recorder only
 renders metrics that have been touched, so the first real message is needed
 before any `music_bot_*` sample appears. No numbers are synthesised.
+
+## v2.5: reproducible load stand (mock, NOT S1–S4)
+
+`load/` adds a complete harness: k6 → Rust mock Bot API → three real bot
+replicas → Postgres, with Prometheus and Alertmanager. It is documented in
+`load/README.md` and orchestrated by `scripts/run-load-test.ps1`. The script
+prints real `histogram_quantile` values from Prometheus (handler p95/p99, error
+ratio) and says `NO SAMPLES` when nothing was measured — it never fills in a
+number. k6's own threshold covers only the injection endpoint, not bot latency.
+
+This closes the *process* gap for S3 (many replicas sharing state) but the
+numbers it produces are local mock numbers. S1–S4 remain **NOT MEASURED** until
+the same collection is repeated against a staging bot with real Telegram
+traffic and real sources.

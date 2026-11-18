@@ -472,6 +472,55 @@ pub struct UserStats {
     pub seconds: i64,
 }
 
+/// One row of the listening history (`/history`). Metadata only.
+#[derive(Debug, Clone)]
+pub struct ListenEntry {
+    pub title: String,
+    pub performer: Option<String>,
+    pub created_at: i64,
+}
+
+/// A user's durable digest planner row (`digest_schedule`).
+#[derive(Debug, Clone)]
+pub struct DigestSchedule {
+    /// `daily` or `weekly`.
+    pub period: String,
+    pub enabled: bool,
+    pub next_send_at: i64,
+    pub last_sent_at: Option<i64>,
+    /// Half-open UTC hour window [start, end); equal values mean "no quiet hours".
+    pub quiet_start_utc: i16,
+    pub quiet_end_utc: i16,
+}
+
+/// A due digest claimed by the scheduler, joined with the user's language.
+#[derive(Debug, Clone)]
+pub struct DigestDue {
+    pub user_id: i64,
+    pub lang: Lang,
+    pub period: String,
+    pub next_send_at: i64,
+    pub quiet_start_utc: i16,
+    pub quiet_end_utc: i16,
+}
+
+/// Aggregated payload used to compose one digest message.
+#[derive(Debug, Clone, Default)]
+pub struct DigestSummary {
+    pub listens: i64,
+    pub tracks: i64,
+    pub genres: Vec<(String, i64)>,
+    pub top_tracks: Vec<(String, Option<String>, i64)>,
+}
+
+/// One `(time bucket, genre)` cell of the genre dynamics chart.
+#[derive(Debug, Clone)]
+pub struct DynamicsCell {
+    pub bucket: i64,
+    pub genre: String,
+    pub listens: i64,
+}
+
 /// One search result before the user picks it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {

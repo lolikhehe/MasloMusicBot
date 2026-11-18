@@ -3,7 +3,9 @@
 pub mod announce;
 pub mod callbacks;
 pub mod commands;
+pub mod digest;
 pub mod handlers;
+pub mod history;
 pub mod import;
 pub mod inline;
 pub mod jobs;

@@ -56,6 +56,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(bot_username = %bot_username, "connected to Telegram");
 
     let state = AppState::new(config.clone(), db, manager, bot_username);
+    // Opt-in digests. The planner is a detached task; all replicas sweep the
+    // same Postgres rows and a CAS on `next_send_at` elects a single sender.
+    telegram::bot::digest::spawn(bot.clone(), state.clone());
     // Best-effort, once per version: never block startup if Telegram refuses a PM.
     if let Err(error) = telegram::bot::announce::announce_update(&bot, &state).await {
         tracing::warn!(%error, "could not broadcast update notice");

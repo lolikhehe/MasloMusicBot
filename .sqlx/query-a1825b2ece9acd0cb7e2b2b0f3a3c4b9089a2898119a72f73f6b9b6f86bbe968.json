@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE digest_schedule SET enabled = false, updated_at = $2 WHERE user_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a1825b2ece9acd0cb7e2b2b0f3a3c4b9089a2898119a72f73f6b9b6f86bbe968"
+}

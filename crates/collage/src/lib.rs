@@ -411,6 +411,177 @@ pub fn render_bars(
         .map_err(|error| format!("cannot save chart: {error}"))
 }
 
+/// RGB triplet for one dynamics series. Kept dependency-free so callers do not
+/// need the `image` crate just to pick a palette entry.
+#[derive(Debug, Clone, Copy)]
+pub struct SeriesColor {
+    pub r: u8,
+    pub g: u8,
+    pub b: u8,
+}
+
+/// Eight distinguishable line colors for the genre dynamics chart.
+pub const SERIES_COLORS: [SeriesColor; 8] = [
+    SeriesColor { r: 255, g: 118, b: 92 },
+    SeriesColor { r: 94, g: 200, b: 255 },
+    SeriesColor { r: 154, g: 232, b: 124 },
+    SeriesColor { r: 255, g: 205, b: 92 },
+    SeriesColor { r: 194, g: 150, b: 255 },
+    SeriesColor { r: 255, g: 140, b: 200 },
+    SeriesColor { r: 110, g: 220, b: 200 },
+    SeriesColor { r: 235, g: 160, b: 110 },
+];
+
+/// One genre line. `values` is aligned with the `labels` slice passed to
+/// [`render_lines`]; a shorter vector is padded with zeroes.
+#[derive(Debug, Clone)]
+pub struct LineSeries {
+    pub label: String,
+    pub color: SeriesColor,
+    pub values: Vec<u64>,
+}
+
+fn draw_segment(
+    canvas: &mut RgbaImage,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: Rgba<u8>,
+) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let steps = dx.abs().max(dy.abs()).max(1);
+    for step in 0..=steps {
+        let x = x0 + (dx * step) / steps;
+        let y = y0 + (dy * step) / steps;
+        fill_rect(canvas, x.max(0) as u32, y.max(0) as u32, 3, 3, color);
+    }
+}
+
+/// Render a multi-line time chart (the "genre dynamics" graph). `labels` are
+/// short bucket captions (e.g. `11-18`) on the x axis; each series carries one
+/// value per label. Pure Rust: same embedded font, no network, no image tools.
+pub fn render_lines(
+    title: &str,
+    subtitle: &str,
+    labels: &[String],
+    series: &[LineSeries],
+    out: &Path,
+) -> Result<(), String> {
+    if labels.is_empty() || series.is_empty() {
+        return Err("no lines to render".to_owned());
+    }
+    let font = font();
+    const WIDTH: u32 = 1_200;
+    const HEIGHT: u32 = 720;
+    const PLOT_TOP: u32 = 140;
+    const PLOT_BOTTOM: u32 = 580;
+    const PLOT_LEFT: u32 = 96;
+    const PLOT_RIGHT: u32 = 1_150;
+    let mut canvas = RgbaImage::from_pixel(WIDTH, HEIGHT, BACKGROUND);
+
+    draw(&mut canvas, title, MARGIN as f32, 48.0, 30.0, TEXT, &font);
+    draw(&mut canvas, subtitle, MARGIN as f32, 84.0, 15.0, MUTED, &font);
+
+    let max_value = series
+        .iter()
+        .flat_map(|line| line.values.iter().copied())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let grid = Rgba([64, 70, 86, 255]);
+    for step in 0..=4u32 {
+        let y = PLOT_TOP + (PLOT_BOTTOM - PLOT_TOP) * step / 4;
+        fill_rect(&mut canvas, PLOT_LEFT, y, PLOT_RIGHT - PLOT_LEFT, 1, grid);
+        let value = max_value * u64::from(4 - step) / 4;
+        draw(
+            &mut canvas,
+            &value.to_string(),
+            PLOT_LEFT as f32 - 12.0 - measure(&value.to_string(), 13.0, &font),
+            y as f32 - 8.0,
+            13.0,
+            MUTED,
+            &font,
+        );
+    }
+    fill_rect(
+        &mut canvas,
+        PLOT_LEFT,
+        PLOT_TOP,
+        1,
+        PLOT_BOTTOM - PLOT_TOP,
+        grid,
+    );
+
+    let count = labels.len();
+    let slot = (PLOT_RIGHT - PLOT_LEFT) / count as u32;
+    let skip = if count > 12 { (count + 11) / 12 } else { 1 };
+    for (index, label) in labels.iter().enumerate() {
+        if index % skip != 0 && index + 1 != count {
+            continue;
+        }
+        let center = PLOT_LEFT as f32 + slot as f32 * index as f32 + slot as f32 / 2.0;
+        draw_centered(&mut canvas, label, center, PLOT_BOTTOM as f32 + 26.0, 13.0, MUTED, &font);
+    }
+
+    for line in series {
+        let color = Rgba([line.color.r, line.color.g, line.color.b, 255]);
+        let mut previous: Option<(i32, i32)> = None;
+        for index in 0..count {
+            let value = line.values.get(index).copied().unwrap_or(0);
+            let center = PLOT_LEFT as f32 + slot as f32 * index as f32 + slot as f32 / 2.0;
+            let y = PLOT_BOTTOM
+                - ((PLOT_BOTTOM - PLOT_TOP) as u64 * value / max_value) as u32;
+            let point = (center as i32, y as i32);
+            if let Some((x0, y0)) = previous {
+                draw_segment(&mut canvas, x0, y0, point.0, point.1, color);
+            }
+            previous = Some(point);
+        }
+    }
+
+    // Legend: two columns of color swatches under the plot.
+    let columns = 2;
+    let rows = series.len().div_ceil(columns);
+    for (index, line) in series.iter().enumerate() {
+        let column = index / rows;
+        let row = index % rows;
+        let x = MARGIN + column as u32 * 560;
+        let y = 636 + row as u32 * 26;
+        fill_rect(
+            &mut canvas,
+            x,
+            y - 11,
+            14,
+            14,
+            Rgba([line.color.r, line.color.g, line.color.b, 255]),
+        );
+        draw(
+            &mut canvas,
+            &line.label,
+            x as f32 + 22.0,
+            y as f32,
+            15.0,
+            TEXT,
+            &font,
+        );
+    }
+
+    draw(
+        &mut canvas,
+        "MasloMusicBot · genre dynamics",
+        MARGIN as f32,
+        HEIGHT as f32 - 12.0,
+        12.0,
+        MUTED,
+        &font,
+    );
+    canvas
+        .save(out)
+        .map_err(|error| format!("cannot save dynamics chart: {error}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,6 +627,31 @@ mod tests {
         assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
         let decoded = image::load_from_memory(&bytes).expect("decode");
         assert!(decoded.width() >= 1_000 && decoded.height() > 600);
+    }
+
+    #[test]
+    fn renders_genre_dynamics_chart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("dynamics.png");
+        let labels: Vec<String> = (0..12).map(|i| format!("d{i:02}")).collect();
+        let series = vec![
+            LineSeries {
+                label: "Rock".to_owned(),
+                color: SERIES_COLORS[0],
+                values: vec![1, 3, 2, 5, 4, 7, 6, 8, 5, 9, 7, 10],
+            },
+            LineSeries {
+                label: "Jazz".to_owned(),
+                color: SERIES_COLORS[1],
+                values: vec![0, 1, 0, 2, 1, 3, 2, 2, 4, 3, 5, 4],
+            },
+        ];
+        render_lines("Genre dynamics", "24 cells · 12 buckets", &labels, &series, &path)
+            .expect("chart");
+        let bytes = std::fs::read(&path).expect("png");
+        assert!(bytes.starts_with(&[0x89, b'P', b'N', b'G']));
+        let decoded = image::load_from_memory(&bytes).expect("decode");
+        assert!(decoded.width() >= 1_000 && decoded.height() >= 600);
     }
 
     #[test]

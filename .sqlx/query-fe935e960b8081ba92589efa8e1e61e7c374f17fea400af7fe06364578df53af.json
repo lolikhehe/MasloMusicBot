@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (created_at / $2) * $2 AS bucket, genre, COUNT(*) AS listens\n             FROM user_genre_events\n             WHERE user_id = $1 AND created_at >= $3\n             GROUP BY bucket, genre\n             ORDER BY bucket ASC, listens DESC, genre ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bucket",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "genre",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "user_genre_events",
+            "name": "genre"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "listens",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "fe935e960b8081ba92589efa8e1e61e7c374f17fea400af7fe06364578df53af"
+}

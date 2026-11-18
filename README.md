@@ -58,8 +58,12 @@ not be editable into messages.
 | `/normalize on\|off` | everyone | Opt-in ffmpeg loudnorm pass |
 | `/playlist <name>` | everyone | Search public Deezer playlists (Apple Music URLs already work) |
 | `/groupmode on\|off` | admins | Opt the current group into bot responses |
+| `/history [period]` | everyone | Recent listening history from Postgres (metadata only) |
+| `/dynamics [period]` | everyone | PNG line chart of genre dynamics over time |
+| `/digest daily\|weekly\|off` | everyone | Opt in/out of a personal digest sent to your private chat (09:00 UTC by default) |
+| `/digest quiet HH-HH\|off` | everyone | Quiet UTC hours during which the digest is postponed |
 
-Operator scripts: `scripts/backup-postgres.ps1` (nightly-style dump kept 7 days on D:) and `scripts/measure-s1-s4.ps1` (raw metrics capture). See `docs/backup-and-restore.md` and `docs/perf.md`.
+Operator scripts: `scripts/backup-postgres.ps1` (nightly-style dump kept 7 days on D:), `scripts/measure-s1-s4.ps1` (raw metrics capture) and `scripts/run-load-test.ps1` (full k6 → mock API → 3 replicas stand with Prometheus percentiles and alerts). See `docs/backup-and-restore.md`, `docs/perf.md` and `load/README.md`.
 
 A Rust-only HTTPS webhook gateway (automatic Let's Encrypt + secret-verified reverse proxy) lives in `crates/gateway`; see `docs/webhook-gateway.md` for the GitHub Education / domain / VM walkthrough.
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO digest_schedule\n                (user_id, period, enabled, next_send_at, quiet_start_utc, quiet_end_utc,\n                 created_at, updated_at)\n             VALUES ($1, $2, $3, $4, $5, $6, $7, $7)\n             ON CONFLICT(user_id) DO UPDATE SET\n                period = excluded.period,\n                enabled = excluded.enabled,\n                next_send_at = excluded.next_send_at,\n                quiet_start_utc = excluded.quiet_start_utc,\n                quiet_end_utc = excluded.quiet_end_utc,\n                updated_at = excluded.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Bool",
+        "Int8",
+        "Int2",
+        "Int2",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "56af842b8d67096efe99415bcd170ce0945090e430680a5f42f14ca0b80ce985"
+}

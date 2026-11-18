@@ -35,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/convert auto|m4a|mp3|flac|opus — output format for next downloads\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/groupmode on|off — admin: allow the bot in this group",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/convert auto|m4a|mp3|flac|opus — формат наступних завантажень\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/groupmode on|off — адмін: дозволити бота в цій групі",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/convert auto|m4a|mp3|flac|opus — output format for next downloads\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/convert auto|m4a|mp3|flac|opus — формат наступних завантажень\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/groupmode on|off — адмін: дозволити бота в цій групі\n/history [період] — остання історія прослуховувань\n/dynamics [період] — графік динаміки жанрів за часом\n/digest daily|weekly|off — персональний дайджест у приватні повідомлення\n/digest quiet HH-HH|off — тихі години за UTC",
     );
     if is_admin {
         format!(
@@ -999,6 +999,190 @@ pub fn downloading_track(lang: Lang, track: &str) -> String {
     }
 }
 
+// ---- Listening history, genre dynamics and digests (v2.5) ----------------
+
+pub fn history_title(lang: Lang, period: &str) -> String {
+    match lang {
+        Lang::En => format!("<b>Listening history</b> · {period}\n\n"),
+        Lang::Uk => format!("<b>Історія прослуховувань</b> · {period}\n\n"),
+    }
+}
+
+pub fn history_empty(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Nothing in this period yet — send a track first.",
+        "За цей період ще нічого немає — спочатку надішли трек.",
+    )
+}
+
+pub fn history_item(title: &str, performer: Option<&str>, when: &str) -> String {
+    let title = html_escape::encode_text(title);
+    let name = match performer.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(performer) => format!("{} — ", html_escape::encode_text(performer)),
+        None => String::new(),
+    };
+    format!("• {name}{title} · <code>{when}</code>\n")
+}
+
+pub fn history_more(lang: Lang, hidden: i64) -> String {
+    match lang {
+        Lang::En => format!("\n… and {hidden} earlier\n"),
+        Lang::Uk => format!("\n… і ще {hidden} раніше\n"),
+    }
+}
+
+pub fn history_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/history [7d|1m|3m|6m|1y|all]</code>",
+        "Використання: <code>/history [7d|1m|3m|6m|1y|all]</code>",
+    )
+}
+
+pub fn dynamics_title(lang: Lang) -> &'static str {
+    pick(lang, "Genre dynamics", "Динаміка жанрів")
+}
+
+pub fn dynamics_subtitle(lang: Lang, cells: usize, buckets: usize, period: &str) -> String {
+    match lang {
+        Lang::En => format!("{cells} genre-points · {buckets} buckets · {period}"),
+        Lang::Uk => format!("{cells} точок жанрів · {buckets} інтервалів · {period}"),
+    }
+}
+
+pub fn dynamics_empty(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "No timed genre data yet. Enable the analyzer in /settings and download a few tracks.",
+        "Ще немає даних із часом. Увімкни аналізатор у /settings і скачай кілька треків.",
+    )
+}
+
+pub fn dynamics_failed(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Could not build the dynamics chart.",
+        "Не вдалося побудувати графік динаміки.",
+    )
+}
+
+pub fn dynamics_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/dynamics [7d|1m|3m|6m|1y|all]</code>",
+        "Використання: <code>/dynamics [7d|1m|3m|6m|1y|all]</code>",
+    )
+}
+
+pub fn digest_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage:\n<code>/digest daily|weekly</code> — enable (default 09:00 UTC)\n<code>/digest quiet HH-HH|off</code> — quiet hours in UTC\n<code>/digest status</code> — current schedule\n<code>/digest off</code> — disable",
+        "Використання:\n<code>/digest daily|weekly</code> — увімкнути (09:00 за UTC)\n<code>/digest quiet HH-HH|off</code> — тихі години за UTC\n<code>/digest status</code> — поточний розклад\n<code>/digest off</code> — вимкнути",
+    )
+}
+
+pub fn digest_enabled(lang: Lang, period: &str, next: &str) -> String {
+    match lang {
+        Lang::En => format!("✅ {period} digest enabled. Next: <b>{next}</b> UTC."),
+        Lang::Uk => format!("✅ {period}-дайджест увімкнено. Наступний: <b>{next}</b> UTC."),
+    }
+}
+
+pub fn digest_disabled(lang: Lang) -> &'static str {
+    pick(lang, "🛑 Digest disabled.", "🛑 Дайджест вимкнено.")
+}
+
+pub fn digest_quiet_set(lang: Lang, window: &str) -> String {
+    match lang {
+        Lang::En => format!("🌙 Quiet hours: <b>{window}</b> UTC."),
+        Lang::Uk => format!("🌙 Тихі години: <b>{window}</b> за UTC."),
+    }
+}
+
+pub fn digest_status(lang: Lang, period: &str, next: &str, quiet: &str, enabled: bool) -> String {
+    let state = if enabled {
+        pick(lang, "on", "увімк.")
+    } else {
+        pick(lang, "off", "вимк.")
+    };
+    match lang {
+        Lang::En => format!(
+            "📅 Digest: <b>{state}</b>\nPeriod: {period}\nNext: {next} UTC\nQuiet hours: {quiet} UTC"
+        ),
+        Lang::Uk => format!(
+            "📅 Дайджест: <b>{state}</b>\nПеріод: {period}\nНаступний: {next} UTC\nТихі години: {quiet} UTC"
+        ),
+    }
+}
+
+pub fn digest_not_enabled(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "No digest is enabled. Start with <code>/digest daily</code>.",
+        "Дайджест не увімкнено. Почніть із <code>/digest daily</code>.",
+    )
+}
+
+pub fn digest_window_label(lang: Lang, start: i16, end: i16) -> String {
+    if start == end {
+        return pick(lang, "none", "немає").to_owned();
+    }
+    format!("{start:02}:00–{end:02}:00")
+}
+
+pub fn digest_period_label(lang: Lang, daily: bool) -> &'static str {
+    match (lang, daily) {
+        (Lang::En, true) => "daily",
+        (Lang::En, false) => "weekly",
+        (Lang::Uk, true) => "щоденний",
+        (Lang::Uk, false) => "щотижневий",
+    }
+}
+
+/// The digest PM itself. Names are escaped here because they come from metadata.
+pub fn digest_message(
+    lang: Lang,
+    period_label: &str,
+    listens: i64,
+    tracks: i64,
+    genres: &[(String, i64)],
+    top_tracks: &[(String, Option<String>, i64)],
+) -> String {
+    let title = match lang {
+        Lang::En => "📊 Your digest",
+        Lang::Uk => "📊 Твій дайджест",
+    };
+    let listens_label = pick(lang, "Listens", "Прослуховувань");
+    let tracks_label = pick(lang, "Tracks", "Треків");
+    let genres_label = pick(lang, "Genres", "Жанри");
+    let top_label = pick(lang, "Top tracks", "Топ треків");
+    let mut body = format!(
+        "<b>{title}</b> · {period_label}\n\n{listens_label}: <b>{listens}</b>\n{tracks_label}: <b>{tracks}</b>"
+    );
+    if !genres.is_empty() {
+        let tags: Vec<String> = genres
+            .iter()
+            .map(|(genre, count)| format!("{} <b>{count}</b>", html_escape::encode_text(genre)))
+            .collect();
+        body.push_str(&format!("\n{genres_label}: {}", tags.join(" · ")));
+    }
+    if !top_tracks.is_empty() {
+        body.push_str(&format!("\n\n<b>{top_label}:</b>"));
+        for (track, artist, count) in top_tracks {
+            let name = match artist.as_deref().map(str::trim).filter(|a| !a.is_empty()) {
+                Some(artist) => format!("{} — ", html_escape::encode_text(artist)),
+                None => String::new(),
+            };
+            let track = html_escape::encode_text(track);
+            body.push_str(&format!("\n• {name}{track} · <b>{count}</b>"));
+        }
+    }
+    body.push_str(&format!("\n\n— {DEV_CHANNEL_HANDLE}"));
+    body
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,6 +1211,34 @@ mod tests {
             assert!(!playlist_searching(lang).is_empty());
             assert!(!playlist_results(lang, "x", 1).is_empty());
             assert!(!no_playlists_found(lang).is_empty());
+            assert!(!history_title(lang, "all").is_empty());
+            assert!(!history_empty(lang).is_empty());
+            assert!(!history_item("Song", Some("Artist"), "2026-11-18 09:00").is_empty());
+            assert!(!dynamics_title(lang).is_empty());
+            assert!(!dynamics_empty(lang).is_empty());
+            assert!(!digest_usage(lang).is_empty());
+            assert!(!digest_disabled(lang).is_empty());
+            assert!(!digest_not_enabled(lang).is_empty());
+            assert!(!digest_status(lang, "daily", "2026-11-19 09:00", "none", true).is_empty());
+            assert!(!digest_message(lang, "daily", 1, 1, &[], &[]).is_empty());
+        }
+    }
+
+    #[test]
+    fn digest_message_escapes_metadata_and_credits_channel() {
+        for lang in [Lang::En, Lang::Uk] {
+            let text = digest_message(
+                lang,
+                "daily",
+                3,
+                2,
+                &[("Rock & <Roll>".to_owned(), 3)],
+                &[("A < B".to_owned(), Some("X&Y".to_owned()), 2)],
+            );
+            assert!(text.contains("&lt;Roll&gt;"), "{text}");
+            assert!(text.contains("A &lt; B"), "{text}");
+            assert!(text.contains("X&amp;Y"), "{text}");
+            assert!(text.contains(DEV_CHANNEL_HANDLE));
         }
     }
 

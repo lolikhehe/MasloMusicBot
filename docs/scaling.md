@@ -96,6 +96,18 @@ is used as the axum route. teloxide calls `set_webhook` on startup and
    `SELECT user_id, COUNT(*) FROM rate_limits GROUP BY user_id` matches the
    configured per-minute budget, not `budget × replicas`.
 
+## v2.5 additions
+
+- Migration `0006` adds `listens` (one metadata row per delivered track) and
+  `digest_schedule` (opt-in planner with `next_send_at`). The digest sweep runs
+  on every replica and claims a due row with a compare-and-swap on
+  `next_send_at`, so no webhook farm or load-test replica set sends twice.
+  Quiet hours defer the row by an hour instead of resetting the plan.
+- `/history` reads `listens`; `/dynamics` reads the already-timestamped
+  `user_genre_events` and renders an in-memory PNG that is deleted after upload.
+- The mock Bot API used by the e2e tests now lives in `crates/mock-api` and is
+  also runnable as the standalone `mock-bot-api` binary for `load/`.
+
 ## Known limits
 
 - No sticky routing is needed for selections, but in-flight inline generation

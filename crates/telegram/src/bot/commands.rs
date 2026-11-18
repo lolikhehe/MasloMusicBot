@@ -39,6 +39,12 @@ pub enum Command {
     Changelog,
     /// `/me` — the caller's own counters.
     UserStats,
+    /// `/history [period]` — recent listening history from Postgres.
+    History(Option<String>),
+    /// `/dynamics [period]` — genre dynamics over time chart.
+    Dynamics(Option<String>),
+    /// `/digest daily|weekly|off|quiet HH-HH|status` — personal digest planner.
+    Digest(Option<String>),
     /// `/broadcast <text>` — admin-only one-off notice.
     Broadcast(Option<String>),
     Queue,
@@ -86,6 +92,9 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         }
         "changelog" | "зміни" => Command::Changelog,
         "me" | "mystats" | "моястатистика" => Command::UserStats,
+        "history" | "історія" => Command::History((!args.is_empty()).then_some(args)),
+        "dynamics" | "динаміка" => Command::Dynamics((!args.is_empty()).then_some(args)),
+        "digest" | "дайджест" => Command::Digest((!args.is_empty()).then_some(args)),
         "broadcast" | "розсилка" => Command::Broadcast((!args.is_empty()).then_some(args)),
         "queue" | "черга" => Command::Queue,
         "cancel" | "скасувати" => Command::Cancel((!args.is_empty()).then_some(args)),
@@ -409,6 +418,27 @@ pub async fn handle_command(
                 ),
             )
             .await?;
+        }
+        Command::History(arg) => {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            crate::bot::history::handle_history(state, bot, msg, arg.as_deref(), lang).await?;
+        }
+        Command::Dynamics(arg) => {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            crate::bot::history::handle_dynamics(state, bot, msg, arg.as_deref(), lang).await?;
+        }
+        Command::Digest(arg) => {
+            if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            crate::bot::digest::handle_digest(state, bot, msg, arg.as_deref(), lang).await?;
         }
         Command::Broadcast(text) => {
             if !is_admin {
@@ -759,6 +789,18 @@ mod tests {
         assert_eq!(
             parse_command("/lyrics Artist — Title", "bot"),
             Some(Command::Lyrics(Some("Artist — Title".into())))
+        );
+        assert_eq!(
+            parse_command("/history 7d", "bot"),
+            Some(Command::History(Some("7d".into())))
+        );
+        assert_eq!(
+            parse_command("/dynamics", "bot"),
+            Some(Command::Dynamics(None))
+        );
+        assert_eq!(
+            parse_command("/digest quiet 23-7", "bot"),
+            Some(Command::Digest(Some("quiet 23-7".into())))
         );
     }
 }

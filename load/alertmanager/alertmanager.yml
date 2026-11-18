@@ -1,0 +1,14 @@
+route:
+  receiver: local-log
+  group_by: ["alertname"]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 12h
+
+receivers:
+  - name: local-log
+    # The mock API exposes /alert, which logs the payload and returns 200.
+    # Point this at Slack / a pager in a real deployment; the stand stays local.
+    webhook_configs:
+      - url: http://mock-api:8081/alert
+        send_resolved: true

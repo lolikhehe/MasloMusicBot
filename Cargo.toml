@@ -60,6 +60,7 @@ providers = { path = "crates/providers" }
 downloader = { path = "crates/downloader" }
 audio = { path = "crates/audio" }
 telegram = { path = "crates/telegram" }
+mock-api = { path = "crates/mock-api" }
 
 [profile.release]
 lto = "fat"
