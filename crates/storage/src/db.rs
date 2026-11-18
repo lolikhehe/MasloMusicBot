@@ -64,6 +64,15 @@ impl Db {
             .run(pool)
             .await
             .map_err(|error| AppError::Other(error.into()))?;
+        // A replica that crashed mid-download leaves a claimed job behind.
+        let _ = sqlx::query!(
+            "UPDATE download_jobs
+             SET status = 'queued', claimed_by = NULL, updated_at = $1
+             WHERE status IN ('downloading', 'uploading') AND cancel_requested = false",
+            unix_now()
+        )
+        .execute(pool)
+        .await;
         let now = unix_now();
         let _ = sqlx::query!("DELETE FROM search_cache WHERE expires_at < $1", now)
             .execute(pool)
@@ -766,8 +775,143 @@ impl Db {
         Ok(())
     }
 
+    // ---- Persistent download jobs ----------------------------------------
+
+    /// Insert a job and atomically claim it for this replica. Returns `false`
+    /// when another worker already owns the id (or enqueued the same request).
+    pub async fn enqueue_and_claim_job(
+        &self,
+        id: &str,
+        user_id: i64,
+        kind: &str,
+        payload: serde_json::Value,
+        worker: &str,
+    ) -> AppResult<bool> {
+        let now = unix_now();
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let inserted = sqlx::query!(
+            "INSERT INTO download_jobs
+                (id, user_id, kind, status, payload, created_at, updated_at)
+             VALUES ($1, $2, $3, 'queued', $4, $5, $5)
+             ON CONFLICT(id) DO NOTHING",
+            id,
+            user_id,
+            kind,
+            payload,
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        if inserted.rows_affected() == 0 {
+            tx.commit().await.map_err(db_err)?;
+            return Ok(false);
+        }
+        let claimed = sqlx::query!(
+            "UPDATE download_jobs
+             SET status = 'downloading', claimed_by = $2, updated_at = $3
+             WHERE id = $1 AND status = 'queued'
+             RETURNING id",
+            id,
+            worker,
+            now
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
+        Ok(claimed.is_some())
+    }
+
+    pub async fn finish_job(&self, id: &str, status: &str, error: Option<&str>) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE download_jobs
+             SET status = $2, error = $3, updated_at = $4
+             WHERE id = $1",
+            id,
+            status,
+            error,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn request_cancel(&self, id: &str, user_id: i64) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "UPDATE download_jobs SET cancel_requested = true, updated_at = $3
+             WHERE id = $1 AND user_id = $2
+               AND status IN ('queued', 'downloading', 'uploading')",
+            id,
+            user_id,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn job_cancel_requested(&self, id: &str) -> AppResult<bool> {
+        Ok(sqlx::query_scalar!(
+            "SELECT cancel_requested FROM download_jobs WHERE id = $1",
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?
+        .unwrap_or(false))
+    }
+
+    /// Requeue jobs abandoned by a crashed replica on startup.
+    pub async fn requeue_stale_jobs(&self) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE download_jobs
+             SET status = 'queued', claimed_by = NULL, updated_at = $1
+             WHERE status IN ('downloading', 'uploading') AND cancel_requested = false",
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn list_jobs(
+        &self,
+        user_id: i64,
+        limit: i64,
+    ) -> AppResult<Vec<(String, String, String, bool)>> {
+        let rows = sqlx::query!(
+            "SELECT id, kind, status, cancel_requested FROM download_jobs
+             WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2",
+            user_id,
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.id, row.kind, row.status, row.cancel_requested))
+            .collect())
+    }
+
     /// Atomic fixed-window rate limit shared by all replicas. Returns `false`
     /// when the user has spent the budget for the current minute.
+    /// Current fixed-window hit count (used by the two-replica integration test).
+    pub async fn rate_limit_hits(&self, user_id: i64) -> AppResult<i64> {
+        Ok(
+            sqlx::query_scalar!("SELECT hits FROM rate_limits WHERE user_id = $1", user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_err)?
+                .unwrap_or_default(),
+        )
+    }
+
     pub async fn allow(&self, user_id: i64, limit: i64) -> AppResult<bool> {
         let now = unix_now();
         let window = now - now.rem_euclid(60);
@@ -1035,6 +1179,38 @@ mod tests {
         assert!(db.allow(7, 2).await.expect("first"));
         assert!(db.allow(7, 2).await.expect("second"));
         assert!(!db.allow(7, 2).await.expect("third"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn jobs_are_claimed_cancelled_and_listed(pool: PgPool) {
+        let db = db(pool).await;
+        let payload = serde_json::json!({"key": "youtube:job"});
+        assert!(
+            db.enqueue_and_claim_job("job-1", 42, "track", payload.clone(), "replica-a")
+                .await
+                .expect("claim")
+        );
+        assert!(
+            !db.enqueue_and_claim_job("job-1", 42, "track", payload, "replica-b")
+                .await
+                .expect("second claim must fail")
+        );
+        assert!(!db.job_cancel_requested("job-1").await.expect("flag"));
+        assert!(db.request_cancel("job-1", 42).await.expect("cancel"));
+        assert!(db.job_cancel_requested("job-1").await.expect("flag"));
+        assert!(!db.request_cancel("job-1", 43).await.expect("wrong user"));
+
+        let jobs = db.list_jobs(42, 10).await.expect("list");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].0, "job-1");
+        assert_eq!(jobs[0].1, "track");
+        assert!(jobs[0].3);
+
+        db.finish_job("job-1", "cancelled", None)
+            .await
+            .expect("finish");
+        let jobs = db.list_jobs(42, 10).await.expect("list");
+        assert_eq!(jobs[0].2, "cancelled");
     }
 
     #[sqlx::test(migrations = "../../migrations")]

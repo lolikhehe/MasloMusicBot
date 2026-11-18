@@ -25,6 +25,7 @@ struct Bot {
     child: Child,
     api: MockServer,
     lyrics: MockServer,
+    webhook_url: Option<String>,
 }
 
 impl Drop for Bot {
@@ -36,9 +37,31 @@ impl Drop for Bot {
     }
 }
 
+/// The e2e harness reuses one database across runs and spawns many bots.
+/// Silence the once-per-version broadcast so it cannot pollute message asserts.
+async fn silence_broadcast() {
+    let db = Db::connect(&database_url()).await.expect("db");
+    db.set_meta("announced_version", ::common::version::VERSION)
+        .await
+        .expect("meta");
+}
+
 async fn spawn_bot() -> Bot {
     let api = telegram_api().await;
     let lyrics = lyrics_api().await;
+    spawn_bot_inner(api, lyrics, 10_000).await
+}
+
+/// A bot that receives updates from our own axum webhook listener instead of
+/// long polling. The mock Bot API only needs to accept `setWebhook`.
+async fn spawn_webhook_bot(secret: &str, rate_limit: u32) -> Bot {
+    silence_broadcast().await;
+    let api = telegram_api().await;
+    let lyrics = lyrics_api().await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("free port");
+    let port = listener.local_addr().expect("addr").port();
+    drop(listener);
+    let url = format!("http://127.0.0.1:{port}/telegram/webhook");
     let child = Command::new(env!("CARGO_BIN_EXE_music-bot"))
         .env("TELOXIDE_TOKEN", "123:mock-token")
         .env("TELEGRAM_API_URL", format!("http://{}", api.addr))
@@ -46,7 +69,51 @@ async fn spawn_bot() -> Bot {
         .env("LRCLIB_BASE_URL", format!("http://{}", lyrics.addr))
         .env("LYRICS_OVH_BASE_URL", format!("http://{}/v1", lyrics.addr))
         .env("METRICS_ADDR", "off")
-        .env("RATE_LIMIT_PER_MIN", "10000")
+        .env("WEBHOOK_ADDR", format!("127.0.0.1:{port}"))
+        .env("WEBHOOK_URL", &url)
+        .env("WEBHOOK_SECRET", secret)
+        .env("RATE_LIMIT_PER_MIN", rate_limit.to_string())
+        .env("RATE_LIMIT_INLINE_PER_MIN", "10000")
+        .env("LOG_LEVEL", "warn")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn webhook music-bot");
+    let bot = Bot {
+        child,
+        api,
+        lyrics,
+        webhook_url: Some(url),
+    };
+
+    wait_until(20_000, || async {
+        bot.api
+            .shared
+            .calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .any(|call| call == "setwebhook")
+    })
+    .await
+    .unwrap_or_else(|| {
+        let calls = bot.api.shared.calls.lock().expect("calls").clone();
+        panic!("webhook bot did not call setWebhook; calls={calls:?}")
+    });
+    bot
+}
+
+async fn spawn_bot_inner(api: MockServer, lyrics: MockServer, rate_limit: u32) -> Bot {
+    silence_broadcast().await;
+    let child = Command::new(env!("CARGO_BIN_EXE_music-bot"))
+        .env("TELOXIDE_TOKEN", "123:mock-token")
+        .env("TELEGRAM_API_URL", format!("http://{}", api.addr))
+        .env("DATABASE_URL", database_url())
+        .env("LRCLIB_BASE_URL", format!("http://{}", lyrics.addr))
+        .env("LYRICS_OVH_BASE_URL", format!("http://{}/v1", lyrics.addr))
+        .env("METRICS_ADDR", "off")
+        .env("RATE_LIMIT_PER_MIN", rate_limit.to_string())
         .env("RATE_LIMIT_INLINE_PER_MIN", "10000")
         .env("LOG_LEVEL", "warn")
         .stdin(Stdio::null())
@@ -54,11 +121,15 @@ async fn spawn_bot() -> Bot {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn music-bot");
-    let bot = Bot { child, api, lyrics };
-
+    let bot = Bot {
+        child,
+        api,
+        lyrics,
+        webhook_url: None,
+    };
     wait_until(20_000, || async {
         let calls = bot.api.shared.calls.lock().expect("calls").clone();
-        calls.iter().any(|call| call == "getme") && calls.iter().any(|call| call == "getupdates")
+        calls.iter().any(|call| call == "getme")
     })
     .await
     .unwrap_or_else(|| {
@@ -217,6 +288,157 @@ fn common_domain_track(key: &common_domain::TrackKey) -> common_domain::CachedTr
             ..Default::default()
         },
     }
+}
+
+fn text_update(update_id: u64, chat_id: i64, text: &str) -> Value {
+    serde_json::json!({
+        "update_id": update_id,
+        "message": {
+            "message_id": update_id,
+            "date": 1_700_000_000u64,
+            "chat": {"id": chat_id, "type": "private", "first_name": "Tester"},
+            "from": {
+                "id": chat_id,
+                "is_bot": false,
+                "first_name": "Tester",
+                "language_code": "en"
+            },
+            "text": text
+        }
+    })
+}
+
+async fn post_webhook(url: &str, secret: &str, update: Value) -> u16 {
+    reqwest::Client::new()
+        .post(url)
+        .header("X-Telegram-Bot-Api-Secret-Token", secret)
+        .json(&update)
+        .send()
+        .await
+        .expect("webhook request")
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+async fn webhook_mode_accepts_signed_updates_only() {
+    let bot = spawn_webhook_bot("test-secret-123", 10_000).await;
+    let url = bot.webhook_url.as_deref().expect("webhook url");
+
+    let unauthorized = post_webhook(url, "wrong-secret", text_update(600, 601, "/help")).await;
+    assert_eq!(unauthorized, 401, "bad secret must be rejected");
+
+    let accepted = post_webhook(url, "test-secret-123", text_update(601, 601, "/help")).await;
+    assert_eq!(accepted, 200);
+    wait_until(10_000, || async { !messages(&bot.api).is_empty() })
+        .await
+        .expect("webhook /help was not answered");
+    assert!(
+        messages(&bot.api)[0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("How to use"))
+    );
+    let calls = bot.api.shared.calls.lock().expect("calls").clone();
+    assert!(calls.iter().any(|call| call == "setwebhook"));
+}
+
+#[tokio::test]
+async fn two_replicas_share_selections_and_rate_limits() {
+    let db = Db::connect(&database_url()).await.expect("db");
+    let key = common_domain::TrackKey::new("youtube:two-replicas");
+    let track = common_domain_track(&key);
+    db.put_track(&track, 192, Some(1234)).await.expect("cache");
+
+    let request = common_domain::TrackRequest {
+        key: key.clone(),
+        provider: common_domain::Provider::YouTube,
+        source_url: None,
+        meta: Some(common_domain::TrackMeta {
+            title: "Two Replicas".into(),
+            performer: Some("Mock".into()),
+            ..Default::default()
+        }),
+        target: common_domain::DownloadTarget::Search("Mock Two Replicas".into()),
+    };
+    db.put_selection(
+        "two-replicas",
+        "track",
+        7766,
+        serde_json::to_value(&request).expect("json"),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("selection");
+
+    let replica_a = spawn_webhook_bot("secret-a", 2).await;
+    let replica_b = spawn_webhook_bot("secret-b", 2).await;
+
+    // The button was created by A, but the callback lands on B.
+    let callback = serde_json::json!({
+        "update_id": 700,
+        "callback_query": {
+            "id": "cb-700",
+            "from": {"id": 7766, "is_bot": false, "first_name": "Tester", "language_code": "en"},
+            "chat_instance": "ci-700",
+            "data": "q:two-replicas",
+            "message": {
+                "message_id": 700,
+                "date": 1_700_000_000u64,
+                "chat": {"id": 7766, "type": "private", "first_name": "Tester"},
+                "text": "choose"
+            }
+        }
+    });
+    let url_b = replica_b.webhook_url.as_deref().expect("replica B url");
+    assert_eq!(post_webhook(url_b, "secret-b", callback).await, 200);
+    wait_until(10_000, || async {
+        !replica_b
+            .api
+            .shared
+            .audios
+            .lock()
+            .expect("audios")
+            .is_empty()
+    })
+    .await
+    .expect("replica B could not resolve a selection created elsewhere");
+
+    // Both replicas spend the same per-user budget. Use a fresh id so a
+    // previous run's fixed-window hits cannot poison this assertion.
+    let limited_user = 8_000_000 + (std::process::id() as i64 % 100_000);
+    let url_a = replica_a.webhook_url.as_deref().expect("replica A url");
+    for index in 0..4u64 {
+        let update = text_update(800 + index, limited_user, "javascript:alert(1)");
+        let url = if index % 2 == 0 { url_a } else { url_b };
+        let secret = if index % 2 == 0 {
+            "secret-a"
+        } else {
+            "secret-b"
+        };
+        assert_eq!(post_webhook(url, secret, update).await, 200);
+    }
+    wait_until(10_000, || async {
+        messages(&replica_a.api).len() + messages(&replica_b.api).len() >= 4
+    })
+    .await
+    .expect("rate-limit test did not receive all four answers");
+    let all_messages = messages(&replica_a.api)
+        .into_iter()
+        .chain(messages(&replica_b.api))
+        .collect::<Vec<_>>();
+    let blocked = all_messages
+        .iter()
+        .filter(|message| {
+            message["text"].as_str().is_some_and(|text| {
+                text.contains("Too many requests") || text.contains("Забагато запитів")
+            })
+        })
+        .count();
+    assert_eq!(
+        blocked, 2,
+        "only two of four requests may pass the shared budget: {all_messages:?}"
+    );
+    assert!(db.rate_limit_hits(limited_user).await.expect("hits") >= 2);
 }
 
 /// Local mock load harness. These numbers describe the whole mocked stack

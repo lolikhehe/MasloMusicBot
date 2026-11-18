@@ -52,6 +52,10 @@ not be editable into messages.
 | `/me` | everyone | Your own counters: tracks, listens, genres, audio time |
 | `/stats` | admins | Tracks cached, users seen, uptime |
 | `/broadcast <text>` | admins | One-off notice to every known user |
+| `/queue` | everyone | Last 10 download jobs and their status |
+| `/cancel <id>` | everyone | Ask to cancel a queued/running download |
+
+Operator scripts: `scripts/backup-postgres.ps1` (nightly-style dump kept 7 days on D:) and `scripts/measure-s1-s4.ps1` (raw metrics capture). See `docs/backup-and-restore.md` and `docs/perf.md`.
 | `/ban <id>` / `/unban <id>` | admins | Block/restore a user |
 | `/purge <key or URL>` | admins | Drop a cached track (e.g. after a rights complaint) |
 

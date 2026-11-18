@@ -41,6 +41,8 @@ pub enum Command {
     UserStats,
     /// `/broadcast <text>` — admin-only one-off notice.
     Broadcast(Option<String>),
+    Queue,
+    Cancel(Option<String>),
     Unknown(String),
 }
 
@@ -80,6 +82,8 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "changelog" | "зміни" => Command::Changelog,
         "me" | "mystats" | "моястатистика" => Command::UserStats,
         "broadcast" | "розсилка" => Command::Broadcast((!args.is_empty()).then_some(args)),
+        "queue" | "черга" => Command::Queue,
+        "cancel" | "скасувати" => Command::Cancel((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
         "purge" => Command::Purge((!args.is_empty()).then_some(args)),
@@ -418,6 +422,31 @@ pub async fn handle_command(
                 tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             }
             send_plain(bot, msg.chat.id, i18n::broadcast_result(lang, sent, failed)).await?;
+        }
+        Command::Queue => {
+            if !msg.chat.is_private() {
+                send_plain(bot, msg.chat.id, i18n::private_only(lang)).await?;
+                return Ok(());
+            }
+            let jobs = state.db.list_jobs(user_id, 10).await?;
+            let mut text = i18n::queue_title(lang).to_owned();
+            if jobs.is_empty() {
+                text.push_str(i18n::queue_empty(lang));
+            } else {
+                for (id, kind, status, cancelling) in jobs {
+                    text.push_str(&i18n::queue_item(&id, &kind, &status, cancelling));
+                }
+            }
+            text.push_str(&format!("\n— {}", common::version::DEV_CHANNEL_HANDLE));
+            send_plain(bot, msg.chat.id, text).await?;
+        }
+        Command::Cancel(id) => {
+            let Some(id) = id.filter(|value| !value.trim().is_empty()) else {
+                send_plain(bot, msg.chat.id, i18n::cancel_usage(lang)).await?;
+                return Ok(());
+            };
+            let ok = state.db.request_cancel(id.trim(), user_id).await?;
+            send_plain(bot, msg.chat.id, i18n::cancel_result(lang, ok)).await?;
         }
         Command::AlbumSearch(query) => {
             if !msg.chat.is_private() {

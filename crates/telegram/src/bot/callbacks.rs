@@ -289,7 +289,21 @@ async fn handle_album_confirm(
         tracks = album.tracks.len(),
         "album confirmed; starting downloads"
     );
-    deliver_album(
+    let job = match crate::bot::jobs::JobGuard::start(
+        state,
+        user_id,
+        "album",
+        serde_json::json!({"title": album.title, "tracks": album.tracks.len()}),
+    )
+    .await?
+    {
+        Some(job) => job,
+        None => {
+            let _ = edit_html(bot, chat, message_id, i18n::job_already_running(lang)).await;
+            return Ok(());
+        }
+    };
+    let result = deliver_album(
         state,
         bot,
         chat,
@@ -301,8 +315,17 @@ async fn handle_album_confirm(
         tags_enabled,
         hq_cover,
         genre_analysis,
+        Some(&job),
     )
-    .await
+    .await;
+    if job.cancelled().await {
+        job.finish("cancelled", None).await;
+    } else if result.is_ok() {
+        job.finish("done", None).await;
+    } else {
+        job.finish("failed", None).await;
+    }
+    result
 }
 
 /// User declined a collection: discard the pending expansion.

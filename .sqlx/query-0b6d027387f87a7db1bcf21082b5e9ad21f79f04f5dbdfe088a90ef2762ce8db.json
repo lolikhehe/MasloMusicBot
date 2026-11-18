@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_jobs\n             SET status = $2, error = $3, updated_at = $4\n             WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0b6d027387f87a7db1bcf21082b5e9ad21f79f04f5dbdfe088a90ef2762ce8db"
+}

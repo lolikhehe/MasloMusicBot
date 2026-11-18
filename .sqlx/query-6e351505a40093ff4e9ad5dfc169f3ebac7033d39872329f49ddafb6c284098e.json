@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT hits FROM rate_limits WHERE user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hits",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rate_limits",
+            "name": "hits"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6e351505a40093ff4e9ad5dfc169f3ebac7033d39872329f49ddafb6c284098e"
+}

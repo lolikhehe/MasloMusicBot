@@ -1,5 +1,24 @@
 # Decisions & known limitations
 
+## v2.3 — persistent job ledger, webhook e2e, replica tests, operator scripts (2026-11-18)
+
+- Downloads are now recorded in `download_jobs` (migration 0003). `INSERT … ON
+  CONFLICT DO NOTHING` followed by an atomic `UPDATE … RETURNING id` gives one
+  owner per job, so two replicas cannot both download the same track. The
+  `cancel_requested` flag is checked before preparation, before upload and
+  between album tracks; `Db::migrate` requeues jobs abandoned by a crashed
+  replica. This is a cooperative ledger rather than a full task runner: the
+  claiming replica still performs the work inline, which keeps the existing
+  `file_id` cache and in-flight dedup intact.
+- E2E now covers webhook mode: a signed update is POSTed to the bot's own axum
+  listener with `X-Telegram-Bot-Api-Secret-Token`, a wrong secret returns 401,
+  and `setWebhook` is observed on the mock Bot API. A second test runs two
+  webhook replicas against one Postgres and proves a selection created for one
+  replica resolves on the other, and that the per-user rate budget is shared.
+- Operator scripts write to D: only; no credentials are stored in the repo.
+  `scripts/measure-s1-s4.ps1` saves raw Prometheus output instead of computed
+  numbers so S1–S4 remain honestly **NOT MEASURED** until real traffic exists.
+
 ## v2.2 — lyrics files, source switching, period charts, user/admin commands (2026-11-18)
 
 - LRCLIB's `syncedLyrics` is now kept twice: stripped for the chat message and

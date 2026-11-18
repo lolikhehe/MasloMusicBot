@@ -35,8 +35,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import — import a playlist: paste Artist – Title lines or upload a CSV/TXT/JSON export from Spotify, TuneMyMusic or Soundiiz\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import — імпорт плейлиста: рядки «Виконавець – Назва» або файл CSV/TXT/JSON з експорту Spotify, TuneMyMusic чи Soundiiz\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження",
     );
     if is_admin {
         format!(
@@ -131,6 +131,62 @@ pub fn user_stats(lang: Lang, tracks: i64, listens: i64, genres: i64, seconds: i
         "{title}\n\n{counted}: <b>{tracks}</b>\n{listens_label}: <b>{listens}</b>\n{genres_label}: <b>{genres}</b>\n{time_label}: <b>{hours:.1} h</b>\n\n{}",
         crate::version::DEV_CHANNEL_HANDLE
     )
+}
+
+pub fn job_already_running(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "⏳ This download is already being processed by another instance.",
+        "⏳ Це завантаження вже обробляється іншим екземпляром бота.",
+    )
+}
+
+pub fn job_cancelled(lang: Lang) -> &'static str {
+    pick(lang, "🛑 Download cancelled.", "🛑 Завантаження скасовано.")
+}
+
+pub fn queue_title(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "<b>Recent downloads</b>\n\n",
+        "<b>Останні завантаження</b>\n\n",
+    )
+}
+
+pub fn queue_empty(lang: Lang) -> &'static str {
+    pick(lang, "No downloads yet.", "Завантажень ще немає.")
+}
+
+pub fn queue_item(id: &str, kind: &str, status: &str, cancelling: bool) -> String {
+    let mark = if cancelling {
+        " · 🛑 cancelling"
+    } else {
+        ""
+    };
+    format!("<code>{id}</code> · {kind} · {status}{mark}\n")
+}
+
+pub fn cancel_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: <code>/cancel &lt;job id from /queue&gt;</code>",
+        "Використання: <code>/cancel &lt;id з /queue&gt;</code>",
+    )
+}
+
+pub fn cancel_result(lang: Lang, ok: bool) -> &'static str {
+    match ok {
+        true => pick(
+            lang,
+            "🛑 Cancellation requested.",
+            "🛑 Скасування запрошено.",
+        ),
+        false => pick(
+            lang,
+            "No active job with that id.",
+            "Активного завдання з таким id немає.",
+        ),
+    }
 }
 
 pub fn broadcast_usage(lang: Lang) -> &'static str {

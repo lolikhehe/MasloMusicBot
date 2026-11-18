@@ -187,8 +187,26 @@ async fn handle_track(
         return Ok(());
     }
 
+    let job = match crate::bot::jobs::JobGuard::start(
+        state,
+        user_id,
+        "track",
+        serde_json::json!({
+            "key": request.key.as_str(),
+            "title": request.meta.as_ref().map(|meta| meta.display_title()),
+        }),
+    )
+    .await?
+    {
+        Some(job) => job,
+        None => {
+            send::send_html(bot, chat, i18n::job_already_running(lang)).await?;
+            return Ok(());
+        }
+    };
+
     let placeholder = send::send_html(bot, chat, i18n::downloading(lang)).await?;
-    match deliver_track(
+    let outcome = deliver_track_inner(
         state,
         bot,
         chat,
@@ -198,18 +216,26 @@ async fn handle_track(
         tags_enabled,
         hq_cover,
         genre_analysis,
+        Some(&job),
     )
-    .await
-    {
+    .await;
+    match &outcome {
         Ok(_) => {
+            job.finish("done", None).await;
             if let Err(error) = bot.delete_message(chat, placeholder.id).await {
                 warn!(%error, "could not delete progress message");
             }
         }
         Err(error) => {
-            let text = error_text(lang, &error);
-            let _ = edit_html(bot, chat, placeholder.id, text).await;
-            warn!(%error, "track delivery failed");
+            if job.cancelled().await {
+                job.finish("cancelled", None).await;
+                let _ = edit_html(bot, chat, placeholder.id, i18n::job_cancelled(lang)).await;
+            } else {
+                job.finish("failed", Some(&error.to_string())).await;
+                let text = error_text(lang, error);
+                let _ = edit_html(bot, chat, placeholder.id, text).await;
+                warn!(%error, "track delivery failed");
+            }
         }
     }
     Ok(())
@@ -378,6 +404,7 @@ pub async fn deliver_album(
     tags_enabled: bool,
     hq_cover: bool,
     genre_analysis: bool,
+    job: Option<&crate::bot::jobs::JobGuard>,
 ) -> HandlerResult {
     let total = album.tracks.len();
     let title = escape_html(&album.title);
@@ -397,6 +424,11 @@ pub async fn deliver_album(
     ));
     let mut set = tokio::task::JoinSet::new();
     for track in album.tracks {
+        if let Some(job) = job
+            && job.cancelled().await
+        {
+            break;
+        }
         let state = state.clone();
         let bot_clone = bot.clone();
         let track_title = track
@@ -671,7 +703,7 @@ async fn try_cache_send(
 
 /// Shared delivery path for direct requests, search callbacks and albums.
 #[allow(clippy::too_many_arguments)]
-pub async fn deliver_track(
+async fn deliver_track_inner(
     state: &AppState,
     bot: &Bot,
     chat: ChatId,
@@ -681,6 +713,7 @@ pub async fn deliver_track(
     tags_enabled: bool,
     hq_cover: bool,
     genre_analysis: bool,
+    job: Option<&crate::bot::jobs::JobGuard>,
 ) -> Result<Delivery, BoxError> {
     let enrich = tags_enabled || genre_analysis;
     if try_cache_send(
@@ -696,6 +729,12 @@ pub async fn deliver_track(
     .await?
     {
         return Ok(Delivery::Cached);
+    }
+
+    if let Some(job) = job
+        && job.cancelled().await
+    {
+        return Err(crate::bot::jobs::JobGuard::cancelled_error().into());
     }
 
     metrics::counter!("music_bot_downloads_total").increment(1);
@@ -753,6 +792,12 @@ pub async fn deliver_track(
         return Ok(Delivery::Cached);
     }
 
+    if let Some(job) = job
+        && job.cancelled().await
+    {
+        return Err(crate::bot::jobs::JobGuard::cancelled_error().into());
+    }
+
     metrics::counter!("music_bot_uploads_total").increment(1);
     let caption =
         caption_with_flac_fallback(tags_caption(&prepared.meta, tags_enabled), flac_fell_back);
@@ -803,6 +848,34 @@ pub async fn deliver_track(
         .remember_track(user_id, &prepared.meta, &request.key, request.provider)
         .await;
     Ok(Delivery::Uploaded)
+}
+
+/// Delivery without a persistent job (callbacks and inline results).
+#[allow(clippy::too_many_arguments)]
+pub async fn deliver_track(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    request: TrackRequest,
+    quality: u32,
+    user_id: i64,
+    tags_enabled: bool,
+    hq_cover: bool,
+    genre_analysis: bool,
+) -> Result<Delivery, BoxError> {
+    deliver_track_inner(
+        state,
+        bot,
+        chat,
+        request,
+        quality,
+        user_id,
+        tags_enabled,
+        hq_cover,
+        genre_analysis,
+        None,
+    )
+    .await
 }
 
 pub async fn edit_html(

@@ -82,6 +82,8 @@ pub struct AppState {
     /// Callback selections live in Postgres (not in this process) so a webhook
     /// callback delivered to another replica still resolves.
     pub selection_ttl: Duration,
+    /// Identifies this replica in the shared job ledger.
+    pub worker_id: String,
 }
 
 /// Selection kinds stored in the `selections` table.
@@ -161,6 +163,7 @@ impl AppState {
             lyrics_cache,
             last_tracks,
             selection_ttl: Duration::from_secs(30 * 60),
+            worker_id: uuid::Uuid::new_v4().simple().to_string(),
         }
     }
 
