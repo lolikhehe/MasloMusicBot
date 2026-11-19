@@ -741,7 +741,9 @@ struct AlbumWiki {
 
 #[derive(Debug, Deserialize)]
 struct SimilarResponse {
-    #[serde(default)]
+    // Last.fm roots this payload as "similartracks", not "similar" — the
+    // wrong name silently parsed every reply as "no similar tracks".
+    #[serde(default, rename = "similartracks")]
     similar: Option<SimilarTracks>,
 }
 
@@ -753,10 +755,13 @@ struct SimilarTracks {
 
 #[derive(Debug, Deserialize)]
 struct SimilarTrack {
-    #[serde(default)]
-    artist: Option<SimilarArtist>,
+    // `name` must stay first: one_or_many's untagged `One` arm tries a
+    // one-element array as struct-from-seq, and only `artist` (a map type)
+    // could swallow the map element — which would leave `name` empty.
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    artist: Option<SimilarArtist>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -954,6 +959,30 @@ mod tests {
         assert!(now.is_now_playing);
         assert_eq!(now.meta.title, "Walk");
         assert_eq!(now.meta.performer.as_deref(), Some("Pantera"));
+    }
+
+    #[test]
+    fn parses_similartracks_root() {
+        // Real payload shape of track.getsimilar: the collection sits under
+        // a "similartracks" root, not "similar".
+        let json = r##"{
+            "similartracks": {
+                "track": [
+                    {"name": "One", "artist": {"name": "Metallica"}, "match": "0.9"}
+                ]
+            }
+        }"##;
+        let body: SimilarResponse = serde_json::from_str(json).expect("json");
+        let similar = body.similar.expect("similartracks").track;
+        assert_eq!(similar.len(), 1);
+        assert_eq!(similar[0].name, "One");
+        assert_eq!(
+            similar[0]
+                .artist
+                .as_ref()
+                .map(|artist| artist.name.as_str()),
+            Some("Metallica")
+        );
     }
 
     #[test]
