@@ -258,12 +258,18 @@ impl DownloadManager {
         if normalized.is_empty() {
             return Ok(Vec::new());
         }
-        let cache_key = format!("{}:{normalized}", source.as_str());
+        // The limit is part of the key: page turning re-asks with a bigger
+        // limit and must not get the shorter first page back.
+        let cache_key = format!("{}:{limit}:{normalized}", source.as_str());
         if let Some(cached) = self.search_cache.get(&cache_key).await {
             return Ok(cached);
         }
         // L2: Postgres-backed search cache survives restarts (10 min TTL).
-        if let Ok(Some(payload)) = self.db.get_search_cache(source.as_str(), &normalized).await
+        // The limit rides in the DB key's query slot.
+        if let Ok(Some(payload)) = self
+            .db
+            .get_search_cache(source.as_str(), &format!("{limit}:{normalized}"))
+            .await
             && let Ok(parsed) = serde_json::from_str::<Vec<SearchResult>>(&payload)
         {
             self.search_cache.insert(cache_key, parsed.clone()).await;
@@ -280,7 +286,7 @@ impl DownloadManager {
                 .db
                 .put_search_cache(
                     source.as_str(),
-                    &normalized,
+                    &format!("{limit}:{normalized}"),
                     &payload,
                     Duration::from_secs(600),
                 )
