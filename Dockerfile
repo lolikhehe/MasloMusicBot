@@ -19,7 +19,7 @@ RUN apt-get update \
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --locked --recipe-path recipe.json
 COPY . .
-RUN cargo build --release --locked --package app --bin music-bot
+RUN cargo build --release --locked --package app --bin music-bot --bin music-bot-worker
 
 # ---------- Runtime ----------
 FROM debian:bookworm-slim
@@ -46,6 +46,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY --from=builder /app/target/release/music-bot /usr/local/bin/music-bot
+COPY --from=builder /app/target/release/music-bot-worker /usr/local/bin/music-bot-worker
 COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint
 RUN chmod 755 /usr/local/bin/docker-entrypoint \
  && mkdir -p /data && chown -R bot:bot /data
