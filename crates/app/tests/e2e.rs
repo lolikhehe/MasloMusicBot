@@ -322,7 +322,7 @@ async fn cached_track_is_sent_without_download() {
     let db = Db::connect(&database_url()).await.expect("db");
     let key = providers::key_from_input("https://www.youtube.com/watch?v=e2e_cached_track");
     let track = common_domain_track(&key);
-    db.put_track(&track, 192, Some(1_234_567))
+    db.put_track(&track, 192, Some(1_234_567), None, None)
         .await
         .expect("put cached track");
 
@@ -361,6 +361,10 @@ fn common_domain_track(key: &common_domain::TrackKey) -> common_domain::CachedTr
             duration_secs: Some(10),
             ..Default::default()
         },
+        // shortcut: no live Telegram message in tests, so the copy path stays
+        // unexercised here and the file_id fallback is used.
+        chat_id: None,
+        message_id: None,
     }
 }
 
@@ -421,7 +425,9 @@ async fn two_replicas_share_selections_and_rate_limits() {
     let db = Db::connect(&database_url()).await.expect("db");
     let key = common_domain::TrackKey::new("youtube:two-replicas");
     let track = common_domain_track(&key);
-    db.put_track(&track, 192, Some(1234)).await.expect("cache");
+    db.put_track(&track, 192, Some(1234), None, None)
+        .await
+        .expect("cache");
 
     let request = common_domain::TrackRequest {
         key: key.clone(),
@@ -649,7 +655,7 @@ async fn worker_consumes_enqueued_track_job() {
     let db = Db::connect(&database_url()).await.expect("db");
     let key = common_domain::TrackKey::new("youtube:e2e-worker-download");
     let track = common_domain_track(&key);
-    db.put_track(&track, 192, Some(1_234_567))
+    db.put_track(&track, 192, Some(1_234_567), None, None)
         .await
         .expect("put cached track");
 

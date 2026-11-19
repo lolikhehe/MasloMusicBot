@@ -357,12 +357,17 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         Some(compact_caption(&state, Some(&prepared.meta))),
         flac_fell_back,
     );
-    let mut minted: Option<(String, String)> = None;
+    let mut minted: Option<(String, String, i64, i64)> = None;
     for chat in upload_targets {
         match send::send_prepared(&bot, chat, &prepared, caption.clone(), None).await {
             Ok(message) => match send::extract_file_id(&message) {
-                Some(pair) => {
-                    minted = Some(pair);
+                Some((file_id, file_unique_id)) => {
+                    minted = Some((
+                        file_id,
+                        file_unique_id,
+                        message.chat.id.0,
+                        i64::from(message.id.0),
+                    ));
                     break;
                 }
                 None => warn!(
@@ -376,7 +381,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
 
     // The storage/PM message must NOT be deleted (the cached `file_id` may die
     // with it — spec §9, етап 7).
-    let Some((file_id, file_unique_id)) = minted else {
+    let Some((file_id, file_unique_id, chat_id, message_id)) = minted else {
         warn!("could not mint file_id for inline result; falling back to private delivery");
         fallback_private(
             &state,
@@ -402,6 +407,8 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
             // Cache what was actually sent (320 m4a after a FLAC size fallback).
             if flac_fell_back { 320 } else { user.quality },
             size_bytes,
+            Some(chat_id),
+            Some(message_id),
         )
         .await
     {

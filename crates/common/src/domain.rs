@@ -525,6 +525,11 @@ pub struct CachedTrack {
     pub source_url: Option<String>,
     pub provider: Provider,
     pub meta: TrackMeta,
+    /// Chat of the message that first carried this file_id. With `message_id`
+    /// it lets cache hits be delivered with `copy_message`, which preserves
+    /// the rendered title/performer that a plain file_id resend loses.
+    pub chat_id: Option<i64>,
+    pub message_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -337,6 +337,9 @@ impl DownloadManager {
     }
 
     /// Record a track in the cache. `size_bytes` is the actual audio size.
+    /// `chat_id`/`message_id` point at the message that carried the audio so a
+    /// later cache hit can copy it instead of resending by file_id.
+    #[allow(clippy::too_many_arguments)]
     pub async fn record(
         &self,
         request: &TrackRequest,
@@ -345,6 +348,8 @@ impl DownloadManager {
         file_unique_id: String,
         quality: u32,
         size_bytes: Option<i64>,
+        chat_id: Option<i64>,
+        message_id: Option<i64>,
     ) -> AppResult<()> {
         self.db
             .put_track(
@@ -355,9 +360,13 @@ impl DownloadManager {
                     source_url: request.source_url.clone(),
                     provider: request.provider,
                     meta: meta.clone(),
+                    chat_id,
+                    message_id,
                 },
                 quality,
                 size_bytes,
+                chat_id,
+                message_id,
             )
             .await
     }

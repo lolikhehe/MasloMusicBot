@@ -39,8 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 thumbnail_url: Some("https://example.test/cover.jpg".into()),
                 genres: vec!["Benchmark".into()],
             },
+            chat_id: None,
+            message_id: None,
         };
-        db.put_track(&track, 192, Some(8_000_000)).await?;
+        db.put_track(&track, 192, Some(8_000_000), None, None)
+            .await?;
     }
 
     let iterations = 1_000usize;

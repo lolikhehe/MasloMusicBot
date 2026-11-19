@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,\n                    performer, album, duration_secs, thumbnail_url, genres\n             FROM tracks WHERE file_id = $1\n             ORDER BY last_used_at DESC\n             LIMIT 1",
+  "query": "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,\n                    performer, album, duration_secs, size_bytes, thumbnail_url, genres,\n                    chat_id, message_id\n             FROM tracks WHERE track_key = $1 AND quality = $2",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
       },
       {
         "ordinal": 10,
+        "name": "size_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "size_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
         "name": "thumbnail_url",
         "type_info": "Text",
         "origin": {
@@ -125,7 +136,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "genres",
         "type_info": "Text",
         "origin": {
@@ -134,11 +145,34 @@
             "name": "genres"
           }
         }
+      },
+      {
+        "ordinal": 13,
+        "name": "chat_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "message_id"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Text"
+        "Text",
+        "Int8"
       ]
     },
     "nullable": [
@@ -153,8 +187,11 @@
       true,
       true,
       true,
-      false
+      true,
+      false,
+      true,
+      true
     ]
   },
-  "hash": "775531ce70bded94a6dbb9db44cdbbb4f54606a8b6003116d1e038c38b0ae3b9"
+  "hash": "7f0c33af38b2dd3d2caa43fd86d4aa142ed600d6dec0902496049561e358e685"
 }

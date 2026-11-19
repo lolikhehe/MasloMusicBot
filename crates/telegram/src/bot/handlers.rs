@@ -1199,8 +1199,8 @@ pub async fn try_cache_send(
     let caption = tags_caption(&caption_meta, tags_enabled);
     let fav_markup = fav_markup_for(&state.db, user_id, key.as_str()).await;
     match send::send_cached(bot, chat, &cached, caption.clone(), fav_markup.clone()).await {
-        Ok(message) => {
-            state.maybe_track_deletion(user_id, chat, message.id);
+        Ok(message_id) => {
+            state.maybe_track_deletion(user_id, chat, message_id);
             state.manager.touch_cached(key, quality).await;
             state
                 .remember_track(user_id, &caption_meta, key, cached.provider)
@@ -1216,7 +1216,7 @@ pub async fn try_cache_send(
             let record_key = key.to_string();
             let mut record_meta = caption_meta.clone();
             let record_markup = fav_markup;
-            let record_message_id = message.id;
+            let record_message_id = message_id;
             tokio::spawn(async move {
                 // Enrichment that used to be awaited before the send now runs
                 // here. With tags on it feeds the caption edit; for the genre
@@ -1421,6 +1421,8 @@ pub async fn deliver_track_inner(
             file_unique_id,
             sent_quality,
             size_bytes,
+            Some(message.chat.id.0),
+            Some(i64::from(message.id.0)),
         )
         .await
     {

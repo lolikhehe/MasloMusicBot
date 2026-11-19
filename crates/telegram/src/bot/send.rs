@@ -4,7 +4,8 @@ use common::domain::CachedTrack;
 use downloader::PreparedAudio;
 use std::future::IntoFuture;
 use teloxide::prelude::*;
-use teloxide::types::{FileId, InlineKeyboardMarkup, InputFile, Message, ParseMode};
+use teloxide::types::{FileId, InlineKeyboardMarkup, InputFile, Message, MessageId, ParseMode};
+use tracing::debug;
 
 /// Retry a send once after Telegram's 429 `RetryAfter`; a second failure is
 /// returned to the caller. The closure rebuilds the request because awaiting
@@ -42,7 +43,38 @@ pub async fn send_cached(
     track: &CachedTrack,
     caption: Option<String>,
     markup: Option<InlineKeyboardMarkup>,
-) -> Result<Message, teloxide::RequestError> {
+) -> Result<MessageId, teloxide::RequestError> {
+    // The local Bot API rebuilds a file_id audio from its own record and drops
+    // title/performer. Copying the original message keeps the rendered
+    // attributes. Only copy when we have a source message AND a fresh caption:
+    // without one Telegram would keep the original recipient's caption, which
+    // must never leak to a different chat.
+    if let (Some(from_chat_id), Some(from_message_id)) = (track.chat_id, track.message_id)
+        && caption.is_some()
+        && let Ok(message_id) = i32::try_from(from_message_id)
+    {
+        let copy_caption = caption.clone().unwrap_or_default();
+        let copy_markup = markup.clone();
+        let copied = with_retry_after(|| {
+            let mut request = bot
+                .copy_message(chat, ChatId(from_chat_id), MessageId(message_id))
+                .caption(copy_caption.clone());
+            if let Some(markup) = &copy_markup {
+                request = request.reply_markup(markup.clone());
+            }
+            request
+        })
+        .await;
+        match copied {
+            Ok(id) => return Ok(id),
+            Err(error) => {
+                // Any copy failure (stale source message, permissions, ...) is
+                // non-fatal: fall back to the ordinary file_id resend.
+                debug!(%error, "copy_message failed; falling back to file_id");
+            }
+        }
+    }
+
     let title = truncate(&track.meta.stripped_title(), 128);
     let performer = track.meta.performer.as_deref().map(|p| truncate(p, 128));
     let duration = track.meta.duration_secs;
@@ -65,6 +97,7 @@ pub async fn send_cached(
         request
     })
     .await
+    .map(|message| message.id)
 }
 
 pub async fn send_prepared(
@@ -115,6 +148,7 @@ pub fn is_invalid_file_id(error: &teloxide::RequestError) -> bool {
         || text.contains("file identifier")
         || text.contains("wrong file")
         || text.contains("invalid file")
+        || text.contains("audio_content_type_invalid")
 }
 
 pub fn truncate(value: &str, max: usize) -> String {

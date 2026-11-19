@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,\n                    performer, album, duration_secs, size_bytes, thumbnail_url, genres\n             FROM tracks WHERE track_key = ANY($1) AND quality = $2",
+  "query": "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,\n                    performer, album, duration_secs, thumbnail_url, genres, chat_id, message_id\n             FROM tracks WHERE file_id = $1\n             ORDER BY last_used_at DESC\n             LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -115,17 +115,6 @@
       },
       {
         "ordinal": 10,
-        "name": "size_bytes",
-        "type_info": "Int8",
-        "origin": {
-          "Table": {
-            "table": "tracks",
-            "name": "size_bytes"
-          }
-        }
-      },
-      {
-        "ordinal": 11,
         "name": "thumbnail_url",
         "type_info": "Text",
         "origin": {
@@ -136,7 +125,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 11,
         "name": "genres",
         "type_info": "Text",
         "origin": {
@@ -145,12 +134,33 @@
             "name": "genres"
           }
         }
+      },
+      {
+        "ordinal": 12,
+        "name": "chat_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "message_id"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "TextArray",
-        "Int8"
+        "Text"
       ]
     },
     "nullable": [
@@ -165,9 +175,10 @@
       true,
       true,
       true,
+      false,
       true,
-      false
+      true
     ]
   },
-  "hash": "11b8312cbc6ef76a207ca5b0dc63e769ee005eef3ee089719b52499f5f355c4e"
+  "hash": "b8dd1c1b3691ae8f6dff7bda240e908213818fc846ac3686bc37851902a11451"
 }

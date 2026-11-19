@@ -277,7 +277,8 @@ impl Db {
     pub async fn get_track(&self, key: &TrackKey, quality: u32) -> AppResult<Option<CachedTrack>> {
         let row = sqlx::query!(
             "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,
-                    performer, album, duration_secs, size_bytes, thumbnail_url, genres
+                    performer, album, duration_secs, size_bytes, thumbnail_url, genres,
+                    chat_id, message_id
              FROM tracks WHERE track_key = $1 AND quality = $2",
             key.as_str(),
             i64::from(quality)
@@ -307,6 +308,8 @@ impl Db {
                     thumbnail_url: row.thumbnail_url,
                     genres: serde_json::from_str(&row.genres).unwrap_or_default(),
                 },
+                chat_id: row.chat_id,
+                message_id: row.message_id,
             }
         }))
     }
@@ -324,7 +327,8 @@ impl Db {
         let keys: Vec<String> = keys.iter().map(|key| key.as_str().to_owned()).collect();
         let rows = sqlx::query!(
             "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,
-                    performer, album, duration_secs, size_bytes, thumbnail_url, genres
+                    performer, album, duration_secs, size_bytes, thumbnail_url, genres,
+                    chat_id, message_id
              FROM tracks WHERE track_key = ANY($1) AND quality = $2",
             &keys,
             i64::from(quality)
@@ -354,6 +358,8 @@ impl Db {
                     thumbnail_url: row.thumbnail_url,
                     genres: serde_json::from_str(&row.genres).unwrap_or_default(),
                 },
+                chat_id: row.chat_id,
+                message_id: row.message_id,
             })
             .collect())
     }
@@ -363,7 +369,7 @@ impl Db {
     pub async fn track_by_file_id(&self, file_id: &str) -> AppResult<Option<CachedTrack>> {
         let row = sqlx::query!(
             "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,
-                    performer, album, duration_secs, thumbnail_url, genres
+                    performer, album, duration_secs, thumbnail_url, genres, chat_id, message_id
              FROM tracks WHERE file_id = $1
              ORDER BY last_used_at DESC
              LIMIT 1",
@@ -392,6 +398,8 @@ impl Db {
                 thumbnail_url: row.thumbnail_url,
                 genres: serde_json::from_str(&row.genres).unwrap_or_default(),
             },
+            chat_id: row.chat_id,
+            message_id: row.message_id,
         }))
     }
 
@@ -400,14 +408,17 @@ impl Db {
         track: &CachedTrack,
         quality: u32,
         size_bytes: Option<i64>,
+        chat_id: Option<i64>,
+        message_id: Option<i64>,
     ) -> AppResult<()> {
         let now = unix_now();
         let genres = serde_json::to_string(&track.meta.genres).unwrap_or_else(|_| "[]".to_owned());
         sqlx::query!(
             "INSERT INTO tracks
                 (track_key, quality, file_id, file_unique_id, source_url, provider, title, performer,
-                 album, duration_secs, size_bytes, thumbnail_url, genres, created_at, last_used_at, uses)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 1)
+                 album, duration_secs, size_bytes, thumbnail_url, genres, created_at, last_used_at, uses,
+                 chat_id, message_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 1, $16, $17)
              ON CONFLICT(track_key, quality) DO UPDATE SET
                 file_id = excluded.file_id,
                 file_unique_id = excluded.file_unique_id,
@@ -421,7 +432,9 @@ impl Db {
                 thumbnail_url = excluded.thumbnail_url,
                 genres = excluded.genres,
                 last_used_at = excluded.last_used_at,
-                uses = tracks.uses + 1",
+                uses = tracks.uses + 1,
+                chat_id = excluded.chat_id,
+                message_id = excluded.message_id",
             track.key.as_str(),
             i64::from(quality),
             track.file_id,
@@ -436,7 +449,9 @@ impl Db {
             track.meta.thumbnail_url,
             genres,
             now,
-            now
+            now,
+            chat_id,
+            message_id
         )
         .execute(&self.pool)
         .await
@@ -2338,12 +2353,14 @@ mod tests {
                 duration_secs: Some(123),
                 ..Default::default()
             },
+            chat_id: None,
+            message_id: None,
         };
         assert!(db.get_track(&key, 192).await.expect("miss").is_none());
-        db.put_track(&track, 192, Some(1_234_567))
+        db.put_track(&track, 192, Some(1_234_567), None, None)
             .await
             .expect("put");
-        db.put_track(&track, 320, Some(3_456_789))
+        db.put_track(&track, 320, Some(3_456_789), None, None)
             .await
             .expect("put 320");
         let cached = db.get_track(&key, 192).await.expect("get").expect("some");
@@ -2537,9 +2554,15 @@ mod tests {
             source_url: None,
             provider: Provider::YouTube,
             meta: TrackMeta::default(),
+            chat_id: None,
+            message_id: None,
         };
-        db.put_track(&track, 192, Some(1000)).await.expect("put");
-        db.put_track(&track, 320, Some(2000)).await.expect("put");
+        db.put_track(&track, 192, Some(1000), None, None)
+            .await
+            .expect("put");
+        db.put_track(&track, 320, Some(2000), None, None)
+            .await
+            .expect("put");
         db.ensure_user(1, Lang::En).await.expect("user");
         let stats = db.stats().await.expect("stats");
         assert_eq!(stats.tracks, 2);
@@ -3099,13 +3122,17 @@ mod tests {
                 title: "Batch".into(),
                 ..Default::default()
             },
+            chat_id: None,
+            message_id: None,
         };
-        db.put_track(&track, 192, Some(1000)).await.expect("put");
+        db.put_track(&track, 192, Some(1000), None, None)
+            .await
+            .expect("put");
         let other = CachedTrack {
             key: TrackKey::new("youtube:other"),
             ..track.clone()
         };
-        db.put_track(&other, 192, Some(1000))
+        db.put_track(&other, 192, Some(1000), None, None)
             .await
             .expect("put other");
         let found = db

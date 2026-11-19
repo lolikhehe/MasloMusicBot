@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,\n                    performer, album, duration_secs, size_bytes, thumbnail_url, genres\n             FROM tracks WHERE track_key = $1 AND quality = $2",
+  "query": "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,\n                    performer, album, duration_secs, size_bytes, thumbnail_url, genres,\n                    chat_id, message_id\n             FROM tracks WHERE track_key = ANY($1) AND quality = $2",
   "describe": {
     "columns": [
       {
@@ -145,11 +145,33 @@
             "name": "genres"
           }
         }
+      },
+      {
+        "ordinal": 13,
+        "name": "chat_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tracks",
+            "name": "message_id"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Text",
+        "TextArray",
         "Int8"
       ]
     },
@@ -166,8 +188,10 @@
       true,
       true,
       true,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "ab51ee61812e6a5ed8ef15cdf73686465c6ed62aa1b47fdab56a63ad55e94b5f"
+  "hash": "6c7c8b4a98b1440ca961bf06784e977f66caa40c8f83c60832ea567d7babd29a"
 }

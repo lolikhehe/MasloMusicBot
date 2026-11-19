@@ -100,8 +100,10 @@ async fn run_fpcalc(audio_path: &Path) -> Result<String, DownloadError> {
 fn parse_fpcalc(json: &str) -> Result<(u32, String), DownloadError> {
     #[derive(Debug, Deserialize)]
     struct FpcalcOutput {
+        // fpcalc emits seconds as a float (e.g. `DURATION=301.65`); u32 would
+        // reject every real run with "invalid type: floating point".
         #[serde(default)]
-        duration: Option<u32>,
+        duration: Option<f64>,
         #[serde(default)]
         fingerprint: Option<String>,
     }
@@ -115,7 +117,7 @@ fn parse_fpcalc(json: &str) -> Result<(u32, String), DownloadError> {
         .ok_or_else(|| {
             DownloadError::Audio("acoustid: fpcalc returned no fingerprint".to_owned())
         })?;
-    Ok((output.duration.unwrap_or(0), fingerprint))
+    Ok((output.duration.unwrap_or(0.0) as u32, fingerprint))
 }
 
 /// Parse an AcoustID v2 lookup body into sorted, de-duplicated matches. Kept
@@ -322,6 +324,15 @@ mod tests {
         assert!(parse_fpcalc(r#"{"duration":1}"#).is_err(), "no fingerprint");
         assert!(parse_fpcalc(r#"{"duration":1,"fingerprint":"  "}"#).is_err());
         assert!(parse_fpcalc("not json").is_err());
+    }
+
+    #[test]
+    fn parses_fpcalc_float_duration_from_real_output() {
+        // Real `fpcalc -json -length 120` line: DURATION is a float, not an int.
+        let json = r#"{"duration":301.65,"fingerprint":"AQADtGabc"}"#;
+        let (duration, fingerprint) = parse_fpcalc(json).expect("fpcalc output");
+        assert_eq!(duration, 301);
+        assert_eq!(fingerprint, "AQADtGabc");
     }
 
     #[test]
