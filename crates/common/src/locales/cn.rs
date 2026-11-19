@@ -185,6 +185,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "🌐 Language" => Some("🌐 语言"),
         "<b>Language</b>\nPick the interface language:" => Some("<b>语言</b>\n选择界面语言："),
         "« Back" => Some("« 返回"),
+        "◀ Back" => Some("◀ 返回"),
         "⬇️ Downloading… this usually takes a few seconds." => {
             Some("⬇️ 正在下载…通常需要几秒钟。")
         }
@@ -398,10 +399,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Recognition is not configured on this server" => Some("此服务器未配置音频识别"),
         "🔍 Listening…" => Some("🔍 正在聆听…"),
         "Could not identify this track" => Some("无法识别这首曲目"),
-        "Download album" => Some("下载专辑"),
+        "⬇ Download as archive" => Some("⬇ 下载为压缩包"),
         "Auto-delete: {n} hours" => Some("自动删除：{n} 小时"),
         "Set: {n} hours" => Some("已设置：{n} 小时"),
         "≈ {n} min" => Some("≈ {n} 分钟"),
+        "≈ {n} sec" => Some("≈ {n} 秒"),
         "Album is too large to pack (limit {n} MB)" => Some("专辑过大，无法打包（上限 {n} MB）"),
         "📦 {album} — {n} tracks" => Some("📦 {album} — {n} 首曲目"),
         "Looks like: {artist} — {title}" => Some("听起来像：{artist} — {title}"),

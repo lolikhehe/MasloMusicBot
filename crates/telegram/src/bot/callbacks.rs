@@ -6,12 +6,13 @@ use crate::bot::commands::{
 };
 use crate::bot::handlers::{
     ask_album_confirmation, deliver_album, deliver_track, edit_html, error_text, escape_html,
-    hq_cover_url,
+    hq_cover_url, spawn_download_countdown,
 };
 use crate::state::AppState;
 use common::domain::{AlbumRef, Provider, UserRecord};
 use common::error::{DownloadError, HandlerResult};
 use common::i18n;
+use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::types::{
     CallbackQuery, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId,
@@ -69,6 +70,12 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         && let Ok(offset) = offset.parse::<u32>()
     {
         handle_album_page(&state, &bot, &query, offset, user.lang, user_id).await?;
+    } else if let Some(payload) = data.strip_prefix("alb:") {
+        let offset = payload
+            .rsplit_once(':')
+            .and_then(|(_, value)| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        handle_album_back(&state, &bot, &query, offset, user.lang, user_id).await?;
     } else if let Some(payload) = data.strip_prefix("azp:")
         && let Some((source, id)) = payload.split_once(':')
     {
@@ -367,9 +374,26 @@ async fn handle_selection(
         return Ok(());
     };
 
-    let _ = edit_html(bot, chat, message_id, i18n::downloading(lang)).await;
+    let avg = state.db.avg_recent_download_secs().await?;
+    let base = i18n::downloading(lang).to_owned();
+    let countdown = if let Some(avg) = avg {
+        let eta = i18n::download_eta(lang, avg);
+        let _ = edit_html(bot, chat, message_id, format!("{base} {eta}")).await;
+        Some(spawn_download_countdown(
+            bot,
+            chat,
+            message_id,
+            base,
+            (avg.ceil() as u64).max(1),
+            lang,
+            true,
+        ))
+    } else {
+        let _ = edit_html(bot, chat, message_id, base).await;
+        None
+    };
     info!(selection_id, "delivering selected search result");
-    match deliver_track(
+    let result = deliver_track(
         state,
         bot,
         chat,
@@ -380,8 +404,13 @@ async fn handle_selection(
         hq_cover,
         genre_analysis,
     )
-    .await
-    {
+    .await;
+    if let Some(handle) = &countdown {
+        handle.abort();
+        // Let any in-flight ticker edit resolve so the final edit lands last.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    match result {
         Ok(_) => {
             let title = request
                 .meta
@@ -595,6 +624,32 @@ async fn handle_album_page(
     .await
 }
 
+/// Return to the `/albums` page the detail card was opened from. The offset is
+/// embedded in the callback; if it is missing, fall back to the first page.
+async fn handle_album_back(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    offset: u32,
+    lang: common::domain::Lang,
+    user_id: i64,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    show_albums_page(
+        state,
+        bot,
+        message.chat.id,
+        message.id,
+        lang,
+        user_id,
+        offset,
+    )
+    .await
+}
+
 /// Open a saved album: rebuild its `AlbumRef` from the payload saved at
 /// delivery time and resolve it through the same manager call `alq:` uses.
 #[allow(clippy::too_many_arguments)]
@@ -655,40 +710,37 @@ async fn handle_album_view(
     text.push('\n');
     text.push_str(&artist);
 
-    let mut buttons = Vec::new();
+    let mut first_row = Vec::new();
     if let Some(album_ref) = &album_ref {
-        // The download button reuses the alq: pick → confirmation flow.
-        let pick_id = state.new_selection_id();
-        state
-            .put_selection(
-                &pick_id,
-                crate::state::selection::ALBUM_REF,
-                user_id,
-                album_ref,
-            )
-            .await?;
-        let download = format!("alq:{pick_id}");
-        if download.len() <= 64 {
-            buttons.push(InlineKeyboardButton::callback(
-                i18n::download_album(user.lang).to_owned(),
-                download,
-            ));
-        }
         let zip = format!(
             "azp:{}:{}",
             album_ref.provider.as_str(),
             album_ref.url.as_deref().unwrap_or("")
         );
         if zip.len() <= 64 {
-            buttons.push(InlineKeyboardButton::callback("🗜 ZIP", zip));
+            first_row.push(InlineKeyboardButton::callback(
+                i18n::download_archive(user.lang).to_owned(),
+                zip,
+            ));
         }
     }
     let remove = format!("alr:{selection_id}:{index}");
     if remove.len() <= 64 {
-        buttons.push(InlineKeyboardButton::callback(
+        first_row.push(InlineKeyboardButton::callback(
             i18n::albums_remove_button(user.lang).to_owned(),
             remove,
         ));
+    }
+    let mut rows = Vec::new();
+    if !first_row.is_empty() {
+        rows.push(first_row);
+    }
+    let back = format!("alb:{selection_id}:{}", page.offset);
+    if back.len() <= 64 {
+        rows.push(vec![InlineKeyboardButton::callback(
+            i18n::back_arrow(user.lang).to_owned(),
+            back,
+        )]);
     }
 
     // Saved cover first, then the resolved album's first track artwork.
@@ -712,7 +764,7 @@ async fn handle_album_view(
     let _ = bot
         .edit_message_text(chat, message_id, text)
         .parse_mode(ParseMode::Html)
-        .reply_markup(InlineKeyboardMarkup::new(vec![buttons]))
+        .reply_markup(InlineKeyboardMarkup::new(rows))
         .await;
     Ok(())
 }
@@ -796,8 +848,6 @@ async fn handle_album_zip(
     let _ = bot.answer_callback_query(query.id.clone()).await;
     let chat = message.chat.id;
     let status_id = message.id;
-    let _ = edit_html(bot, chat, status_id, i18n::album_packing(user.lang)).await;
-
     let state = state.clone();
     let bot = bot.clone();
     let lang = user.lang;
@@ -806,7 +856,9 @@ async fn handle_album_zip(
     let source = source.to_owned();
     let id = id.to_owned();
     tokio::spawn(async move {
-        let flow = async {
+        // Resolve first (bounded): the ETA below must count the album's real
+        // track count, not the 25-track worst case.
+        let resolved = tokio::time::timeout(Duration::from_secs(20), async {
             let provider: Provider = source
                 .parse()
                 .map_err(|_| DownloadError::Unsupported("unknown album source".to_owned()))?;
@@ -821,24 +873,79 @@ async fn handle_album_zip(
             let all_keys: Vec<_> = album.tracks.iter().map(|track| track.key.clone()).collect();
             // zip_album rejects >MAX_ZIP_TRACKS keys outright; pack the first
             // ones instead of failing the whole request.
-            let keys = &all_keys[..all_keys.len().min(downloader::MAX_ZIP_TRACKS)];
+            let keys: Vec<_> = all_keys[..all_keys.len().min(downloader::MAX_ZIP_TRACKS)].to_vec();
             let mut cached = 0usize;
-            for key in keys {
+            for key in &keys {
                 if state.manager.get_cached(key, quality).await?.is_some() {
                     cached += 1;
                 }
             }
-            if cached == 0 {
-                return Ok::<_, common::error::AppError>(None);
+            Ok::<_, common::error::AppError>((album.title, keys, cached))
+        })
+        .await;
+        let (title, keys, cached) = match resolved {
+            Ok(Ok(resolved)) => resolved,
+            Ok(Err(error)) => {
+                let _ = edit_html(
+                    &bot,
+                    chat,
+                    status_id,
+                    i18n::error(lang, &DownloadError::Internal(error.to_string())),
+                )
+                .await;
+                return;
             }
-            Ok(Some((
-                album.title,
-                state.manager.zip_album(keys, quality, hq_cover).await?,
-            )))
+            Err(_) => {
+                let _ = edit_html(
+                    &bot,
+                    chat,
+                    status_id,
+                    i18n::error(
+                        lang,
+                        &DownloadError::Internal("album resolve timed out".to_owned()),
+                    ),
+                )
+                .await;
+                return;
+            }
         };
-
-        match tokio::time::timeout(std::time::Duration::from_secs(10 * 60), flow).await {
-            Ok(Ok(Some((title, outcome)))) => {
+        if cached == 0 {
+            let _ = edit_html(&bot, chat, status_id, i18n::album_pack_no_tracks(lang)).await;
+            return;
+        }
+        let base = i18n::album_packing(lang).to_owned();
+        let countdown = match state.db.avg_recent_download_secs().await {
+            Ok(Some(avg)) => {
+                let estimate = avg * keys.len() as f64;
+                let eta = i18n::download_eta(lang, estimate);
+                let _ = edit_html(&bot, chat, status_id, format!("{base} {eta}")).await;
+                Some(spawn_download_countdown(
+                    &bot,
+                    chat,
+                    status_id,
+                    base,
+                    (estimate.ceil() as u64).max(1),
+                    lang,
+                    true,
+                ))
+            }
+            _ => {
+                let _ = edit_html(&bot, chat, status_id, base).await;
+                None
+            }
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(10 * 60),
+            state.manager.zip_album(&keys, quality, hq_cover),
+        )
+        .await;
+        if let Some(handle) = &countdown {
+            handle.abort();
+            // Let any in-flight ticker edit resolve so the final edit lands last.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        match result {
+            Ok(Ok(outcome)) => {
                 let safe: String = title
                     .chars()
                     .map(|c| {
@@ -875,9 +982,6 @@ async fn handle_album_zip(
                         .await;
                     }
                 }
-            }
-            Ok(Ok(None)) => {
-                let _ = edit_html(&bot, chat, status_id, i18n::album_pack_no_tracks(lang)).await;
             }
             Ok(Err(error)) => {
                 let lower = error.to_string().to_ascii_lowercase();

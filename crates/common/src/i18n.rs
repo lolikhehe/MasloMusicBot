@@ -768,6 +768,10 @@ pub fn back_button(lang: Lang) -> &'static str {
     pick(lang, "« Back", "« Назад")
 }
 
+pub fn back_arrow(lang: Lang) -> &'static str {
+    pick(lang, "◀ Back", "◀ Назад")
+}
+
 pub fn downloading(lang: Lang) -> &'static str {
     pick(
         lang,
@@ -1846,6 +1850,10 @@ pub fn albums_remove_button(lang: Lang) -> &'static str {
     pick(lang, "🗑 Remove", "🗑 Прибрати")
 }
 
+pub fn download_archive(lang: Lang) -> &'static str {
+    pick(lang, "⬇ Download as archive", "⬇ Завантажити архівом")
+}
+
 pub fn albums_saved(lang: Lang) -> &'static str {
     pick(lang, "Saved", "Збережено")
 }
@@ -1898,10 +1906,6 @@ pub fn album_pack_too_large(lang: Lang, n: u32) -> String {
         | Lang::Be => lformat!(lang, "Album is too large to pack (limit {n} MB)", n = n),
         Lang::Uk => format!("Альбом завеликий для архіву (ліміт {n} МБ)"),
     }
-}
-
-pub fn download_album(lang: Lang) -> &'static str {
-    pick(lang, "Download album", "Завантажити альбом")
 }
 
 pub fn autodelete_label(lang: Lang) -> &'static str {
@@ -1978,6 +1982,30 @@ pub fn queue_eta(lang: Lang, n: u32) -> String {
         | Lang::Cz
         | Lang::Be => lformat!(lang, "≈ {n} min", n = n),
         Lang::Uk => format!("≈ {n} хв"),
+    }
+}
+
+pub fn eta_secs(lang: Lang, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "≈ {n} sec", n = n),
+        Lang::Uk => format!("≈ {n} с"),
+    }
+}
+
+/// Estimated-wait suffix: seconds under 90, minutes beyond.
+pub fn download_eta(lang: Lang, secs: f64) -> String {
+    if secs < 90.0 {
+        eta_secs(lang, (secs.ceil() as u64).max(1) as u32)
+    } else {
+        queue_eta(lang, ((secs / 60.0).ceil() as u64).max(1) as u32)
     }
 }
 

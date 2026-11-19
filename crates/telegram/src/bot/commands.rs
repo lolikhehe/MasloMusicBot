@@ -1,7 +1,7 @@
 //! Command parsing and handlers. Commands are parsed manually so `@botname`
 //! suffixes and admin arguments behave predictably in groups.
 
-use crate::bot::handlers::escape_html;
+use crate::bot::handlers::{escape_html, spawn_download_countdown};
 use crate::bot::send::truncate;
 use crate::state::AppState;
 use common::domain::{Lang, Provider};
@@ -10,6 +10,7 @@ use common::i18n;
 use providers::key_from_input;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode};
 use tokio::sync::Semaphore;
@@ -753,9 +754,25 @@ pub async fn handle_command(
                     meta: Some(cached.meta.clone()),
                     target: common::domain::DownloadTarget::Url(url),
                 };
-                let progress = bot
-                    .send_message(msg.chat.id, i18n::downloading(lang))
-                    .await?;
+                let avg = state.db.avg_recent_download_secs().await?;
+                let base = i18n::downloading(lang).to_owned();
+                let text = if let Some(avg) = avg {
+                    format!("{} {}", base, i18n::download_eta(lang, avg))
+                } else {
+                    base.clone()
+                };
+                let progress = bot.send_message(msg.chat.id, text).await?;
+                let countdown = avg.map(|avg| {
+                    spawn_download_countdown(
+                        bot,
+                        msg.chat.id,
+                        progress.id,
+                        base,
+                        (avg.ceil() as u64).max(1),
+                        lang,
+                        false,
+                    )
+                });
                 let result = crate::bot::handlers::deliver_track(
                     state,
                     bot,
@@ -768,6 +785,11 @@ pub async fn handle_command(
                     user_record.genre_analysis,
                 )
                 .await;
+                if let Some(handle) = &countdown {
+                    handle.abort();
+                    // Let any in-flight ticker edit resolve so the final edit lands last.
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 let text = match result {
                     Ok(_) => i18n::convert_reply_done(lang, &value),
                     Err(error) => {

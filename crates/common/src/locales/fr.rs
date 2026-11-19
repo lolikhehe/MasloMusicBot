@@ -199,6 +199,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("<b>Langue</b>\nChoisissez la langue de l'interface :")
         }
         "« Back" => Some("« Retour"),
+        "◀ Back" => Some("◀ Retour"),
         "⬇️ Downloading… this usually takes a few seconds." => {
             Some("⬇️ Téléchargement… cela prend généralement quelques secondes.")
         }
@@ -442,10 +443,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "🔍 Listening…" => Some("🔍 Écoute en cours…"),
         "Could not identify this track" => Some("Impossible d'identifier ce morceau"),
-        "Download album" => Some("Télécharger l'album"),
+        "⬇ Download as archive" => Some("⬇ Télécharger en archive"),
         "Auto-delete: {n} hours" => Some("Suppression auto : {n} h"),
         "Set: {n} hours" => Some("Défini : {n} h"),
         "≈ {n} min" => Some("≈ {n} min"),
+        "≈ {n} sec" => Some("≈ {n} s"),
         "Album is too large to pack (limit {n} MB)" => {
             Some("L'album est trop volumineux à compresser (limite {n} Mo)")
         }

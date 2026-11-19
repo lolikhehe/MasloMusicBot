@@ -12,7 +12,7 @@ use common::version::DEV_CHANNEL_LINE;
 use downloader::PreparedAudio;
 use providers::{ParsedInput, parse_input};
 use std::borrow::Cow;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use teloxide::prelude::*;
 use teloxide::types::{
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message,
@@ -643,13 +643,19 @@ pub async fn deliver_album(
     // Keep the album's identity before `album.tracks` is consumed below; the
     // save/ZIP callbacks carry it, and over-long ids are dropped per button.
     let album_identity = album_identity(&album);
-    let _ = edit_html(
-        bot,
-        chat,
-        progress,
-        i18n::album_started(lang, &title, total),
-    )
-    .await;
+    let base = i18n::album_started(lang, &title, total);
+    // Static ETA up front. The per-track progress edits below already animate
+    // this same message every ~2 s, so a wall-clock countdown would only
+    // fight them for the edit slot.
+    match state.db.avg_recent_download_secs().await {
+        Ok(Some(avg)) => {
+            let eta = i18n::download_eta(lang, avg * total as f64);
+            let _ = edit_html(bot, chat, progress, format!("{base} {eta}")).await;
+        }
+        _ => {
+            let _ = edit_html(bot, chat, progress, base).await;
+        }
+    }
 
     // The album-info toggle sends the cover and facts before the first track.
     if album_info && let Some(meta) = album.tracks.first().and_then(|track| track.meta.as_ref()) {
@@ -1435,6 +1441,51 @@ pub async fn edit_html(
     Ok(())
 }
 
+/// Adaptive tick gap: 15s while the estimate is far out, 5s near the end.
+/// Sub-5s ticks would hit Telegram's edit flood limit.
+fn countdown_interval(remaining_secs: u64) -> u64 {
+    if remaining_secs > 120 { 15 } else { 5 }
+}
+
+/// Re-edit a download placeholder with a shrinking ETA. The caller aborts the
+/// returned handle before rendering the final result.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_download_countdown(
+    bot: &Bot,
+    chat: ChatId,
+    msg_id: MessageId,
+    base_text: String,
+    total_secs: u64,
+    lang: Lang,
+    html: bool,
+) -> tokio::task::JoinHandle<()> {
+    let bot = bot.clone();
+    tokio::spawn(async move {
+        let started = tokio::time::Instant::now();
+        for _ in 0..24 {
+            let remaining = total_secs
+                .saturating_sub(started.elapsed().as_secs())
+                .max(1);
+            tokio::time::sleep(Duration::from_secs(countdown_interval(remaining))).await;
+            let remaining = total_secs
+                .saturating_sub(started.elapsed().as_secs())
+                .max(1);
+            let text = format!(
+                "{} {}",
+                base_text,
+                i18n::download_eta(lang, remaining as f64)
+            );
+            let mut request = bot.edit_message_text(chat, msg_id, text);
+            if html {
+                request = request.parse_mode(ParseMode::Html);
+            }
+            if request.await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
 pub fn error_text(lang: Lang, error: &BoxError) -> String {
     if let Some(download) = error.downcast_ref::<DownloadError>() {
         i18n::error(lang, download)
@@ -1506,5 +1557,20 @@ mod caption_tests {
         let caption = tags_caption(&meta, true).expect("caption");
         assert!(caption.chars().count() <= 1024);
         assert!(caption.ends_with(DEV_CHANNEL_LINE));
+    }
+}
+
+#[cfg(test)]
+mod countdown_tests {
+    use super::countdown_interval;
+    use common::domain::Lang;
+    use common::i18n;
+
+    #[test]
+    fn countdown_interval_and_eta_unit_switch() {
+        assert_eq!(countdown_interval(121), 15);
+        assert_eq!(countdown_interval(120), 5);
+        assert_eq!(i18n::download_eta(Lang::En, 89.0), "≈ 89 sec");
+        assert_eq!(i18n::download_eta(Lang::En, 90.0), "≈ 2 min");
     }
 }

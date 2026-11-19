@@ -197,6 +197,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("<b>Jazyk</b>\nVyberte jazyk rozhraní:")
         }
         "« Back" => Some("« Zpět"),
+        "◀ Back" => Some("◀ Zpět"),
         "⬇️ Downloading… this usually takes a few seconds." => {
             Some("⬇️ Stahuji… obvykle to trvá několik sekund.")
         }
@@ -432,10 +433,11 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "🔍 Listening…" => Some("🔍 Poslouchám…"),
         "Could not identify this track" => Some("Tuto skladbu se nepodařilo rozpoznat"),
-        "Download album" => Some("Stáhnout album"),
+        "⬇ Download as archive" => Some("⬇ Stáhnout jako archiv"),
         "Auto-delete: {n} hours" => Some("Automatické mazání: {n} hod."),
         "Set: {n} hours" => Some("Nastaveno: {n} hod."),
         "≈ {n} min" => Some("≈ {n} min"),
+        "≈ {n} sec" => Some("≈ {n} s"),
         "Album is too large to pack (limit {n} MB)" => {
             Some("Album je příliž velký k zabalení (limit {n} MB)")
         }
