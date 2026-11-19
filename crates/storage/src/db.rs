@@ -1691,7 +1691,7 @@ impl Db {
 
     /// Mean wall-time of terminal `done` jobs finished in the last 24h, in
     /// seconds. Each sample is clamped to 1..=1800s so one stalled download
-    /// cannot skew the estimate; `None` until at least 3 samples exist.
+    /// cannot skew the estimate; `None` until at least one sample exists.
     pub async fn avg_recent_download_secs(&self) -> AppResult<Option<f64>> {
         Ok(sqlx::query_scalar!(
             "SELECT AVG(duration) FROM (
@@ -1699,13 +1699,42 @@ impl Db {
                  FROM download_jobs
                  WHERE status = 'done' AND updated_at >= $1
              ) d
-             HAVING COUNT(*) >= 3",
+             HAVING COUNT(*) >= 1",
             unix_now() - 86_400
         )
         .fetch_optional(&self.pool)
         .await
         .map_err(db_err)?
         .flatten())
+    }
+
+    /// Weighted download rate: wall-seconds of audio downloaded per second of
+    /// audio duration, over terminal `done` jobs finished in the last 24h.
+    /// Job payloads carry the track key (`payload->>'key'`); the track's
+    /// `duration_secs` supplies the weight (quality is fixed per request, so
+    /// size ∝ duration). Jobs without a usable duration are skipped. The
+    /// result is clamped into 0.25..=8.0 as a sanity bound.
+    pub async fn download_rate(&self) -> AppResult<Option<f64>> {
+        Ok(sqlx::query_scalar!(
+            "SELECT SUM(s.wall) / SUM(s.duration) FROM (
+                 SELECT LEAST(1800, GREATEST(1, j.updated_at - j.created_at))::double precision AS wall,
+                        t.duration_secs::double precision AS duration
+                 FROM download_jobs j
+                 JOIN (
+                     SELECT DISTINCT ON (track_key) track_key, duration_secs
+                     FROM tracks WHERE duration_secs > 0
+                     ORDER BY track_key, quality
+                 ) t ON t.track_key = j.payload->>'key'
+                 WHERE j.status = 'done' AND j.updated_at >= $1
+             ) s
+             HAVING COUNT(*) >= 1",
+            unix_now() - 86_400
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?
+        .flatten()
+        .map(|rate| rate.clamp(0.25, 8.0)))
     }
 
     pub async fn request_cancel(&self, id: &str, user_id: i64) -> AppResult<bool> {
@@ -2696,12 +2725,80 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../../migrations")]
-    async fn avg_recent_download_secs_needs_three_samples(pool: PgPool) {
+    async fn avg_recent_download_secs_needs_one_sample(pool: PgPool) {
         let db = db(pool).await;
+        assert_eq!(db.avg_recent_download_secs().await.expect("avg"), None);
         let now = unix_now();
         seed_job(&db, "j1", "done", now - 100, now - 90).await;
+        assert_eq!(
+            db.avg_recent_download_secs().await.expect("avg"),
+            Some(10.0)
+        );
         seed_job(&db, "j2", "done", now - 200, now - 180).await;
-        assert_eq!(db.avg_recent_download_secs().await.expect("avg"), None);
+        assert_eq!(
+            db.avg_recent_download_secs().await.expect("avg"),
+            Some(15.0)
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn download_rate_weights_by_track_duration(pool: PgPool) {
+        let db = db(pool).await;
+        assert_eq!(db.download_rate().await.expect("rate"), None);
+        for (key, duration) in [("youtube:long", 100u32), ("youtube:short", 50)] {
+            let track = CachedTrack {
+                key: TrackKey::new(key),
+                file_id: "F".into(),
+                file_unique_id: "U".into(),
+                source_url: None,
+                provider: Provider::YouTube,
+                meta: TrackMeta {
+                    title: "t".into(),
+                    duration_secs: Some(duration),
+                    ..Default::default()
+                },
+            };
+            db.put_track(&track, 192, None).await.expect("put track");
+        }
+        let now = unix_now();
+        // Wall 40s over a 100s track and 20s over a 50s track => 60/150 = 0.4.
+        db.enqueue_and_claim_job(
+            "r1",
+            1,
+            "track",
+            serde_json::json!({"key": "youtube:long"}),
+            "w",
+        )
+        .await
+        .expect("job");
+        db.finish_job("r1", "done", None).await.expect("finish");
+        sqlx::query!(
+            "UPDATE download_jobs SET created_at = $1, updated_at = $2 WHERE id = 'r1'",
+            now - 40,
+            now
+        )
+        .execute(&db.pool)
+        .await
+        .expect("backdate");
+        db.enqueue_and_claim_job(
+            "r2",
+            1,
+            "track",
+            serde_json::json!({"key": "youtube:short"}),
+            "w",
+        )
+        .await
+        .expect("job");
+        db.finish_job("r2", "done", None).await.expect("finish");
+        sqlx::query!(
+            "UPDATE download_jobs SET created_at = $1, updated_at = $2 WHERE id = 'r2'",
+            now - 20,
+            now
+        )
+        .execute(&db.pool)
+        .await
+        .expect("backdate");
+        assert_eq!(db.download_rate().await.expect("rate"), Some(0.4));
     }
 
     async fn last_seen(db: &Db, id: i64) -> i64 {

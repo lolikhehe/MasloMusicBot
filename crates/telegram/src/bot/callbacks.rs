@@ -374,17 +374,27 @@ async fn handle_selection(
         return Ok(());
     };
 
+    let duration = request
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.duration_secs)
+        .map(f64::from);
+    let rate = state.db.download_rate().await?;
     let avg = state.db.avg_recent_download_secs().await?;
+    let secs = match (rate, duration) {
+        (Some(rate), Some(duration)) => Some(rate * duration),
+        _ => avg,
+    };
     let base = i18n::downloading(lang).to_owned();
-    let countdown = if let Some(avg) = avg {
-        let eta = i18n::download_eta(lang, avg);
+    let countdown = if let Some(secs) = secs {
+        let eta = i18n::download_eta(lang, secs);
         let _ = edit_html(bot, chat, message_id, format!("{base} {eta}")).await;
         Some(spawn_download_countdown(
             bot,
             chat,
             message_id,
             base,
-            (avg.ceil() as u64).max(1),
+            (secs.ceil() as u64).max(1),
             lang,
             true,
         ))
@@ -873,17 +883,28 @@ async fn handle_album_zip(
             let all_keys: Vec<_> = album.tracks.iter().map(|track| track.key.clone()).collect();
             // zip_album rejects >MAX_ZIP_TRACKS keys outright; pack the first
             // ones instead of failing the whole request.
-            let keys: Vec<_> = all_keys[..all_keys.len().min(downloader::MAX_ZIP_TRACKS)].to_vec();
+            let selected = all_keys.len().min(downloader::MAX_ZIP_TRACKS);
+            let keys: Vec<_> = all_keys[..selected].to_vec();
+            let durations: f64 = album.tracks[..selected]
+                .iter()
+                .filter_map(|track| {
+                    track
+                        .meta
+                        .as_ref()
+                        .and_then(|meta| meta.duration_secs)
+                        .map(f64::from)
+                })
+                .sum();
             let mut cached = 0usize;
             for key in &keys {
                 if state.manager.get_cached(key, quality).await?.is_some() {
                     cached += 1;
                 }
             }
-            Ok::<_, common::error::AppError>((album.title, keys, cached))
+            Ok::<_, common::error::AppError>((album.title, keys, cached, durations))
         })
         .await;
-        let (title, keys, cached) = match resolved {
+        let (title, keys, cached, durations) = match resolved {
             Ok(Ok(resolved)) => resolved,
             Ok(Err(error)) => {
                 let _ = edit_html(
@@ -914,9 +935,16 @@ async fn handle_album_zip(
             return;
         }
         let base = i18n::album_packing(lang).to_owned();
-        let countdown = match state.db.avg_recent_download_secs().await {
-            Ok(Some(avg)) => {
-                let estimate = avg * keys.len() as f64;
+        let rate = state.db.download_rate().await.ok().flatten();
+        let avg = state.db.avg_recent_download_secs().await.ok().flatten();
+        // ZIP downloads run two tracks at a time; the per-job mean is already
+        // a single-track wall time, so only the size-weighted path halves it.
+        let estimate = match rate {
+            Some(rate) if durations > 0.0 => Some((rate * durations / 2.0).max(1.0)),
+            _ => avg.map(|avg| avg * keys.len() as f64),
+        };
+        let countdown = match estimate {
+            Some(estimate) => {
                 let eta = i18n::download_eta(lang, estimate);
                 let _ = edit_html(&bot, chat, status_id, format!("{base} {eta}")).await;
                 Some(spawn_download_countdown(
@@ -929,7 +957,7 @@ async fn handle_album_zip(
                     true,
                 ))
             }
-            _ => {
+            None => {
                 let _ = edit_html(&bot, chat, status_id, base).await;
                 None
             }

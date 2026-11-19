@@ -603,16 +603,28 @@ pub async fn confirm_album(
         )
         .await?;
     let title = escape_html(&album.title);
-    let keyboard = InlineKeyboardMarkup::new(vec![vec![
-        InlineKeyboardButton::callback(
-            i18n::album_download_all(lang).to_owned(),
-            format!("alc:{selection_id}"),
-        ),
-        InlineKeyboardButton::callback(
+    let mut first_row = vec![InlineKeyboardButton::callback(
+        i18n::album_download_all(lang).to_owned(),
+        format!("alc:{selection_id}"),
+    )];
+    // Offer the ZIP path next to "download all", reusing the same identity and
+    // 64-byte guard as the delivered-album summary row.
+    if let Some((source, id)) = album_identity(album) {
+        let zip = format!("azp:{source}:{id}");
+        if zip.len() <= 64 {
+            first_row.push(InlineKeyboardButton::callback(
+                i18n::download_archive(lang).to_owned(),
+                zip,
+            ));
+        }
+    }
+    let keyboard = InlineKeyboardMarkup::new(vec![
+        first_row,
+        vec![InlineKeyboardButton::callback(
             i18n::album_cancel(lang).to_owned(),
             format!("alx:{selection_id}"),
-        ),
-    ]]);
+        )],
+    ]);
     bot.edit_message_text(chat, progress, i18n::album_confirm(lang, &title, count))
         .parse_mode(ParseMode::Html)
         .reply_markup(keyboard)
@@ -647,14 +659,33 @@ pub async fn deliver_album(
     // Static ETA up front. The per-track progress edits below already animate
     // this same message every ~2 s, so a wall-clock countdown would only
     // fight them for the edit slot.
-    match state.db.avg_recent_download_secs().await {
-        Ok(Some(avg)) => {
-            let eta = i18n::download_eta(lang, avg * total as f64);
-            let _ = edit_html(bot, chat, progress, format!("{base} {eta}")).await;
+    let known: Vec<f64> = album
+        .tracks
+        .iter()
+        .filter_map(|track| {
+            track
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.duration_secs)
+                .map(f64::from)
+        })
+        .collect();
+    let rate = state.db.download_rate().await.ok().flatten();
+    let avg = state.db.avg_recent_download_secs().await.ok().flatten();
+    let estimate = match (rate, &known[..]) {
+        (Some(rate), durations) if !durations.is_empty() => {
+            let sum: f64 = durations.iter().sum();
+            let mean = sum / durations.len() as f64;
+            Some(rate * (sum + mean * (total - durations.len()) as f64))
         }
-        _ => {
-            let _ = edit_html(bot, chat, progress, base).await;
-        }
+        // No known durations: fall back to the per-job mean scaled by count.
+        _ => avg.map(|avg| avg * total as f64),
+    };
+    if let Some(secs) = estimate {
+        let eta = i18n::download_eta(lang, secs);
+        let _ = edit_html(bot, chat, progress, format!("{base} {eta}")).await;
+    } else {
+        let _ = edit_html(bot, chat, progress, base).await;
     }
 
     // The album-info toggle sends the cover and facts before the first track.

@@ -754,21 +754,27 @@ pub async fn handle_command(
                     meta: Some(cached.meta.clone()),
                     target: common::domain::DownloadTarget::Url(url),
                 };
+                let duration = cached.meta.duration_secs.map(f64::from);
+                let rate = state.db.download_rate().await?;
                 let avg = state.db.avg_recent_download_secs().await?;
+                let secs = match (rate, duration) {
+                    (Some(rate), Some(duration)) => Some(rate * duration),
+                    _ => avg,
+                };
                 let base = i18n::downloading(lang).to_owned();
-                let text = if let Some(avg) = avg {
-                    format!("{} {}", base, i18n::download_eta(lang, avg))
+                let text = if let Some(secs) = secs {
+                    format!("{} {}", base, i18n::download_eta(lang, secs))
                 } else {
                     base.clone()
                 };
                 let progress = bot.send_message(msg.chat.id, text).await?;
-                let countdown = avg.map(|avg| {
+                let countdown = secs.map(|secs| {
                     spawn_download_countdown(
                         bot,
                         msg.chat.id,
                         progress.id,
                         base,
-                        (avg.ceil() as u64).max(1),
+                        (secs.ceil() as u64).max(1),
                         lang,
                         false,
                     )
