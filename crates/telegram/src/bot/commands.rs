@@ -877,6 +877,10 @@ pub async fn handle_command(
                 send_plain(bot, msg.chat.id, i18n::similar_usage(lang)).await?;
                 return Ok(());
             };
+            // Give immediate feedback: uncached Last.fm + artwork lookups can
+            // take ~12 s, so show the standard searching placeholder now and
+            // replace it with the result below.
+            let progress = bot.send_message(msg.chat.id, i18n::searching(lang)).await?;
             let similar = match &state.lastfm {
                 Some(client) => client
                     .similar_tracks(artist, &cached.meta.title)
@@ -885,7 +889,13 @@ pub async fn handle_command(
                 None => Vec::new(),
             };
             if similar.is_empty() {
-                send_plain(bot, msg.chat.id, i18n::similar_none(lang)).await?;
+                let _ = crate::bot::handlers::edit_html(
+                    bot,
+                    msg.chat.id,
+                    progress.id,
+                    i18n::similar_none(lang),
+                )
+                .await;
                 return Ok(());
             }
             // Delivery only downloads a cover when the request carries
@@ -957,13 +967,31 @@ pub async fn handle_command(
                 .await
                 .unwrap_or_default();
             let rows =
-                crate::bot::handlers::search_result_rows(state, user_id, &results, &heard, 0)
-                    .await?;
+                match crate::bot::handlers::search_result_rows(state, user_id, &results, &heard, 0)
+                    .await
+                {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        // Don't leave the searching placeholder behind on failure.
+                        let _ = bot.delete_message(msg.chat.id, progress.id).await;
+                        return Err(error.into());
+                    }
+                };
             let subject = escape_html(&cached.meta.display_title());
-            bot.send_message(msg.chat.id, i18n::similar_title(lang, &subject))
+            let header = i18n::similar_title(lang, &subject);
+            let markup = InlineKeyboardMarkup::new(rows);
+            let edited = bot
+                .edit_message_text(msg.chat.id, progress.id, header.clone())
                 .parse_mode(ParseMode::Html)
-                .reply_markup(InlineKeyboardMarkup::new(rows))
-                .await?;
+                .reply_markup(markup.clone())
+                .await;
+            if edited.is_err() {
+                let _ = bot.delete_message(msg.chat.id, progress.id).await;
+                bot.send_message(msg.chat.id, header)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(markup)
+                    .await?;
+            }
         }
         Command::Artist(name) => {
             let Some(name) = name
@@ -1299,7 +1327,14 @@ async fn send_plain(
     };
     if let Err(error) = result {
         warn!(%error, "could not send command text; retrying without entities");
-        crate::bot::send::with_retry_after(|| bot.send_message(chat, text.clone()))
+        // The retry keeps the same payload, so an overlong message would fail
+        // again with Api(MessageIsTooLong). Telegram's limit is 4096 UTF-16
+        // units, and astral chars (CJK locales use them) take two units each,
+        // so a plain char count can overshoot: 2040 chars can never exceed
+        // 4096 units.
+        const MAX_TEXT_CHARS: usize = 2040;
+        let safe = crate::bot::handlers::truncate(&text, MAX_TEXT_CHARS);
+        crate::bot::send::with_retry_after(|| bot.send_message(chat, safe.clone()))
             .await
             .map(|_| ())?;
     }

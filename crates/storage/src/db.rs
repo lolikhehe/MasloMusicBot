@@ -71,9 +71,9 @@ impl Db {
             // losing the last few writes after a crash only costs a re-download.
             .options([("synchronous_commit", "off")]);
         let pool = PgPoolOptions::new()
-            .max_connections(16)
+            .max_connections(32)
             .min_connections(1)
-            .acquire_timeout(Duration::from_secs(10))
+            .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await
             .map_err(db_err)?;

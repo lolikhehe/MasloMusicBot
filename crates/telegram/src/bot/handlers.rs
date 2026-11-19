@@ -1124,15 +1124,14 @@ async fn try_cache_send(
     let Some(cached) = state.manager.get_cached(key, quality).await? else {
         return Ok(false);
     };
-    // Legacy cache entries (and sources with no genre info) may lack genres;
-    // fill them on demand for the tags caption. The genre analyzer must not
-    // slow the cache fast path, so analyzer-only enrichment happens after the
-    // send in a background task.
-    let mut caption_meta = cached.meta.clone();
-    enrich_tags(state, &mut caption_meta, tags_enabled).await;
+    // Genre enrichment (Last.fm up to ~6 s + iTunes ~5 s) must not sit on the
+    // cache-hit fast path. Build the caption from cached metadata as-is, send,
+    // then enrich in the detached task below and edit the caption only if the
+    // tags actually changed it. Analyzer-only enrichment stays in that task.
+    let caption_meta = cached.meta.clone();
     let caption = tags_caption(&caption_meta, tags_enabled);
     let fav_markup = fav_markup_for(state, user_id, key.as_str()).await;
-    match send::send_cached(bot, chat, &cached, caption, fav_markup).await {
+    match send::send_cached(bot, chat, &cached, caption.clone(), fav_markup.clone()).await {
         Ok(message) => {
             state.maybe_track_deletion(user_id, chat, message.id);
             state.manager.touch_cached(key, quality).await;
@@ -1141,19 +1140,52 @@ async fn try_cache_send(
                 .await;
             // The audio is already with Telegram. All remaining bookkeeping is
             // best-effort metadata: do NOT add two Postgres round trips to the
-            // cache-hit (S1) path. One detached task handles listen + genres;
-            // losing it on a crash only costs a history row, never a download.
+            // cache-hit (S1) path. One detached task handles enrichment,
+            // listen + genres; losing it on a crash only costs a history row,
+            // never a download (or an enriched caption).
             metrics::counter!("music_bot_cache_hits_total").increment(1);
             let record_state = state.clone();
+            let record_bot = bot.clone();
             let record_key = key.to_string();
-            let record_meta = caption_meta.clone();
+            let mut record_meta = caption_meta.clone();
+            let record_markup = fav_markup;
+            let record_message_id = message.id;
             tokio::spawn(async move {
-                let mut genres = record_meta.genres.clone();
-                if genre_analysis && genres.is_empty() && !tags_enabled {
-                    let mut enriched = record_meta.clone();
-                    enrich_tags(&record_state, &mut enriched, true).await;
-                    genres = enriched.genres;
+                // Enrichment that used to be awaited before the send now runs
+                // here. With tags on it feeds the caption edit; for the genre
+                // analyzer it supplies the genres to record.
+                if (tags_enabled || (genre_analysis && record_meta.genres.is_empty()))
+                    && record_meta.genres.len() < 8
+                {
+                    enrich_tags(&record_state, &mut record_meta, true).await;
                 }
+                if tags_enabled {
+                    let enriched_caption = tags_caption(&record_meta, tags_enabled);
+                    if enriched_caption != caption
+                        && let Some(enriched_text) = enriched_caption
+                    {
+                        // Rebuild the ⭐ row fresh: the user may have tapped it
+                        // since the send, and re-passing the send-time clone
+                        // would revert their choice.
+                        let fresh_markup =
+                            fav_markup_for(&record_state, user_id, &record_key).await;
+                        // Editing without reply_markup wipes existing buttons,
+                        // so skip the edit only when the fresh fetch failed but
+                        // the send actually had buttons to lose.
+                        if !matches!((&fresh_markup, &record_markup), (None, Some(_))) {
+                            let mut edit = record_bot
+                                .edit_message_caption(chat, record_message_id)
+                                .caption(enriched_text);
+                            if let Some(markup) = fresh_markup {
+                                edit = edit.reply_markup(markup);
+                            }
+                            if let Err(error) = edit.await {
+                                warn!(%error, key = %record_key, "could not enrich cached track caption");
+                            }
+                        }
+                    }
+                }
+                let genres = record_meta.genres.clone();
                 if let Err(error) = record_state
                     .db
                     .record_listen(

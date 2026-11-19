@@ -48,7 +48,10 @@ impl YtDlp {
             ffmpeg: config.ffmpeg_path.clone(),
             metadata_timeout: config.metadata_timeout,
             download_timeout: config.download_timeout,
-            metadata_semaphore: Arc::new(Semaphore::new(4)),
+            // Search commands and inline-search share these permits; inline
+            // typing burns fresh cache misses, so leave headroom (24 cores,
+            // short I/O-bound probes) to avoid starving command searches.
+            metadata_semaphore: Arc::new(Semaphore::new(8)),
         }
     }
 
