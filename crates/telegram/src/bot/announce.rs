@@ -21,6 +21,18 @@ const ANNOUNCED_VERSION_KEY: &str = "announced_version";
 const SEND_DELAY: Duration = Duration::from_millis(80);
 
 /// Integer major component of a dotted version (`"2.5.1"` → `2`).
+/// The whole changelog outgrew Telegram's 4096-char limit (announce PMs failed
+/// with "message is too long"). Users get only the newest release block.
+fn first_release_block(notes: &str) -> String {
+    let first = notes.split("\n\n").next().unwrap_or(notes).trim();
+    if first.chars().count() <= 3900 {
+        return first.to_owned();
+    }
+    let mut cut: String = first.chars().take(3900).collect();
+    cut.push('…');
+    cut
+}
+
 fn major_of(version: &str) -> Option<u64> {
     version.trim().split('.').next()?.parse::<u64>().ok()
 }
@@ -47,10 +59,11 @@ pub async fn announce_update(bot: &Bot, state: &AppState) -> AppResult<()> {
     state.db.set_meta(ANNOUNCED_VERSION_KEY, VERSION).await?;
 
     let users = state.db.active_user_ids().await?;
+    let notes = first_release_block(PATCH_NOTES);
     let mut sent = 0usize;
     let mut failed = 0usize;
     for (user_id, lang) in users {
-        let text = common::i18n::update_notice(lang, PATCH_NOTES);
+        let text = common::i18n::update_notice(lang, &notes);
         match send::send_html(bot, ChatId(user_id), text).await {
             Ok(_) => sent += 1,
             Err(error) => {
@@ -71,6 +84,25 @@ pub async fn announce_update(bot: &Bot, state: &AppState) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_release_block_drops_history_and_caps_monsters() {
+        let real = first_release_block(PATCH_NOTES);
+        assert!(real.contains(VERSION), "newest block matches VERSION");
+        assert!(
+            !real.contains("\n\n"),
+            "only one block, no accumulated history"
+        );
+        assert!(
+            real.chars().count() <= 3901,
+            "always fits a Telegram message"
+        );
+
+        let monster = "3.0.0 (2026-11-19) — x\n".to_owned() + &"• bullet\n".repeat(2000);
+        let cut = first_release_block(&monster);
+        assert!(cut.chars().count() <= 3901);
+        assert!(cut.ends_with('…'));
+    }
 
     #[test]
     fn parses_major_component() {
