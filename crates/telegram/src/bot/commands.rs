@@ -8,6 +8,7 @@ use common::domain::{Lang, Provider};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::key_from_input;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode};
@@ -17,6 +18,139 @@ use tracing::warn;
 
 /// Simultaneous artwork resolutions for `/similar` (mirrors the collage path).
 const COVER_PARALLELISM: usize = 6;
+/// Albums shown per `/albums` page.
+const ALBUMS_PER_PAGE: u32 = 10;
+
+/// One saved album on an `alib` selection page. The `alv:` callback indexes
+/// into the page's Vec of these, so every detail stays server-side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedAlbumRef {
+    pub album_key: String,
+    pub title: String,
+    pub artist: String,
+    pub cover_url: Option<String>,
+    pub payload_json: String,
+}
+
+/// Payload of one `alib` selection: offset lets the detail/remove handlers
+/// reopen exactly the page the user came from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlbumPageSelection {
+    pub offset: u32,
+    pub items: Vec<SavedAlbumRef>,
+}
+
+impl SavedAlbumRef {
+    /// Rebuild the album identity saved at delivery time. The same `AlbumRef`
+    /// shape the `/alb` flow resolves, so the download path is shared.
+    pub fn album_ref(&self) -> Option<common::domain::AlbumRef> {
+        let payload: serde_json::Value = serde_json::from_str(&self.payload_json).ok()?;
+        let source = payload.get("source")?.as_str()?;
+        let id = payload.get("id")?.as_str()?;
+        Some(common::domain::AlbumRef {
+            provider: source.parse().ok()?,
+            url: Some(id.to_owned()),
+            title: Some(self.title.clone()),
+        })
+    }
+}
+
+/// Render one `/albums` page into a header + keyboard. `None` means the library
+/// is empty; the offset is clamped so removed items never leave a blank page.
+pub async fn albums_page(
+    state: &AppState,
+    user_id: i64,
+    lang: Lang,
+    offset: u32,
+) -> common::error::AppResult<Option<(String, InlineKeyboardMarkup)>> {
+    let count = state.db.count_saved_albums(user_id).await?;
+    if count == 0 {
+        return Ok(None);
+    }
+    let per_page = i64::from(ALBUMS_PER_PAGE);
+    let offset = i64::from(offset).min(count - per_page).max(0) as u32;
+    let rows = state
+        .db
+        .saved_albums(user_id, ALBUMS_PER_PAGE, offset)
+        .await?;
+    let items: Vec<SavedAlbumRef> = rows
+        .into_iter()
+        .map(|row| SavedAlbumRef {
+            album_key: row.album_key,
+            title: row.title,
+            artist: row.artist,
+            cover_url: row.cover_url,
+            payload_json: row.payload_json,
+        })
+        .collect();
+    let selection_id = state.new_selection_id();
+    let selection = AlbumPageSelection { offset, items };
+    state
+        .put_selections(
+            crate::state::selection::ALBUM_LIBRARY,
+            user_id,
+            &[(selection_id.clone(), &selection)],
+        )
+        .await?;
+    let mut keyboard: Vec<Vec<InlineKeyboardButton>> = selection
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            vec![InlineKeyboardButton::callback(
+                truncate(&format!("{} — {}", item.title, item.artist), 60),
+                format!("alv:{selection_id}:{index}"),
+            )]
+        })
+        .collect();
+    let mut arrows = Vec::new();
+    if offset > 0 {
+        arrows.push(InlineKeyboardButton::callback(
+            "◀",
+            format!("alp:{}", offset.saturating_sub(ALBUMS_PER_PAGE)),
+        ));
+    }
+    if i64::from(offset) + per_page < count {
+        arrows.push(InlineKeyboardButton::callback(
+            "▶",
+            format!("alp:{}", offset + ALBUMS_PER_PAGE),
+        ));
+    }
+    if !arrows.is_empty() {
+        keyboard.push(arrows);
+    }
+    let header = format!("{} ({})", i18n::albums_title(lang), count);
+    Ok(Some((header, InlineKeyboardMarkup::new(keyboard))))
+}
+
+/// Auto-delete submenu: current value + hint + Off/1/6/12/24 + back.
+pub fn autodelete_view(lang: Lang, hours: Option<i32>) -> (String, InlineKeyboardMarkup) {
+    let mut text = match hours {
+        Some(hours) => i18n::autodelete_current(lang, hours as u32),
+        None => i18n::autodelete_off(lang).to_owned(),
+    };
+    text.push_str("\n\n");
+    text.push_str(i18n::autodelete_hint(lang));
+    let rows = vec![
+        vec![
+            InlineKeyboardButton::callback(i18n::autodelete_off(lang), "s:ad:off"),
+            InlineKeyboardButton::callback(i18n::autodelete_hour_1(lang), "s:ad:1"),
+        ],
+        vec![
+            InlineKeyboardButton::callback(i18n::autodelete_hour_6(lang), "s:ad:6"),
+            InlineKeyboardButton::callback(i18n::autodelete_hour_12(lang), "s:ad:12"),
+        ],
+        vec![InlineKeyboardButton::callback(
+            i18n::autodelete_hour_24(lang),
+            "s:ad:24",
+        )],
+        vec![InlineKeyboardButton::callback(
+            i18n::back_button(lang),
+            "s:adback",
+        )],
+    ];
+    (text, InlineKeyboardMarkup::new(rows))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -64,6 +198,10 @@ pub enum Command {
     Playlist(Option<String>),
     /// `/fav` — saved tracks, re-served instantly from the Telegram cache.
     Favorites,
+    /// `/albums` — paginated library of saved albums.
+    Albums,
+    /// `/recognize` in reply to audio — identify by acoustic fingerprint.
+    Recognize,
     /// `/similar` in reply to a bot track — similar tracks as buttons.
     Similar,
     /// `/artist <name>` — top catalog tracks of an artist as buttons.
@@ -123,6 +261,8 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         }
         "playlist" | "плейлист" => Command::Playlist((!args.is_empty()).then_some(args)),
         "fav" | "favorites" | "обране" | "улюблене" => Command::Favorites,
+        "albums" | "альбоми" => Command::Albums,
+        "recognize" | "recognise" | "розпізнати" => Command::Recognize,
         "similar" | "схожі" => Command::Similar,
         "artist" | "виконавець" => Command::Artist((!args.is_empty()).then_some(args)),
         "cover" | "обкладинка" => Command::Cover,
@@ -248,6 +388,10 @@ pub fn additional_keyboard(
     rows.push(vec![InlineKeyboardButton::callback(
         i18n::genre_chart_label(lang),
         "gn:c:10",
+    )]);
+    rows.push(vec![InlineKeyboardButton::callback(
+        i18n::autodelete_label(lang),
+        "s:admenu",
     )]);
     rows.push(vec![InlineKeyboardButton::callback(
         i18n::back_button(lang),
@@ -536,12 +680,28 @@ pub async fn handle_command(
                 return Ok(());
             }
             let jobs = state.db.list_jobs(user_id, 10).await?;
+            let avg_secs = state.db.avg_recent_download_secs().await?;
+            let active = jobs
+                .iter()
+                .filter(|(_, _, status, _)| matches!(status.as_str(), "downloading" | "uploading"))
+                .count() as u32;
+            let mut queued_position = 0u32;
             let mut text = i18n::queue_title(lang).to_owned();
             if jobs.is_empty() {
                 text.push_str(i18n::queue_empty(lang));
             } else {
                 for (id, kind, status, cancelling) in jobs {
-                    text.push_str(&i18n::queue_item(lang, &id, &kind, &status, cancelling));
+                    let mut line = i18n::queue_item(lang, &id, &kind, &status, cancelling);
+                    if status == "queued" {
+                        queued_position += 1;
+                        if let Some(avg) = avg_secs {
+                            // Active jobs finish first, then the queued ones in order.
+                            let minutes = eta_minutes(avg, active, queued_position);
+                            line.push(' ');
+                            line.push_str(&i18n::queue_eta(lang, minutes));
+                        }
+                    }
+                    text.push_str(&line);
                 }
             }
             text.push_str(&format!("\n— {}", common::version::DEV_CHANNEL_HANDLE));
@@ -679,6 +839,19 @@ pub async fn handle_command(
             bot.send_message(msg.chat.id, i18n::favorites_title(lang))
                 .reply_markup(InlineKeyboardMarkup::new(buttons))
                 .await?;
+        }
+        Command::Albums => {
+            let Some((text, markup)) = albums_page(state, user_id, lang, 0).await? else {
+                send_plain(bot, msg.chat.id, i18n::albums_empty(lang)).await?;
+                return Ok(());
+            };
+            bot.send_message(msg.chat.id, text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
+                .await?;
+        }
+        Command::Recognize => {
+            crate::bot::recognize::handle_recognize(state, bot, msg, &user_record, user_id).await?;
         }
         Command::Similar => {
             let reply_file_id = msg.reply_to_message().and_then(|m| {
@@ -1092,6 +1265,11 @@ fn album_button_label(lang: Lang, candidate: &common::domain::AlbumSearchResult)
     crate::bot::handlers::truncate(&label, 60)
 }
 
+/// Round the estimated wait up to whole minutes, never below one.
+fn eta_minutes(avg_secs: f64, active: u32, queued_position: u32) -> u32 {
+    ((avg_secs * f64::from(active + queued_position) / 60.0).ceil() as u64).max(1) as u32
+}
+
 /// Last.fm usernames: 2–15 chars, latin letters/digits/`_`/`-`.
 fn is_valid_lastfm_username(value: &str) -> bool {
     (2..=15).contains(&value.len())
@@ -1139,6 +1317,24 @@ fn personalize(text: impl Into<String>, username: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_album_and_recognize_aliases() {
+        assert_eq!(parse_command("/albums", "bot"), Some(Command::Albums));
+        assert_eq!(parse_command("/альбоми", "bot"), Some(Command::Albums));
+        assert_eq!(parse_command("/recognize", "bot"), Some(Command::Recognize));
+        assert_eq!(
+            parse_command("/розпізнати", "bot"),
+            Some(Command::Recognize)
+        );
+    }
+
+    #[test]
+    fn queue_eta_rounds_up_and_floors_at_one() {
+        assert_eq!(eta_minutes(60.0, 1, 2), 3);
+        assert_eq!(eta_minutes(0.0, 0, 1), 1);
+        assert_eq!(eta_minutes(30.5, 2, 1), 2);
+    }
 
     #[test]
     fn parses_commands_and_suffix() {

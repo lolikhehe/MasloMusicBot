@@ -20,7 +20,7 @@ const MAX_AGE: Duration = Duration::from_secs(30 * 60);
 /// Finished jobs older than this are dropped from the ledger.
 const JOB_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// yt-dlp unpacks here; a live download keeps its dir younger than MAX_AGE.
-const DIR_PREFIXES: &[&str] = &["track-", "_MEI"];
+const DIR_PREFIXES: &[&str] = &["track-", "_MEI", "recognize-"];
 
 /// True when a temp entry has a prefix owned by the download pipeline and may
 /// be swept once old enough. Anything else (user files, caches, deno dir) is
@@ -56,6 +56,9 @@ async fn cleanup_db(db: &Db) {
         .await
     {
         tracing::warn!(%error, "janitor: failed to delete old finished jobs");
+    }
+    if let Err(error) = db.delete_stale_sent_messages(7 * 24 * 60 * 60).await {
+        tracing::warn!(%error, "janitor: failed to delete stale sent messages");
     }
 }
 

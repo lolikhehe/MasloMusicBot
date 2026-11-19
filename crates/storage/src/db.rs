@@ -42,6 +42,25 @@ const LAST_SEEN_INTERVAL_SECS: i64 = 5 * 60;
 /// used by the batch writer which has no per-row TTL parameter.
 const SELECTION_TTL_SECS: i64 = 30 * 60;
 
+/// One saved-album bookmark. `added_at` is a unix timestamp, like every other
+/// row-struct time field in this crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedAlbum {
+    pub album_key: String,
+    pub title: String,
+    pub artist: String,
+    pub cover_url: Option<String>,
+    pub payload_json: String,
+    pub added_at: i64,
+}
+
+/// A sent message queued for auto-delete.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentMessageRef {
+    pub chat_id: i64,
+    pub message_id: i32,
+}
+
 impl Db {
     pub async fn connect(database_url: &str) -> AppResult<Self> {
         let options = PgConnectOptions::from_str(database_url)
@@ -103,6 +122,79 @@ impl Db {
             .await
             .map_err(db_err)?;
         Ok(())
+    }
+
+    /// Record a sent message for auto-delete. A repeated message id refreshes
+    /// both its owner and its deadline instead of failing on the primary key.
+    pub async fn track_sent_message(
+        &self,
+        chat_id: i64,
+        message_id: i32,
+        user_id: i64,
+        delete_after_secs: i64,
+    ) -> AppResult<()> {
+        sqlx::query!(
+            "INSERT INTO sent_messages (chat_id, message_id, user_id, delete_after)
+             VALUES ($1, $2, $3, to_timestamp(EXTRACT(EPOCH FROM now())::bigint + $4))
+             ON CONFLICT (chat_id, message_id) DO UPDATE SET
+                 user_id = excluded.user_id,
+                 delete_after = excluded.delete_after",
+            chat_id,
+            message_id,
+            user_id,
+            delete_after_secs
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Messages whose auto-delete deadline has passed, soonest first.
+    pub async fn due_sent_messages(&self, limit: i64) -> AppResult<Vec<SentMessageRef>> {
+        let rows = sqlx::query!(
+            "SELECT chat_id, message_id FROM sent_messages
+             WHERE delete_after <= now()
+             ORDER BY delete_after
+             LIMIT $1",
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SentMessageRef {
+                chat_id: row.chat_id,
+                message_id: row.message_id,
+            })
+            .collect())
+    }
+
+    pub async fn delete_sent_message(&self, chat_id: i64, message_id: i32) -> AppResult<()> {
+        sqlx::query!(
+            "DELETE FROM sent_messages WHERE chat_id = $1 AND message_id = $2",
+            chat_id,
+            message_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Janitor safety net: drop rows that were already due more than
+    /// `older_than_secs` ago (e.g. the bot was down when they came due).
+    pub async fn delete_stale_sent_messages(&self, older_than_secs: i64) -> AppResult<u64> {
+        let result = sqlx::query!(
+            "DELETE FROM sent_messages
+             WHERE delete_after < to_timestamp(EXTRACT(EPOCH FROM now())::bigint - $1)",
+            older_than_secs
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected())
     }
 
     /// Drop only finished jobs older than `retention_secs`; active and recently
@@ -424,7 +516,7 @@ impl Db {
         let row = sqlx::query!(
             "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,
                     hq_cover, lastfm_stats, genre_analysis, album_info, audio_format,
-                    normalize_audio
+                    normalize_audio, auto_delete_hours
              FROM users WHERE user_id = $1",
             id
         )
@@ -447,6 +539,7 @@ impl Db {
             album_info: row.album_info != 0,
             audio_format: row.audio_format,
             normalize_audio: row.normalize_audio != 0,
+            auto_delete_hours: row.auto_delete_hours,
         }))
     }
 
@@ -573,6 +666,34 @@ impl Db {
         Ok(())
     }
 
+    /// Per-user auto-delete lifetime in hours; `None` disables auto-delete.
+    /// Mirrors `set_lastfm_stats`: one UPDATE, same `last_seen_at` write.
+    pub async fn set_auto_delete_hours(&self, user_id: i64, hours: Option<i32>) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE users SET auto_delete_hours = $1, last_seen_at = $2 WHERE user_id = $3",
+            hours,
+            unix_now(),
+            user_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Read side for the auto-delete setting. Kept as a dedicated accessor so
+    /// callers don't pay for the column on the message hot path (`user_by_id`).
+    pub async fn auto_delete_hours(&self, user_id: i64) -> AppResult<Option<i32>> {
+        Ok(sqlx::query_scalar!(
+            "SELECT auto_delete_hours FROM users WHERE user_id = $1",
+            user_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?
+        .flatten())
+    }
+
     pub async fn set_genre_analysis(&self, id: i64, enabled: bool) -> AppResult<()> {
         sqlx::query!(
             "UPDATE users SET genre_analysis = $1, last_seen_at = $2 WHERE user_id = $3",
@@ -673,6 +794,93 @@ impl Db {
             .into_iter()
             .map(|row| (row.track_key, row.title, row.performer))
             .collect())
+    }
+
+    /// Save an album bookmark. `album_key` is its dedup identity, so saving a
+    /// second time is a no-op. Returns `true` only when a new row was inserted.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_album(
+        &self,
+        user_id: i64,
+        album_key: &str,
+        title: &str,
+        artist: &str,
+        cover_url: Option<&str>,
+        payload_json: &str,
+    ) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "INSERT INTO saved_albums
+                (user_id, album_key, title, artist, cover_url, payload_json)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (user_id, album_key) DO NOTHING",
+            user_id,
+            album_key,
+            title,
+            artist,
+            cover_url,
+            payload_json
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Remove one saved album. Returns `false` when it was not saved.
+    pub async fn delete_saved_album(&self, user_id: i64, album_key: &str) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "DELETE FROM saved_albums WHERE user_id = $1 AND album_key = $2",
+            user_id,
+            album_key
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Saved albums, newest first.
+    pub async fn saved_albums(
+        &self,
+        user_id: i64,
+        limit: u32,
+        offset: u32,
+    ) -> AppResult<Vec<SavedAlbum>> {
+        let rows = sqlx::query!(
+            "SELECT album_key, title, artist, cover_url, payload_json,
+                    EXTRACT(EPOCH FROM added_at)::BIGINT AS added_at
+             FROM saved_albums WHERE user_id = $1
+             ORDER BY added_at DESC
+             LIMIT $2 OFFSET $3",
+            user_id,
+            i64::from(limit),
+            i64::from(offset)
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SavedAlbum {
+                album_key: row.album_key,
+                title: row.title,
+                artist: row.artist,
+                cover_url: row.cover_url,
+                payload_json: row.payload_json,
+                added_at: row.added_at.unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    pub async fn count_saved_albums(&self, user_id: i64) -> AppResult<i64> {
+        Ok(sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM saved_albums WHERE user_id = $1",
+            user_id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?
+        .unwrap_or_default())
     }
 
     /// Keys from the list the caller has already listened to (the ↩ marker).
@@ -1481,6 +1689,25 @@ impl Db {
         Ok(())
     }
 
+    /// Mean wall-time of terminal `done` jobs finished in the last 24h, in
+    /// seconds. Each sample is clamped to 1..=1800s so one stalled download
+    /// cannot skew the estimate; `None` until at least 3 samples exist.
+    pub async fn avg_recent_download_secs(&self) -> AppResult<Option<f64>> {
+        Ok(sqlx::query_scalar!(
+            "SELECT AVG(duration) FROM (
+                 SELECT LEAST(1800, GREATEST(1, updated_at - created_at))::double precision AS duration
+                 FROM download_jobs
+                 WHERE status = 'done' AND updated_at >= $1
+             ) d
+             HAVING COUNT(*) >= 3",
+            unix_now() - 86_400
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?
+        .flatten())
+    }
+
     pub async fn request_cancel(&self, id: &str, user_id: i64) -> AppResult<bool> {
         let result = sqlx::query!(
             "UPDATE download_jobs SET cancel_requested = true, updated_at = $3
@@ -2254,6 +2481,227 @@ mod tests {
         let jobs = db.list_jobs(1, 10).await.expect("jobs");
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].0, "fresh-done");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn saved_albums_save_list_delete(pool: PgPool) {
+        let db = db(pool).await;
+        assert!(
+            db.save_album(
+                42,
+                "deezer:album:1",
+                "Album A",
+                "Artist A",
+                Some("https://cover/a"),
+                r#"{"source":"deezer","id":"1"}"#,
+            )
+            .await
+            .expect("save")
+        );
+        assert!(
+            !db.save_album(42, "deezer:album:1", "Album A", "Artist A", None, "{}")
+                .await
+                .expect("duplicate")
+        );
+        assert_eq!(db.count_saved_albums(42).await.expect("count"), 1);
+        assert!(
+            db.save_album(
+                42,
+                "youtube:album:2",
+                "Album B",
+                "Artist B",
+                None,
+                r#"{"source":"youtube","id":"2"}"#,
+            )
+            .await
+            .expect("save 2")
+        );
+        assert_eq!(db.count_saved_albums(42).await.expect("count"), 2);
+
+        // Both rows share the same `now()`; backdate one for deterministic order.
+        sqlx::query!(
+            "UPDATE saved_albums SET added_at = now() - interval '1 hour'
+             WHERE user_id = 42 AND album_key = 'deezer:album:1'"
+        )
+        .execute(&db.pool)
+        .await
+        .expect("backdate album");
+
+        let list = db.saved_albums(42, 10, 0).await.expect("list");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].album_key, "youtube:album:2");
+        assert_eq!(list[0].title, "Album B");
+        assert_eq!(list[1].album_key, "deezer:album:1");
+        assert_eq!(list[1].artist, "Artist A");
+        assert_eq!(list[1].cover_url.as_deref(), Some("https://cover/a"));
+        assert_eq!(list[1].payload_json, r#"{"source":"deezer","id":"1"}"#);
+        assert!(list[0].added_at > list[1].added_at);
+
+        let page = db.saved_albums(42, 1, 1).await.expect("page");
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].album_key, "deezer:album:1");
+        assert!(
+            db.saved_albums(43, 10, 0)
+                .await
+                .expect("other user")
+                .is_empty()
+        );
+
+        assert!(
+            db.delete_saved_album(42, "deezer:album:1")
+                .await
+                .expect("delete")
+        );
+        assert!(
+            !db.delete_saved_album(42, "deezer:album:1")
+                .await
+                .expect("delete again")
+        );
+        assert_eq!(db.count_saved_albums(42).await.expect("count after"), 1);
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn sent_messages_track_due_delete(pool: PgPool) {
+        let db = db(pool).await;
+        db.track_sent_message(-1001, 10, 42, 60)
+            .await
+            .expect("track");
+        assert!(db.due_sent_messages(10).await.expect("due").is_empty());
+
+        // Upsert refreshes both the owner and the deadline.
+        db.track_sent_message(-1001, 10, 43, 3600)
+            .await
+            .expect("refresh");
+        let owner: i64 = sqlx::query_scalar!(
+            "SELECT user_id FROM sent_messages WHERE chat_id = -1001 AND message_id = 10"
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("owner");
+        assert_eq!(owner, 43);
+        assert!(
+            db.due_sent_messages(10)
+                .await
+                .expect("due after refresh")
+                .is_empty()
+        );
+
+        sqlx::query!(
+            "UPDATE sent_messages SET delete_after = now() - interval '1 second'
+             WHERE chat_id = -1001 AND message_id = 10"
+        )
+        .execute(&db.pool)
+        .await
+        .expect("backdate");
+        let due = db.due_sent_messages(10).await.expect("due");
+        assert_eq!(
+            due,
+            vec![SentMessageRef {
+                chat_id: -1001,
+                message_id: 10
+            }]
+        );
+
+        db.delete_sent_message(-1001, 10).await.expect("delete");
+        assert!(
+            db.due_sent_messages(10)
+                .await
+                .expect("due after delete")
+                .is_empty()
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn delete_stale_sent_messages_only_removes_old(pool: PgPool) {
+        let db = db(pool).await;
+        db.track_sent_message(-2001, 1, 42, 60)
+            .await
+            .expect("old track");
+        db.track_sent_message(-2001, 2, 42, 60)
+            .await
+            .expect("fresh track");
+        sqlx::query!(
+            "UPDATE sent_messages SET delete_after = now() - interval '2 hours'
+             WHERE chat_id = -2001 AND message_id = 1"
+        )
+        .execute(&db.pool)
+        .await
+        .expect("backdate old");
+        sqlx::query!(
+            "UPDATE sent_messages SET delete_after = now() - interval '10 seconds'
+             WHERE chat_id = -2001 AND message_id = 2"
+        )
+        .execute(&db.pool)
+        .await
+        .expect("backdate fresh");
+
+        assert_eq!(db.delete_stale_sent_messages(60).await.expect("janitor"), 1);
+        let remaining = sqlx::query!(
+            "SELECT message_id FROM sent_messages WHERE chat_id = -2001 ORDER BY message_id"
+        )
+        .fetch_all(&db.pool)
+        .await
+        .expect("remaining");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].message_id, 2);
+        assert_eq!(
+            db.delete_stale_sent_messages(60)
+                .await
+                .expect("janitor again"),
+            0
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn auto_delete_hours_roundtrip(pool: PgPool) {
+        let db = db(pool).await;
+        db.ensure_user(42, Lang::En).await.expect("user");
+        assert_eq!(db.auto_delete_hours(42).await.expect("default"), None);
+        db.set_auto_delete_hours(42, Some(24)).await.expect("set");
+        assert_eq!(db.auto_delete_hours(42).await.expect("get"), Some(24));
+        db.set_auto_delete_hours(42, None).await.expect("clear");
+        assert_eq!(db.auto_delete_hours(42).await.expect("get cleared"), None);
+    }
+
+    async fn seed_job(db: &Db, id: &str, status: &str, created_at: i64, updated_at: i64) {
+        sqlx::query!(
+            "INSERT INTO download_jobs (id, user_id, kind, status, payload, created_at, updated_at)
+             VALUES ($1, 1, 'track', $2, '{}'::jsonb, $3, $4)",
+            id,
+            status,
+            created_at,
+            updated_at
+        )
+        .execute(&db.pool)
+        .await
+        .expect("seed job");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn avg_recent_download_secs_uses_recent_done_samples(pool: PgPool) {
+        let db = db(pool).await;
+        let now = unix_now();
+        // Backdated but inside 24h; zero duration clamps to 1, the 48h-old and
+        // non-done jobs must not count.
+        seed_job(&db, "j1", "done", now - 7200, now - 7190).await;
+        seed_job(&db, "j2", "done", now - 3600, now - 3580).await;
+        seed_job(&db, "j3", "done", now - 60, now - 30).await;
+        seed_job(&db, "j-zero", "done", now - 5, now - 5).await;
+        seed_job(&db, "j-old", "done", now - 172_800, now - 172_700).await;
+        seed_job(&db, "j-queued", "queued", now - 100, now).await;
+        assert_eq!(
+            db.avg_recent_download_secs().await.expect("avg"),
+            Some(15.25)
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn avg_recent_download_secs_needs_three_samples(pool: PgPool) {
+        let db = db(pool).await;
+        let now = unix_now();
+        seed_job(&db, "j1", "done", now - 100, now - 90).await;
+        seed_job(&db, "j2", "done", now - 200, now - 180).await;
+        assert_eq!(db.avg_recent_download_secs().await.expect("avg"), None);
     }
 
     async fn last_seen(db: &Db, id: i64) -> i64 {

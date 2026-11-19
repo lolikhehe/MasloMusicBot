@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT AVG(duration) FROM (\n                 SELECT LEAST(1800, GREATEST(1, updated_at - created_at))::double precision AS duration\n                 FROM download_jobs\n                 WHERE status = 'done' AND updated_at >= $1\n             ) d\n             HAVING COUNT(*) >= 3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "avg",
+        "type_info": "Float8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fb0ef5008ec577d007b6fe13d44cf05013d69518d1d675445bcc9207c6ad0b5a"
+}

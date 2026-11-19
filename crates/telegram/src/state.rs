@@ -5,6 +5,7 @@ use common::domain::{Provider, TrackKey, TrackMeta};
 use common::error::AppResult;
 use downloader::DownloadManager;
 use moka::future::Cache;
+use providers::acoustid::AcoustId;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::sync::Arc;
@@ -70,6 +71,9 @@ pub struct AppState {
     /// iTunes, cover images). Reusing it keeps TLS handshakes and idle
     /// connections out of every collage request.
     pub http: reqwest::Client,
+    /// Acoustic fingerprint recognition through AcoustID; `None` when the
+    /// operator did not set ACOUSTID_API_KEY.
+    pub acoustid: Option<AcoustId>,
     /// Public lyrics lookup (LRCLIB with lyrics.ovh fallback). Metadata only —
     /// no lyrics are persisted to disk.
     pub lyrics: providers::lyrics::LyricsClient,
@@ -96,6 +100,8 @@ pub mod selection {
     pub const PENDING_IMPORT: &str = "pending_import";
     /// Search page cursor for the "more results" button.
     pub const SEARCH_PAGE: &str = "search_page";
+    /// One `/albums` page: the album keys/buttons shown on that page.
+    pub const ALBUM_LIBRARY: &str = "alib";
 }
 
 impl AppState {
@@ -104,6 +110,7 @@ impl AppState {
         db: Db,
         manager: Arc<DownloadManager>,
         bot_username: String,
+        acoustid: Option<AcoustId>,
     ) -> Self {
         let lastfm = config
             .lastfm_api_key
@@ -163,6 +170,7 @@ impl AppState {
             genre_cache,
             artwork_cache,
             http,
+            acoustid,
             lyrics,
             lyrics_cache,
             last_tracks,
@@ -314,6 +322,39 @@ impl AppState {
     /// Current generation for the user (0 if unknown).
     pub async fn inline_generation(&self, user_id: i64) -> u64 {
         self.inline_generations.get(&user_id).await.unwrap_or(0)
+    }
+
+    /// Queue a successfully sent audio/document for auto-delete. The user's
+    /// setting is read inside the detached task so a send never waits on (or
+    /// fails because of) this bookkeeping.
+    pub fn maybe_track_deletion(
+        &self,
+        user_id: i64,
+        chat_id: teloxide::types::ChatId,
+        message_id: teloxide::types::MessageId,
+    ) {
+        let db = self.db.clone();
+        tokio::spawn(async move {
+            match db.auto_delete_hours(user_id).await {
+                Ok(Some(hours)) => {
+                    if let Err(error) = db
+                        .track_sent_message(
+                            chat_id.0,
+                            message_id.0,
+                            user_id,
+                            i64::from(hours) * 3600,
+                        )
+                        .await
+                    {
+                        tracing::warn!(%error, "could not queue sent message for auto-delete");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "could not read auto-delete setting");
+                }
+            }
+        });
     }
 
     pub fn uptime(&self) -> String {

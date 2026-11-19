@@ -640,6 +640,9 @@ pub async fn deliver_album(
 ) -> Result<usize, BoxError> {
     let total = album.tracks.len();
     let title = escape_html(&album.title);
+    // Keep the album's identity before `album.tracks` is consumed below; the
+    // save/ZIP callbacks carry it, and over-long ids are dropped per button.
+    let album_identity = album_identity(&album);
     let _ = edit_html(
         bot,
         chat,
@@ -742,10 +745,46 @@ pub async fn deliver_album(
             failed.saturating_sub(failed_titles.len()),
         ));
     }
-    let _ = edit_html(bot, chat, progress, final_text).await;
+    // 💾 / 🗜 under the album summary. Each callback is checked against
+    // Telegram's 64-byte limit before the button is built at all.
+    let mut extra_rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+    if let Some((source, id)) = album_identity {
+        let mut buttons = Vec::new();
+        let save = format!("als:{source}:{id}");
+        if save.len() <= 64 {
+            buttons.push(InlineKeyboardButton::callback(
+                i18n::albums_save_button(lang).to_owned(),
+                save,
+            ));
+        }
+        let zip = format!("azp:{source}:{id}");
+        if zip.len() <= 64 {
+            buttons.push(InlineKeyboardButton::callback("🗜 ZIP", zip));
+        }
+        if !buttons.is_empty() {
+            extra_rows.push(buttons);
+        }
+    }
+    if extra_rows.is_empty() {
+        let _ = edit_html(bot, chat, progress, final_text).await;
+    } else {
+        let _ = bot
+            .edit_message_text(chat, progress, final_text)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(InlineKeyboardMarkup::new(extra_rows))
+            .await;
+    }
     // The caller marks the job "done" only if at least one track landed: an
     // album where every track failed must be recorded as "failed".
     Ok(ok)
+}
+
+/// Identity used by the save/ZIP buttons. `id` is the album's full source URL:
+/// Deezer/Apple/YouTube ids fit the 64-byte callback cap, SoundCloud/Bandcamp
+/// URLs do not and are skipped when building the button.
+fn album_identity(album: &common::domain::Album) -> Option<(String, String)> {
+    let id = album.source_url.as_deref()?.trim();
+    (!id.is_empty()).then(|| (album.provider.as_str().to_owned(), id.to_owned()))
 }
 
 /// Cover photo + caption sent before an album's tracks (the
@@ -1094,7 +1133,8 @@ async fn try_cache_send(
     let caption = tags_caption(&caption_meta, tags_enabled);
     let fav_markup = fav_markup_for(state, user_id, key.as_str()).await;
     match send::send_cached(bot, chat, &cached, caption, fav_markup).await {
-        Ok(_) => {
+        Ok(message) => {
+            state.maybe_track_deletion(user_id, chat, message.id);
             state.manager.touch_cached(key, quality).await;
             state
                 .remember_track(user_id, &caption_meta, key, cached.provider)
@@ -1261,6 +1301,7 @@ async fn deliver_track_inner(
             return Err(error.into());
         }
     };
+    state.maybe_track_deletion(user_id, chat, message.id);
     metrics::histogram!("music_bot_upload_seconds").record(upload_started.elapsed().as_secs_f64());
 
     let Some((file_id, file_unique_id)) = send::extract_file_id(&message) else {

@@ -12,9 +12,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
                 "🎵 <b>Music Bot</b>\n\n曲のリンク、アルバムのリンク、あるいは <code>アーティスト — タイトル</code> だけでも送信してください。曲を見つけて、タグとジャケット付きの音声として送ります。\n\nインラインでも使えます。任意のチャットで <code>@this_bot song</code> と入力してください。",
             )
         }
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/albums — your saved albums\n/recognize — reply to an audio file: identify it by sound\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
             Some(
-                "<b>使い方</b>\n\n• プライベートチャット: リンクまたは <code>アーティスト — タイトル</code> を送信してください。\n• インライン: 任意のチャットで <code>@this_bot query</code>。Last.fm を接続済みで検索語を空にすると、再生中の曲を提案します。\n• アルバムやプレイリストは進捗表示付きで1曲ずつダウンロードします。<code>/alb &lt;name&gt;</code> でタイトルからアルバムを探せます。\n• 同じリクエストはキャッシュから返されます。\n\n<b>コマンド</b>\n/start — ボットについて\n/help — このヘルプ\n/settings — 言語、音質（kbps または FLAC ロスレス）、検索元、タグ\n/alb — 名前でアルバムを探してダウンロード\n/lastfm — Last.fm を接続（空のインライン検索で再生中の曲を提案）\n/import [list] — プレイリストをインポート。引数なしの場合、次のメッセージ（ファイルまたは「アーティスト – タイトル」形式の行）を使用します\n/profile または /lastfmstats [period] — スクロブル統計（/settings で Last.fm 統計を有効にしてください）\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — 最も再生した項目のPNGチャート\n/genres [5..20] — ダウンロード履歴からジャンルチャート（/settings でアナライザーを有効にしてください）\n/lyrics [アーティスト — タイトル] — 公開ソースから歌詞を取得（引数なし: 最後の曲、または音声に返信）\n/changelog — リリースノートを表示\n/me — 自分のカウンターとお気に入りジャンル\n/queue — 最近のダウンロード状況\n/cancel &lt;id&gt; — 進行中のダウンロードをキャンセル\n/stop — 自分の進行中の操作をすべてキャンセル\n/convert auto|m4a|mp3|flac|opus — 出力形式。曲に返信するとその曲だけを変換\n/normalize on|off — ffmpeg loudnorm による音量正規化\n/playlist &lt;name&gt; — 公開プレイリストを検索\n/fav — 保存済みの⭐曲（曲の下の☆をタップして保存）\n/similar — 私の曲に返信：似た曲を最大10件\n/artist &lt;名前&gt; — アーティストの人気曲\n/cover — 私の曲に返信：フルサイズのアルバムジャケット\n/groupmode on|off — 管理者: このグループでのボット利用を許可\n/history [period] — 最近の再生履歴\n/dynamics [period] — ジャンルの経年変化チャート\n/digest daily|weekly|off — プライベートチャットへの個人ダイジェスト\n/digest quiet HH-HH|off — UTC の静寂時間\n/digest status — 現在の設定",
+                "<b>使い方</b>\n\n• プライベートチャット: リンクまたは <code>アーティスト — タイトル</code> を送信してください。\n• インライン: 任意のチャットで <code>@this_bot query</code>。Last.fm を接続済みで検索語を空にすると、再生中の曲を提案します。\n• アルバムやプレイリストは進捗表示付きで1曲ずつダウンロードします。<code>/alb &lt;name&gt;</code> でタイトルからアルバムを探せます。\n• 同じリクエストはキャッシュから返されます。\n\n<b>コマンド</b>\n/start — ボットについて\n/help — このヘルプ\n/settings — 言語、音質（kbps または FLAC ロスレス）、検索元、タグ\n/alb — 名前でアルバムを探してダウンロード\n/lastfm — Last.fm を接続（空のインライン検索で再生中の曲を提案）\n/import [list] — プレイリストをインポート。引数なしの場合、次のメッセージ（ファイルまたは「アーティスト – タイトル」形式の行）を使用します\n/profile または /lastfmstats [period] — スクロブル統計（/settings で Last.fm 統計を有効にしてください）\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — 最も再生した項目のPNGチャート\n/genres [5..20] — ダウンロード履歴からジャンルチャート（/settings でアナライザーを有効にしてください）\n/lyrics [アーティスト — タイトル] — 公開ソースから歌詞を取得（引数なし: 最後の曲、または音声に返信）\n/changelog — リリースノートを表示\n/me — 自分のカウンターとお気に入りジャンル\n/queue — 最近のダウンロード状況\n/cancel &lt;id&gt; — 進行中のダウンロードをキャンセル\n/stop — 自分の進行中の操作をすべてキャンセル\n/convert auto|m4a|mp3|flac|opus — 出力形式。曲に返信するとその曲だけを変換\n/normalize on|off — ffmpeg loudnorm による音量正規化\n/playlist &lt;name&gt; — 公開プレイリストを検索\n/fav — 保存済みの⭐曲（曲の下の☆をタップして保存）\n/similar — 私の曲に返信：似た曲を最大10件\n/artist &lt;名前&gt; — アーティストの人気曲\n/cover — 私の曲に返信：フルサイズのアルバムジャケット\n/albums — 保存したアルバム\n/recognize — 音声ファイルに返信：音で特定する\n/groupmode on|off — 管理者: このグループでのボット利用を許可\n/history [period] — 最近の再生履歴\n/dynamics [period] — ジャンルの経年変化チャート\n/digest daily|weekly|off — プライベートチャットへの個人ダイジェスト\n/digest quiet HH-HH|off — UTC の静寂時間\n/digest status — 現在の設定",
             )
         }
         "{base}\n\n<b>Admin</b>\n/stats — counters\n/ban &lt;id&gt;\n/unban &lt;id&gt;\n/purge &lt;key or url&gt;\n/broadcast &lt;text&gt; — one-off notice to all known users" => {
@@ -400,6 +400,48 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📊 Your digest" => Some("📊 あなたのダイジェスト"),
         "Tracks" => Some("曲数"),
         "Top tracks" => Some("トップ曲"),
+        "🎵 Your albums" => Some("🎵 あなたのアルバム"),
+        "Library is empty — save an album with the 💾 button under a delivered album" => Some(
+            "ライブラリは空です。送信されたアルバムの下の 💾 ボタンでアルバムを保存してください",
+        ),
+        "💾 Save album" => Some("💾 アルバムを保存"),
+        "🗑 Remove" => Some("🗑 削除"),
+        "Saved" => Some("保存しました"),
+        "Already saved" => Some("すでに保存済みです"),
+        "Removed from library" => Some("ライブラリから削除しました"),
+        "🗜 Packing album…" => Some("🗜 アルバムをパッジージ中…"),
+        "Packing failed: no track could be downloaded" => {
+            Some("パッジージに失敗しました。ダウンロードできた曲がありません")
+        }
+        "🧹 Auto-delete" => Some("🧹 自動削除"),
+        "Auto-delete off" => Some("自動削除はオフです"),
+        "1 hour" => Some("1 時間"),
+        "6 hours" => Some("6 時間"),
+        "12 hours" => Some("12 時間"),
+        "24 hours" => Some("24 時間"),
+        "The bot deletes its own audio messages after this time (max 48 h). Applies only to messages sent after enabling." => {
+            Some(
+                "ボットはこの時間が経過すると自分の音声メッセージを削除します（最大48時間）。有効化後に送信されたメッセージにのみ適用されます。",
+            )
+        }
+        "Reply to an audio file with /recognize" => {
+            Some("音声ファイルに返信して /recognize を送信してください")
+        }
+        "Recognition is not configured on this server" => {
+            Some("このサーバーでは認詳機能が設定されていません")
+        }
+        "🔍 Listening…" => Some("🔍 聞き取り中…"),
+        "Could not identify this track" => Some("この曲を特定できませんでした"),
+        "Download album" => Some("アルバムをダウンロード"),
+        "Auto-delete: {n} hours" => Some("自動削除: {n} 時間"),
+        "Set: {n} hours" => Some("設定しました: {n} 時間"),
+        "≈ {n} min" => Some("≈ {n} 分"),
+        "Album is too large to pack (limit {n} MB)" => {
+            Some("アルバムが大きすぎてパッジージできません（上限 {n} MB）")
+        }
+        "📦 {album} — {n} tracks" => Some("📦 {album} — {n} 曲"),
+        "Looks like: {artist} — {title}" => Some("推定: {artist} — {title}"),
+        "💿 {album} · {year}" => Some("💿 {album} · {year}"),
         _ => None,
     }
 }

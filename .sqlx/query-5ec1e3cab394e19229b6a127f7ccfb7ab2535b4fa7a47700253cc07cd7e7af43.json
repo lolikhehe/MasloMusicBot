@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO download_jobs (id, user_id, kind, status, payload, created_at, updated_at)\n             VALUES ($1, 1, 'track', $2, '{}'::jsonb, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ec1e3cab394e19229b6a127f7ccfb7ab2535b4fa7a47700253cc07cd7e7af43"
+}

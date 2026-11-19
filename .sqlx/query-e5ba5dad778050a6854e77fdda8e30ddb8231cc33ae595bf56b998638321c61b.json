@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM sent_messages\n             WHERE delete_after < to_timestamp(EXTRACT(EPOCH FROM now())::bigint - $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e5ba5dad778050a6854e77fdda8e30ddb8231cc33ae595bf56b998638321c61b"
+}

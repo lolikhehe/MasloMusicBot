@@ -30,6 +30,9 @@ pub struct Config {
     /// Optional Last.fm API key (https://www.last.fm/api/account); enables the
     /// inline "now playing" suggestion via the public recent-tracks feed.
     pub lastfm_api_key: Option<String>,
+    /// Optional AcoustID API key; enables sound-based recognition of uploaded
+    /// audio via Chromaprint (fpcalc) + the AcoustID lookup API.
+    pub acoustid_api_key: Option<String>,
     pub max_concurrent_downloads: usize,
     pub admins: HashSet<i64>,
     pub default_lang: Lang,
@@ -142,6 +145,7 @@ impl Config {
             .transpose()?;
 
         let lastfm_api_key = env_optional("LASTFM_API_KEY");
+        let acoustid_api_key = env_optional("ACOUSTID_API_KEY");
 
         let webhook_url = env_optional("WEBHOOK_URL")
             .map(|value| url::Url::parse(&value).with_context(|| format!("WEBHOOK_URL: {value}")))
@@ -189,6 +193,7 @@ impl Config {
             admins,
             storage_chat_id,
             lastfm_api_key,
+            acoustid_api_key,
             default_lang: env_optional("DEFAULT_LANG")
                 .and_then(|value| Lang::from_code(&value))
                 .unwrap_or(Lang::En),

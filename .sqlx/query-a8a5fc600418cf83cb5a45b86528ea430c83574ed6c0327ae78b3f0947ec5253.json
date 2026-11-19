@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sent_messages SET delete_after = now() - interval '1 second'\n             WHERE chat_id = -1001 AND message_id = 10",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "a8a5fc600418cf83cb5a45b86528ea430c83574ed6c0327ae78b3f0947ec5253"
+}

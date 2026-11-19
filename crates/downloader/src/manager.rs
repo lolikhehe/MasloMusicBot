@@ -1,6 +1,7 @@
 //! Cold-path orchestration: metadata resolution, in-flight deduplication,
 //! bounded downloads, cover/tag preparation and cache recording.
 
+use crate::zip::{MAX_ZIP_BYTES, ZipOutcome, ZipWriter, exceeds_track_cap, zip_entry_name};
 use audio;
 use common::config::Config;
 use common::domain::{
@@ -158,6 +159,10 @@ type InflightResult = Result<PreparedAudio, Arc<DownloadError>>;
 /// (track, quality, hq_cover) — cover quality is per-request, so a piggybacker
 /// must not inherit the leader's cover choice.
 type InflightKey = (TrackKey, u32, bool);
+
+/// ZIP downloads share one sentinel user bucket; the real limiter is the
+/// bounded concurrency in `zip_album` and singleflight keys are user-agnostic.
+const ZIP_USER_ID: i64 = 0;
 
 /// Removes this in-flight entry on **every** exit path, including a panic in
 /// the leader. The leader holds one armed guard while downloading; on success
@@ -758,6 +763,117 @@ impl DownloadManager {
             _dir: Arc::new(dir),
             _inflight_guard: None,
         })
+    }
+
+    /// Download the given tracks and pack them into a single in-memory ZIP.
+    /// Downloads run two at a time to disk; bytes are read and added one at a
+    /// time and each temp is dropped immediately after being archived.
+    pub async fn zip_album(
+        &self,
+        keys: &[TrackKey],
+        quality: u32,
+        hq_cover: bool,
+    ) -> AppResult<ZipOutcome> {
+        if exceeds_track_cap(keys.len()) {
+            return Err(DownloadError::SourceUnavailable(format!(
+                "too many tracks ({}) to ZIP; at most {} are allowed",
+                keys.len(),
+                crate::zip::MAX_ZIP_TRACKS
+            ))
+            .into());
+        }
+
+        let mut writer = ZipWriter::new(MAX_ZIP_BYTES);
+        let mut total_bytes: u64 = 0;
+        let mut tracks = 0usize;
+
+        for (chunk, pair) in keys.chunks(2).enumerate() {
+            let base = chunk * 2;
+            let first = self.prepare_zip_track(&pair[0], quality, hq_cover);
+            let results = match pair.get(1) {
+                Some(key) => {
+                    let (a, b) =
+                        tokio::join!(first, self.prepare_zip_track(key, quality, hq_cover));
+                    vec![a, b]
+                }
+                None => vec![first.await],
+            };
+
+            for (offset, result) in results.into_iter().enumerate() {
+                let prepared = match result {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        warn!(%error, "album ZIP: could not download track; skipping");
+                        continue;
+                    }
+                };
+                let ext = prepared
+                    .audio_path
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("m4a");
+                let name = zip_entry_name(base + offset, &prepared.meta.title, ext);
+                let bytes = match tokio::fs::read(&prepared.audio_path).await {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        warn!(%error, "album ZIP: could not read downloaded track; skipping");
+                        continue;
+                    }
+                };
+                // Releasing the PreparedAudio drops its TempDir so the file is
+                // gone before the next track's bytes are read into memory.
+                drop(prepared);
+
+                let size = bytes.len() as u64;
+                if total_bytes.saturating_add(size) > MAX_ZIP_BYTES {
+                    return Err(DownloadError::SourceUnavailable(format!(
+                        "album too large: {} bytes already archived plus {size} more exceeds the {MAX_ZIP_BYTES} byte limit",
+                        total_bytes
+                    ))
+                    .into());
+                }
+                writer.add_file(&name, &bytes).await?;
+                total_bytes += size;
+                tracks += 1;
+            }
+        }
+
+        if tracks == 0 {
+            return Err(DownloadError::SourceUnavailable(
+                "no track could be downloaded".to_owned(),
+            )
+            .into());
+        }
+
+        Ok(ZipOutcome {
+            bytes: writer.finish().await?,
+            tracks,
+        })
+    }
+
+    /// Resolve the request from the cache entry for this key (as the replay
+    /// path does), then download through the same singleflight path used for
+    /// normal delivery. Cover processing is untouched; `hq_cover` still forms
+    /// part of the singleflight key.
+    async fn prepare_zip_track(
+        &self,
+        key: &TrackKey,
+        quality: u32,
+        hq_cover: bool,
+    ) -> Result<PreparedAudio, DownloadError> {
+        let cached = self
+            .get_cached(key, quality)
+            .await
+            .map_err(|error| DownloadError::Internal(error.to_string()))?
+            .ok_or(DownloadError::NotFound)?;
+        let request = TrackRequest {
+            key: cached.key.clone(),
+            provider: cached.provider,
+            source_url: cached.source_url.clone(),
+            meta: Some(cached.meta.clone()),
+            target: DownloadTarget::Search(cached.meta.search_query()),
+        };
+        self.prepare(request, quality, ZIP_USER_ID, hq_cover).await
     }
 }
 

@@ -1,0 +1,85 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT album_key, title, artist, cover_url, payload_json,\n                    EXTRACT(EPOCH FROM added_at)::BIGINT AS added_at\n             FROM saved_albums WHERE user_id = $1\n             ORDER BY added_at DESC\n             LIMIT $2 OFFSET $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "album_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "saved_albums",
+            "name": "album_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "saved_albums",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "artist",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "saved_albums",
+            "name": "artist"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "cover_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "saved_albums",
+            "name": "cover_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "payload_json",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "saved_albums",
+            "name": "payload_json"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "added_at",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "8ff7f2f0621fbe749fa056eae1bb436a98156e0a5494ffe1972d32b61174a0ff"
+}

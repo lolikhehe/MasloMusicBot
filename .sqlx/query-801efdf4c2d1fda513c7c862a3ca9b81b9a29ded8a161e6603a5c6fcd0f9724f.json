@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,\n                    hq_cover, lastfm_stats, genre_analysis, album_info, audio_format,\n                    normalize_audio\n             FROM users WHERE user_id = $1",
+  "query": "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,\n                    hq_cover, lastfm_stats, genre_analysis, album_info, audio_format,\n                    normalize_audio, auto_delete_hours\n             FROM users WHERE user_id = $1",
   "describe": {
     "columns": [
       {
@@ -134,6 +134,17 @@
             "name": "normalize_audio"
           }
         }
+      },
+      {
+        "ordinal": 12,
+        "name": "auto_delete_hours",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "auto_delete_hours"
+          }
+        }
       }
     ],
     "parameters": {
@@ -153,8 +164,9 @@
       false,
       false,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "2fdf0e2f577a1d1ba33061a3e26870d97eff4b7fd7239d569c57e309a0916d42"
+  "hash": "801efdf4c2d1fda513c7c862a3ca9b81b9a29ded8a161e6603a5c6fcd0f9724f"
 }

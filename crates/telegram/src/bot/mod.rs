@@ -10,6 +10,7 @@ pub mod import;
 pub mod inline;
 pub mod jobs;
 pub mod lyrics;
+pub mod recognize;
 pub mod send;
 pub mod stats;
 

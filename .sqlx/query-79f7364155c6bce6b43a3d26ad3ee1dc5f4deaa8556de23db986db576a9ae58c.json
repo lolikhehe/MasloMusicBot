@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO sent_messages (chat_id, message_id, user_id, delete_after)\n             VALUES ($1, $2, $3, to_timestamp(EXTRACT(EPOCH FROM now())::bigint + $4))\n             ON CONFLICT (chat_id, message_id) DO UPDATE SET\n                 user_id = excluded.user_id,\n                 delete_after = excluded.delete_after",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "79f7364155c6bce6b43a3d26ad3ee1dc5f4deaa8556de23db986db576a9ae58c"
+}

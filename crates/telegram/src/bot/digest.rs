@@ -12,11 +12,13 @@ use common::error::HandlerResult;
 use common::i18n;
 use common::time;
 use teloxide::prelude::*;
-use teloxide::types::{ChatId, ParseMode};
+use teloxide::types::{ChatId, MessageId, ParseMode};
 use tokio::time::MissedTickBehavior;
 use tracing::warn;
 
 const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Auto-delete due-scan interval, attached to the same detached task.
+const DELETE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const DAILY_SECS: i64 = 86_400;
 const WEEKLY_SECS: i64 = 7 * 86_400;
 const SEND_HOUR_UTC: i64 = 9;
@@ -144,18 +146,73 @@ pub async fn handle_digest(
 }
 
 /// Spawn the detached one-minute planner. Safe to call once per process; with
-/// several replicas the database CAS is the actual lock.
+/// several replicas the database CAS is the actual lock. The same task also
+/// runs the five-minute auto-delete due-scan.
 pub fn spawn(bot: Bot, state: AppState) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(SWEEP_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut delete_ticker = tokio::time::interval(DELETE_INTERVAL);
+        delete_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            ticker.tick().await;
-            if let Err(error) = sweep(&bot, &state).await {
-                warn!(%error, "digest sweep failed");
+            tokio::select! {
+                _ = ticker.tick() => {
+                    if let Err(error) = sweep(&bot, &state).await {
+                        warn!(%error, "digest sweep failed");
+                    }
+                }
+                _ = delete_ticker.tick() => {
+                    sweep_deletions(&bot, &state).await;
+                }
             }
         }
     });
+}
+
+/// Delete messages whose auto-delete deadline has passed. A Telegram failure
+/// leaves the row for the next tick, so a transient outage can't silently
+/// drop the tracking record.
+async fn sweep_deletions(bot: &Bot, state: &AppState) {
+    let due = match state.db.due_sent_messages(30).await {
+        Ok(due) => due,
+        Err(error) => {
+            warn!(%error, "auto-delete due scan failed");
+            return;
+        }
+    };
+    for entry in due {
+        match bot
+            .delete_message(ChatId(entry.chat_id), MessageId(entry.message_id))
+            .await
+        {
+            Ok(_) => {
+                if let Err(error) = state
+                    .db
+                    .delete_sent_message(entry.chat_id, entry.message_id)
+                    .await
+                {
+                    warn!(%error, "could not clear auto-delete row");
+                }
+            }
+            Err(teloxide::RequestError::RetryAfter(_)) => {
+                // No sleep here: a long retry_after would stall this shared
+                // loop; the row stays due and the next tick retries it.
+            }
+            Err(error) if error.to_string().to_ascii_lowercase().contains("not found") => {
+                if let Err(error) = state
+                    .db
+                    .delete_sent_message(entry.chat_id, entry.message_id)
+                    .await
+                {
+                    warn!(%error, "could not clear stale auto-delete row");
+                }
+            }
+            Err(error) => {
+                warn!(%error, chat_id = entry.chat_id, "auto-delete deletion failed");
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 async fn sweep(bot: &Bot, state: &AppState) -> common::error::AppResult<()> {

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE saved_albums SET added_at = now() - interval '1 hour'\n             WHERE user_id = 42 AND album_key = 'deezer:album:1'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e4445f610819b2bf716991bea416373ded8db1798b5e1b865740d758a293b041"
+}

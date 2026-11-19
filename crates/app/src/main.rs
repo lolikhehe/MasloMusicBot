@@ -7,6 +7,7 @@ mod janitor;
 use anyhow::Context;
 use common::config::Config;
 use downloader::DownloadManager;
+use providers::acoustid::AcoustId;
 use providers::{ExternalResolver, YtDlp};
 use std::sync::Arc;
 use std::time::Duration;
@@ -55,7 +56,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "unknown_bot".to_owned());
     tracing::info!(bot_username = %bot_username, "connected to Telegram");
 
-    let state = AppState::new(config.clone(), db, manager, bot_username);
+    let acoustid = config.acoustid_api_key.clone().map(AcoustId::new);
+    let state = AppState::new(config.clone(), db, manager, bot_username, acoustid);
     // Opt-in digests. The planner is a detached task; all replicas sweep the
     // same Postgres rows and a CAS on `next_send_at` elects a single sender.
     telegram::bot::digest::spawn(bot.clone(), state.clone());

@@ -64,8 +64,8 @@ pub fn start(lang: Lang) -> String {
 pub fn help(lang: Lang, is_admin: bool) -> String {
     let base = pick(
         lang,
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule",
-        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import [список] — імпорт плейлиста; без аргументу наступне повідомлення (файл або рядки «Виконавець – Назва») вважається списком\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/stop — зупинити всі твої активні дії одразу\n/convert auto|m4a|mp3|flac|opus — формат; відповідь на трек конвертує саме його\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/fav — твої збережені ⭐ треки (тапни ☆ під треком, щоб зберегти)\n/similar — відповідь на мій трек: до 10 схожих треків\n/artist &lt;ім'я&gt; — топ треків виконавця\n/cover — відповідь на мій трек: обкладинка альбома у повному розмірі\n/groupmode on|off — адмін: дозволити бота в цій групі\n/history [період] — остання історія прослуховувань\n/dynamics [період] — графік динаміки жанрів за часом\n/digest daily|weekly|off — персональний дайджест у приватні повідомлення\n/digest quiet HH-HH|off — тихі години за UTC\n/digest status — поточний розклад дайджесту",
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/albums — your saved albums\n/recognize — reply to an audio file: identify it by sound\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule",
+        "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import [список] — імпорт плейлиста; без аргументу наступне повідомлення (файл або рядки «Виконавець – Назва») вважається списком\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/stop — зупинити всі твої активні дії одразу\n/convert auto|m4a|mp3|flac|opus — формат; відповідь на трек конвертує саме його\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/fav — твої збережені ⭐ треки (тапни ☆ під треком, щоб зберегти)\n/similar — відповідь на мій трек: до 10 схожих треків\n/artist &lt;ім'я&gt; — топ треків виконавця\n/cover — відповідь на мій трек: обкладинка альбома у повному розмірі\n/albums — твої збережені альбоми\n/recognize — відповідь на аудіофайл: розпізнати за звучанням\n/groupmode on|off — адмін: дозволити бота в цій групі\n/history [період] — остання історія прослуховувань\n/dynamics [період] — графік динаміки жанрів за часом\n/digest daily|weekly|off — персональний дайджест у приватні повідомлення\n/digest quiet HH-HH|off — тихі години за UTC\n/digest status — поточний розклад дайджесту",
     );
     if is_admin {
         lformat!(
@@ -1822,6 +1822,226 @@ pub fn digest_message(
     }
     body.push_str(&format!("\n\n— {DEV_CHANNEL_HANDLE}"));
     body
+}
+
+// ---- Album library, album ZIP, auto-delete, queue ETA and /recognize -------
+
+pub fn albums_title(lang: Lang) -> &'static str {
+    pick(lang, "🎵 Your albums", "🎵 Твої альбоми")
+}
+
+pub fn albums_empty(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Library is empty — save an album with the 💾 button under a delivered album",
+        "Бібліотека порожня — збережи альбом кнопкою 💾 під доставленим альбомом",
+    )
+}
+
+pub fn albums_save_button(lang: Lang) -> &'static str {
+    pick(lang, "💾 Save album", "💾 В бібліотеку")
+}
+
+pub fn albums_remove_button(lang: Lang) -> &'static str {
+    pick(lang, "🗑 Remove", "🗑 Прибрати")
+}
+
+pub fn albums_saved(lang: Lang) -> &'static str {
+    pick(lang, "Saved", "Збережено")
+}
+
+pub fn albums_already_saved(lang: Lang) -> &'static str {
+    pick(lang, "Already saved", "Вже збережено")
+}
+
+pub fn albums_removed(lang: Lang) -> &'static str {
+    pick(lang, "Removed from library", "Видалено з бібліотеки")
+}
+
+pub fn albums_item(lang: Lang, album: &str, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "📦 {album} — {n} tracks", album = album, n = n),
+        Lang::Uk => format!("📦 {album} — {n} треків"),
+    }
+}
+
+pub fn album_packing(lang: Lang) -> &'static str {
+    pick(lang, "🗜 Packing album…", "🗜 Пакую альбом…")
+}
+
+pub fn album_pack_no_tracks(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Packing failed: no track could be downloaded",
+        "Не вдалося запакувати: жоден трек не завантажився",
+    )
+}
+
+pub fn album_pack_too_large(lang: Lang, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "Album is too large to pack (limit {n} MB)", n = n),
+        Lang::Uk => format!("Альбом завеликий для архіву (ліміт {n} МБ)"),
+    }
+}
+
+pub fn download_album(lang: Lang) -> &'static str {
+    pick(lang, "Download album", "Завантажити альбом")
+}
+
+pub fn autodelete_label(lang: Lang) -> &'static str {
+    pick(lang, "🧹 Auto-delete", "🧹 Автовидалення")
+}
+
+pub fn autodelete_off(lang: Lang) -> &'static str {
+    pick(lang, "Auto-delete off", "Автовидалення вимкнено")
+}
+
+pub fn autodelete_hour_1(lang: Lang) -> &'static str {
+    pick(lang, "1 hour", "1 годину")
+}
+
+pub fn autodelete_hour_6(lang: Lang) -> &'static str {
+    pick(lang, "6 hours", "6 годин")
+}
+
+pub fn autodelete_hour_12(lang: Lang) -> &'static str {
+    pick(lang, "12 hours", "12 годин")
+}
+
+pub fn autodelete_hour_24(lang: Lang) -> &'static str {
+    pick(lang, "24 hours", "24 години")
+}
+
+pub fn autodelete_hint(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "The bot deletes its own audio messages after this time (max 48 h). Applies only to messages sent after enabling.",
+        "Бот видаляє власні аудіоповідомлення через цей час (макс. 48 год). Діє тільки на повідомлення, надіслані після увімкнення.",
+    )
+}
+
+pub fn autodelete_current(lang: Lang, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "Auto-delete: {n} hours", n = n),
+        Lang::Uk => format!("Автовидалення: {n} год"),
+    }
+}
+
+pub fn autodelete_set(lang: Lang, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "Set: {n} hours", n = n),
+        Lang::Uk => format!("Встановлено: {n} год"),
+    }
+}
+
+pub fn queue_eta(lang: Lang, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "≈ {n} min", n = n),
+        Lang::Uk => format!("≈ {n} хв"),
+    }
+}
+
+pub fn recognize_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Reply to an audio file with /recognize",
+        "Відповідь на аудіофайл командою /recognize",
+    )
+}
+
+pub fn recognize_not_configured(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Recognition is not configured on this server",
+        "Розпізнавання не налаштоване на сервері",
+    )
+}
+
+pub fn recognize_listening(lang: Lang) -> &'static str {
+    pick(lang, "🔍 Listening…", "🔍 Слухаю…")
+}
+
+pub fn recognize_not_found(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Could not identify this track",
+        "Не вдалося розпізнати цей трек",
+    )
+}
+
+pub fn recognize_result(lang: Lang, artist: &str, title: &str) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(
+            lang,
+            "Looks like: {artist} — {title}",
+            artist = artist,
+            title = title
+        ),
+        Lang::Uk => format!("Схоже на: {artist} — {title}"),
+    }
+}
+
+pub fn recognize_album_line(lang: Lang, album: &str, year: &str) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "💿 {album} · {year}", album = album, year = year),
+        Lang::Uk => format!("💿 {album} · {year}"),
+    }
 }
 
 #[cfg(test)]

@@ -12,9 +12,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
                 "🎵 <b>音乐机器人</b>\n\n发送歌曲链接、专辑链接，或直接输入 <code>艺人 — 标题</code>。我会找到这首歌，并以带标签和封面的音频发送给你。\n\n你也可以在任意聊天中内联使用我：输入 <code>@this_bot song</code>。",
             )
         }
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/albums — your saved albums\n/recognize — reply to an audio file: identify it by sound\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
             Some(
-                "<b>使用说明</b>\n\n• 私聊：发送链接或 <code>艺人 — 标题</code>。\n• 内联：在任意聊天中输入 <code>@this_bot query</code>。连接 Last.fm 后，空查询会推荐你正在播放的歌曲。\n• 专辑和歌单会逐首下载并显示进度消息。使用 <code>/alb &lt;name&gt;</code> 可按标题查找专辑。\n• 重复的请求将从缓存中提供。\n\n<b>命令</b>\n/start — 关于本机器人\n/help — 本帮助\n/settings — 语言、音质（kbps 或 FLAC 无损）、来源和标签\n/alb — 按名称查找专辑并下载\n/lastfm — 连接 Last.fm（空的内联查询会推荐你正在播放的歌曲）\n/import [list] — 导入歌单；不带参数时，将下一条消息（文件或“艺人 – 标题”行）作为列表\n/profile 或 /lastfmstats [period] — 听歌记录统计（在 /settings 中启用 Last.fm 统计）\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — 你最常播放内容的 PNG 图表\n/genres [5..20] — 根据下载记录生成流派图表（在 /settings 中启用分析器）\n/lyrics [Artist — Title] — 从公开来源获取歌词（无参数：最近一首歌曲；或回复音频消息）\n/changelog — 显示更新日志\n/me — 你自己的计数和喜爱的流派\n/queue — 最近的下载任务\n/cancel &lt;id&gt; — 取消正在进行的下载\n/stop — 立即取消你所有正在进行的操作\n/convert auto|m4a|mp3|flac|opus — 输出格式；回复某首歌曲可仅转换该首\n/normalize on|off — ffmpeg 响度均衡处理\n/playlist &lt;name&gt; — 搜索公开歌单\n/fav — 你收藏的 ⭐ 歌曲（点歌曲下的 ☆ 即可收藏）\n/similar — 回复我的一首歌曲：最多 10 首相似歌曲\n/artist &lt;名字&gt; — 某位艺人的热门歌曲\n/cover — 回复我的一首歌曲：全尺寸专辑封面\n/groupmode on|off — 管理员：允许本机器人在本群使用\n/history [period] — 你最近的收听历史\n/dynamics [period] — 流派随时间变化的图表\n/digest daily|weekly|off — 向你私聊发送个人摘要\n/digest quiet HH-HH|off — 以 UTC 表示的静默时段\n/digest status — 当前计划",
+                "<b>使用说明</b>\n\n• 私聊：发送链接或 <code>艺人 — 标题</code>。\n• 内联：在任意聊天中输入 <code>@this_bot query</code>。连接 Last.fm 后，空查询会推荐你正在播放的歌曲。\n• 专辑和歌单会逐首下载并显示进度消息。使用 <code>/alb &lt;name&gt;</code> 可按标题查找专辑。\n• 重复的请求将从缓存中提供。\n\n<b>命令</b>\n/start — 关于本机器人\n/help — 本帮助\n/settings — 语言、音质（kbps 或 FLAC 无损）、来源和标签\n/alb — 按名称查找专辑并下载\n/lastfm — 连接 Last.fm（空的内联查询会推荐你正在播放的歌曲）\n/import [list] — 导入歌单；不带参数时，将下一条消息（文件或“艺人 – 标题”行）作为列表\n/profile 或 /lastfmstats [period] — 听歌记录统计（在 /settings 中启用 Last.fm 统计）\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — 你最常播放内容的 PNG 图表\n/genres [5..20] — 根据下载记录生成流派图表（在 /settings 中启用分析器）\n/lyrics [Artist — Title] — 从公开来源获取歌词（无参数：最近一首歌曲；或回复音频消息）\n/changelog — 显示更新日志\n/me — 你自己的计数和喜爱的流派\n/queue — 最近的下载任务\n/cancel &lt;id&gt; — 取消正在进行的下载\n/stop — 立即取消你所有正在进行的操作\n/convert auto|m4a|mp3|flac|opus — 输出格式；回复某首歌曲可仅转换该首\n/normalize on|off — ffmpeg 响度均衡处理\n/playlist &lt;name&gt; — 搜索公开歌单\n/fav — 你收藏的 ⭐ 歌曲（点歌曲下的 ☆ 即可收藏）\n/similar — 回复我的一首歌曲：最多 10 首相似歌曲\n/artist &lt;名字&gt; — 某位艺人的热门歌曲\n/cover — 回复我的一首歌曲：全尺寸专辑封面\n/albums — 你保存的专辑\n/recognize — 回复音频文件：通过声音识别\n/groupmode on|off — 管理员：允许本机器人在本群使用\n/history [period] — 你最近的收听历史\n/dynamics [period] — 流派随时间变化的图表\n/digest daily|weekly|off — 向你私聊发送个人摘要\n/digest quiet HH-HH|off — 以 UTC 表示的静默时段\n/digest status — 当前计划",
             )
         }
         "{base}\n\n<b>Admin</b>\n/stats — counters\n/ban &lt;id&gt;\n/unban &lt;id&gt;\n/purge &lt;key or url&gt;\n/broadcast &lt;text&gt; — one-off notice to all known users" => {
@@ -372,6 +372,40 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📊 Your digest" => Some("📊 你的摘要"),
         "Tracks" => Some("歌曲数"),
         "Top tracks" => Some("热门歌曲"),
+        "🎵 Your albums" => Some("🎵 你的专辑"),
+        "Library is empty — save an album with the 💾 button under a delivered album" => {
+            Some("资料库为空——在已发送的专辑下点击 💾 按钮保存专辑")
+        }
+        "💾 Save album" => Some("💾 保存专辑"),
+        "🗑 Remove" => Some("🗑 移除"),
+        "Saved" => Some("已保存"),
+        "Already saved" => Some("已保存过"),
+        "Removed from library" => Some("已从资料库移除"),
+        "🗜 Packing album…" => Some("🗜 正在打包专辑…"),
+        "Packing failed: no track could be downloaded" => Some("打包失败：没有任何曲目成功下载"),
+        "🧹 Auto-delete" => Some("🧹 自动删除"),
+        "Auto-delete off" => Some("自动删除已关闭"),
+        "1 hour" => Some("1 小时"),
+        "6 hours" => Some("6 小时"),
+        "12 hours" => Some("12 小时"),
+        "24 hours" => Some("24 小时"),
+        "The bot deletes its own audio messages after this time (max 48 h). Applies only to messages sent after enabling." => {
+            Some(
+                "机器人会在此时间后删除自己发送的音频消息（最多 48 小时）。仅对启用后发送的消息生效。",
+            )
+        }
+        "Reply to an audio file with /recognize" => Some("回复一条音频文件并发送 /recognize"),
+        "Recognition is not configured on this server" => Some("此服务器未配置音频识别"),
+        "🔍 Listening…" => Some("🔍 正在聆听…"),
+        "Could not identify this track" => Some("无法识别这首曲目"),
+        "Download album" => Some("下载专辑"),
+        "Auto-delete: {n} hours" => Some("自动删除：{n} 小时"),
+        "Set: {n} hours" => Some("已设置：{n} 小时"),
+        "≈ {n} min" => Some("≈ {n} 分钟"),
+        "Album is too large to pack (limit {n} MB)" => Some("专辑过大，无法打包（上限 {n} MB）"),
+        "📦 {album} — {n} tracks" => Some("📦 {album} — {n} 首曲目"),
+        "Looks like: {artist} — {title}" => Some("听起来像：{artist} — {title}"),
+        "💿 {album} · {year}" => Some("💿 {album} · {year}"),
         _ => None,
     }
 }

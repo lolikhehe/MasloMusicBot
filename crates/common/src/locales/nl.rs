@@ -12,9 +12,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
                 "🎵 <b>Music Bot</b>\n\nStuur een link naar een nummer, een albumlink of gewoon <code>Artiest — Titel</code>. Ik zoek het nummer en stuur het als audio met tags en hoesafbeelding.\n\nJe kunt me ook inline gebruiken: typ <code>@this_bot liedje</code> in elke chat.",
             )
         }
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/albums — your saved albums\n/recognize — reply to an audio file: identify it by sound\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
             Some(
-                "<b>Hoe te gebruiken</b>\n\n• Privéchat: stuur een link of <code>Artiest — Titel</code>.\n• Inline: <code>@this_bot zoekterm</code> in elke chat. Een lege zoekterm met een verbonden Last.fm stelt voor wat je nu speelt.\n• Albums en afspeellijsten worden één nummer tegelijk gedownload met een voortgangsbericht. Gebruik <code>/alb &lt;naam&gt;</code> om een album op titel te vinden.\n• Herhaalde verzoeken komen uit de cache.\n\n<b>Commando's</b>\n/start — over de bot\n/help — deze help\n/settings — taal, kwaliteit (kbps of FLAC lossless), bron en tags\n/alb — zoek een album op naam en download het\n/lastfm — verbind Last.fm (lege inline-zoekterm stelt het nummer voor dat je speelt)\n/import [lijst] — importeer een afspeellijst; zonder argument wordt het volgende bericht (bestand of regels Artiest – Titel) gebruikt\n/profile of /lastfmstats [periode] — scrobble-statistieken (schakel Last.fm-stats in via /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [periode] — PNG-grafiek van je meest gespeelde items\n/genres [5..20] — genresgrafiek van je downloads (schakel de analyser in via /settings)\n/lyrics [Artiest — Titel] — songteksten uit publieke bronnen (geen argument: laatste nummer; of antwoord op een audio)\n/changelog — toon de releasenotes\n/me — je eigen tellers en favoriete genres\n/queue — recente downloadopdrachten\n/cancel &lt;id&gt; — annuleer een actieve download\n/stop — annuleer al je actieve acties in één keer\n/convert auto|m4a|mp3|flac|opus — uitvoerformaat; antwoord op een nummer om alleen dat te converteren\n/normalize on|off — ffmpeg loudnorm-bewerking\n/playlist &lt;naam&gt; — zoek publieke afspeellijsten\n/fav — je opgeslagen ⭐ nummers (tik op ☆ onder een nummer om het op te slaan)\n/similar — antwoord op een van mijn nummers: maximaal 10 vergelijkbare nummers\n/artist &lt;naam&gt; — topnummers van een artiest\n/cover — antwoord op een van mijn nummers: albumhoes in volledige grootte\n/groupmode on|off — admin: sta de bot toe in deze groep\n/history [periode] — je recente luistergeschiedenis\n/dynamics [periode] — grafiek van het genreverloop in de tijd\n/digest daily|weekly|off — persoonlijk digest naar je privéchat\n/digest quiet HH-HH|off — stille uren in UTC\n/digest status — huidig schema",
+                "<b>Hoe te gebruiken</b>\n\n• Privéchat: stuur een link of <code>Artiest — Titel</code>.\n• Inline: <code>@this_bot zoekterm</code> in elke chat. Een lege zoekterm met een verbonden Last.fm stelt voor wat je nu speelt.\n• Albums en afspeellijsten worden één nummer tegelijk gedownload met een voortgangsbericht. Gebruik <code>/alb &lt;naam&gt;</code> om een album op titel te vinden.\n• Herhaalde verzoeken komen uit de cache.\n\n<b>Commando's</b>\n/start — over de bot\n/help — deze help\n/settings — taal, kwaliteit (kbps of FLAC lossless), bron en tags\n/alb — zoek een album op naam en download het\n/lastfm — verbind Last.fm (lege inline-zoekterm stelt het nummer voor dat je speelt)\n/import [lijst] — importeer een afspeellijst; zonder argument wordt het volgende bericht (bestand of regels Artiest – Titel) gebruikt\n/profile of /lastfmstats [periode] — scrobble-statistieken (schakel Last.fm-stats in via /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [periode] — PNG-grafiek van je meest gespeelde items\n/genres [5..20] — genresgrafiek van je downloads (schakel de analyser in via /settings)\n/lyrics [Artiest — Titel] — songteksten uit publieke bronnen (geen argument: laatste nummer; of antwoord op een audio)\n/changelog — toon de releasenotes\n/me — je eigen tellers en favoriete genres\n/queue — recente downloadopdrachten\n/cancel &lt;id&gt; — annuleer een actieve download\n/stop — annuleer al je actieve acties in één keer\n/convert auto|m4a|mp3|flac|opus — uitvoerformaat; antwoord op een nummer om alleen dat te converteren\n/normalize on|off — ffmpeg loudnorm-bewerking\n/playlist &lt;naam&gt; — zoek publieke afspeellijsten\n/fav — je opgeslagen ⭐ nummers (tik op ☆ onder een nummer om het op te slaan)\n/similar — antwoord op een van mijn nummers: maximaal 10 vergelijkbare nummers\n/artist &lt;naam&gt; — topnummers van een artiest\n/cover — antwoord op een van mijn nummers: albumhoes in volledige grootte\n/albums — je opgeslagen albums\n/recognize — antwoord op een audiobestand: herken op geluid\n/groupmode on|off — admin: sta de bot toe in deze groep\n/history [periode] — je recente luistergeschiedenis\n/dynamics [periode] — grafiek van het genreverloop in de tijd\n/digest daily|weekly|off — persoonlijk digest naar je privéchat\n/digest quiet HH-HH|off — stille uren in UTC\n/digest status — huidig schema",
             )
         }
         "{base}\n\n<b>Admin</b>\n/stats — counters\n/ban &lt;id&gt;\n/unban &lt;id&gt;\n/purge &lt;key or url&gt;\n/broadcast &lt;text&gt; — one-off notice to all known users" => {
@@ -402,6 +402,48 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📊 Your digest" => Some("📊 Jouw digest"),
         "Tracks" => Some("Nummers"),
         "Top tracks" => Some("Topnummers"),
+        "🎵 Your albums" => Some("🎵 Jouw albums"),
+        "Library is empty — save an album with the 💾 button under a delivered album" => {
+            Some("Bibliotheek is leeg — bewaar een album met de 💾-knop onder een bezorgd album")
+        }
+        "💾 Save album" => Some("💾 Album bewaren"),
+        "🗑 Remove" => Some("🗑 Verwijderen"),
+        "Saved" => Some("Bewaard"),
+        "Already saved" => Some("Al bewaard"),
+        "Removed from library" => Some("Uit de bibliotheek verwijderd"),
+        "🗜 Packing album…" => Some("🗜 Album wordt verpakt…"),
+        "Packing failed: no track could be downloaded" => {
+            Some("Verpakken mislukt: er kon geen nummer worden gedownload")
+        }
+        "🧹 Auto-delete" => Some("🧹 Automatisch verwijderen"),
+        "Auto-delete off" => Some("Automatisch verwijderen uit"),
+        "1 hour" => Some("1 uur"),
+        "6 hours" => Some("6 uur"),
+        "12 hours" => Some("12 uur"),
+        "24 hours" => Some("24 uur"),
+        "The bot deletes its own audio messages after this time (max 48 h). Applies only to messages sent after enabling." => {
+            Some(
+                "De bot verwijdert zijn eigen audioberichten na deze tijd (max. 48 uur). Geldt alleen voor berichten die na het inschakelen zijn verzonden.",
+            )
+        }
+        "Reply to an audio file with /recognize" => {
+            Some("Antwoord op een audiobestand met /recognize")
+        }
+        "Recognition is not configured on this server" => {
+            Some("Herkenning is niet geconfigureerd op deze server")
+        }
+        "🔍 Listening…" => Some("🔍 Luisteren…"),
+        "Could not identify this track" => Some("Dit nummer kon niet worden herkend"),
+        "Download album" => Some("Album downloaden"),
+        "Auto-delete: {n} hours" => Some("Automatisch verwijderen: {n} uur"),
+        "Set: {n} hours" => Some("Ingesteld: {n} uur"),
+        "≈ {n} min" => Some("≈ {n} min"),
+        "Album is too large to pack (limit {n} MB)" => {
+            Some("Album is te groot om te verpakken (limiet {n} MB)")
+        }
+        "📦 {album} — {n} tracks" => Some("📦 {album} — {n} nummers"),
+        "Looks like: {artist} — {title}" => Some("Lijkt op: {artist} — {title}"),
+        "💿 {album} · {year}" => Some("💿 {album} · {year}"),
         _ => None,
     }
 }

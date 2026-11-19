@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT message_id FROM sent_messages WHERE chat_id = -2001 ORDER BY message_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "sent_messages",
+            "name": "message_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5326d9127d684ec74d8b0131d6c50d88475dc6b73078d275ac21f3a3c6649871"
+}

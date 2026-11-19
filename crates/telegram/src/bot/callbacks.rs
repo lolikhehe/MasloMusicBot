@@ -1,14 +1,22 @@
 //! Inline keyboard callbacks: search choices and per-user settings.
 
-use crate::bot::commands::{additional_keyboard, language_keyboard, settings_keyboard};
+use crate::bot::commands::{
+    AlbumPageSelection, additional_keyboard, albums_page, autodelete_view, language_keyboard,
+    settings_keyboard,
+};
 use crate::bot::handlers::{
     ask_album_confirmation, deliver_album, deliver_track, edit_html, error_text, escape_html,
+    hq_cover_url,
 };
 use crate::state::AppState;
-use common::error::HandlerResult;
+use common::domain::{AlbumRef, Provider, UserRecord};
+use common::error::{DownloadError, HandlerResult};
 use common::i18n;
 use teloxide::prelude::*;
-use teloxide::types::{CallbackQuery, ParseMode};
+use teloxide::types::{
+    CallbackQuery, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId,
+    ParseMode,
+};
 use tracing::{info, warn};
 
 pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) -> HandlerResult {
@@ -47,6 +55,28 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         .await?;
     } else if let Some(id) = data.strip_prefix("alq:") {
         handle_album_pick(&state, &bot, &query, id, user.lang).await?;
+    } else if let Some(payload) = data.strip_prefix("alv:")
+        && let Some((id, index)) = payload.rsplit_once(':')
+        && let Ok(index) = index.parse::<usize>()
+    {
+        handle_album_view(&state, &bot, &query, id, index, &user, user_id).await?;
+    } else if let Some(payload) = data.strip_prefix("alr:")
+        && let Some((id, index)) = payload.rsplit_once(':')
+        && let Ok(index) = index.parse::<usize>()
+    {
+        handle_album_remove(&state, &bot, &query, id, index, user.lang, user_id).await?;
+    } else if let Some(offset) = data.strip_prefix("alp:")
+        && let Ok(offset) = offset.parse::<u32>()
+    {
+        handle_album_page(&state, &bot, &query, offset, user.lang, user_id).await?;
+    } else if let Some(payload) = data.strip_prefix("azp:")
+        && let Some((source, id)) = payload.split_once(':')
+    {
+        handle_album_zip(&state, &bot, &query, source, id, &user, user_id).await?;
+    } else if let Some(payload) = data.strip_prefix("als:")
+        && let Some((source, id)) = payload.split_once(':')
+    {
+        handle_album_save(&state, &bot, &query, source, id, user.lang, user_id).await?;
     } else if let Some(id) = data.strip_prefix("alc:") {
         handle_album_confirm(
             &state,
@@ -90,6 +120,58 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
             let _ = bot.answer_callback_query(query.id.clone()).await;
             return Ok(());
         };
+        if payload == "admenu" || payload == "adback" {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            let (text, markup) = if payload == "admenu" {
+                autodelete_view(user.lang, user.auto_delete_hours)
+            } else {
+                (
+                    i18n::additional_title(user.lang).to_owned(),
+                    additional_keyboard(
+                        user.lang,
+                        user.tags_enabled,
+                        user.hq_cover,
+                        user.lastfm_stats,
+                        user.genre_analysis,
+                        user.album_info,
+                    ),
+                )
+            };
+            bot.edit_message_text(message.chat.id, message.id, text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
+                .await?;
+            return Ok(());
+        }
+        if let Some(value) = payload.strip_prefix("ad:") {
+            let parsed: Option<Option<i32>> = match value {
+                "off" => Some(None),
+                "1" => Some(Some(1)),
+                "6" => Some(Some(6)),
+                "12" => Some(Some(12)),
+                "24" => Some(Some(24)),
+                _ => None,
+            };
+            if let Some(hours) = parsed {
+                state.db.set_auto_delete_hours(user_id, hours).await?;
+                let toast = match hours {
+                    None => i18n::autodelete_off(user.lang).to_owned(),
+                    Some(hours) => i18n::autodelete_set(user.lang, hours as u32),
+                };
+                let _ = bot
+                    .answer_callback_query(query.id.clone())
+                    .text(toast)
+                    .await;
+                let (text, markup) = autodelete_view(user.lang, hours);
+                bot.edit_message_text(message.chat.id, message.id, text)
+                    .parse_mode(ParseMode::Html)
+                    .reply_markup(markup)
+                    .await?;
+            } else {
+                let _ = bot.answer_callback_query(query.id.clone()).await;
+            }
+            return Ok(());
+        }
         if payload == "langmenu"
             || payload == "langback"
             || payload == "advmenu"
@@ -461,6 +543,435 @@ async fn handle_album_cancel(
     }
     state.delete_selection(selection_id).await?;
     info!(selection_id, "album download cancelled");
+    Ok(())
+}
+
+/// Re-render an `/albums` page into the message a library callback came from.
+async fn show_albums_page(
+    state: &AppState,
+    bot: &Bot,
+    chat: ChatId,
+    message_id: MessageId,
+    lang: common::domain::Lang,
+    user_id: i64,
+    offset: u32,
+) -> HandlerResult {
+    match albums_page(state, user_id, lang, offset).await? {
+        Some((text, markup)) => {
+            let _ = bot
+                .edit_message_text(chat, message_id, text)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(markup)
+                .await;
+        }
+        None => {
+            let _ = edit_html(bot, chat, message_id, i18n::albums_empty(lang)).await;
+        }
+    }
+    Ok(())
+}
+
+async fn handle_album_page(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    offset: u32,
+    lang: common::domain::Lang,
+    user_id: i64,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    show_albums_page(
+        state,
+        bot,
+        message.chat.id,
+        message.id,
+        lang,
+        user_id,
+        offset,
+    )
+    .await
+}
+
+/// Open a saved album: rebuild its `AlbumRef` from the payload saved at
+/// delivery time and resolve it through the same manager call `alq:` uses.
+#[allow(clippy::too_many_arguments)]
+async fn handle_album_view(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    selection_id: &str,
+    index: usize,
+    user: &UserRecord,
+    user_id: i64,
+) -> HandlerResult {
+    let Some(message) = query.regular_message() else {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        return Ok(());
+    };
+    let chat = message.chat.id;
+    let message_id = message.id;
+    let Some(page) = state
+        .get_selection::<AlbumPageSelection>(selection_id, crate::state::selection::ALBUM_LIBRARY)
+        .await?
+    else {
+        let _ = bot
+            .answer_callback_query(query.id.clone())
+            .text(i18n::selection_expired(user.lang))
+            .await;
+        return show_albums_page(state, bot, chat, message_id, user.lang, user_id, 0).await;
+    };
+    let Some(item) = page.items.get(index) else {
+        let _ = bot
+            .answer_callback_query(query.id.clone())
+            .text(i18n::selection_expired(user.lang))
+            .await;
+        return show_albums_page(
+            state,
+            bot,
+            chat,
+            message_id,
+            user.lang,
+            user_id,
+            page.offset,
+        )
+        .await;
+    };
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+
+    let album_ref = item.album_ref();
+    let resolved = match &album_ref {
+        Some(album_ref) => state.manager.resolve_album(album_ref).await.ok(),
+        None => None,
+    };
+    let title = escape_html(&item.title);
+    let artist = escape_html(&item.artist);
+    let mut text = match &resolved {
+        Some(album) => i18n::albums_item(user.lang, &title, album.tracks.len() as u32),
+        None => format!("<b>{title}</b>"),
+    };
+    text.push('\n');
+    text.push_str(&artist);
+
+    let mut buttons = Vec::new();
+    if let Some(album_ref) = &album_ref {
+        // The download button reuses the alq: pick → confirmation flow.
+        let pick_id = state.new_selection_id();
+        state
+            .put_selection(
+                &pick_id,
+                crate::state::selection::ALBUM_REF,
+                user_id,
+                album_ref,
+            )
+            .await?;
+        let download = format!("alq:{pick_id}");
+        if download.len() <= 64 {
+            buttons.push(InlineKeyboardButton::callback(
+                i18n::download_album(user.lang).to_owned(),
+                download,
+            ));
+        }
+        let zip = format!(
+            "azp:{}:{}",
+            album_ref.provider.as_str(),
+            album_ref.url.as_deref().unwrap_or("")
+        );
+        if zip.len() <= 64 {
+            buttons.push(InlineKeyboardButton::callback("🗜 ZIP", zip));
+        }
+    }
+    let remove = format!("alr:{selection_id}:{index}");
+    if remove.len() <= 64 {
+        buttons.push(InlineKeyboardButton::callback(
+            i18n::albums_remove_button(user.lang).to_owned(),
+            remove,
+        ));
+    }
+
+    // Saved cover first, then the resolved album's first track artwork.
+    let cover = item
+        .cover_url
+        .as_deref()
+        .or_else(|| {
+            resolved
+                .as_ref()
+                .and_then(|album| album.tracks.first())
+                .and_then(|track| track.meta.as_ref())
+                .and_then(|meta| meta.thumbnail_url.as_deref())
+        })
+        .filter(|url| !url.trim().is_empty())
+        .map(hq_cover_url);
+    if let Some(url) = cover
+        && let Some(bytes) = providers::http::fetch_bytes(&state.http, &url, 8 * 1024 * 1024).await
+    {
+        let _ = bot.send_photo(chat, InputFile::memory(bytes)).await;
+    }
+    let _ = bot
+        .edit_message_text(chat, message_id, text)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(InlineKeyboardMarkup::new(vec![buttons]))
+        .await;
+    Ok(())
+}
+
+async fn handle_album_remove(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    selection_id: &str,
+    index: usize,
+    lang: common::domain::Lang,
+    user_id: i64,
+) -> HandlerResult {
+    let Some(message) = query.regular_message() else {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        return Ok(());
+    };
+    let Some(page) = state
+        .get_selection::<AlbumPageSelection>(selection_id, crate::state::selection::ALBUM_LIBRARY)
+        .await?
+    else {
+        let _ = bot
+            .answer_callback_query(query.id.clone())
+            .text(i18n::selection_expired(lang))
+            .await;
+        return show_albums_page(state, bot, message.chat.id, message.id, lang, user_id, 0).await;
+    };
+    let Some(item) = page.items.get(index) else {
+        let _ = bot
+            .answer_callback_query(query.id.clone())
+            .text(i18n::selection_expired(lang))
+            .await;
+        return show_albums_page(
+            state,
+            bot,
+            message.chat.id,
+            message.id,
+            lang,
+            user_id,
+            page.offset,
+        )
+        .await;
+    };
+    state
+        .db
+        .delete_saved_album(user_id, &item.album_key)
+        .await?;
+    let _ = bot
+        .answer_callback_query(query.id.clone())
+        .text(i18n::albums_removed(lang))
+        .await;
+    show_albums_page(
+        state,
+        bot,
+        message.chat.id,
+        message.id,
+        lang,
+        user_id,
+        page.offset,
+    )
+    .await
+}
+
+/// Build a ZIP from the album's cached tracks. `prepare_zip_track` rebuilds
+/// every request from the DB cache, so uncached keys are skipped there; verify
+/// at least one key is reconstructable before packing.
+#[allow(clippy::too_many_arguments)]
+async fn handle_album_zip(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    source: &str,
+    id: &str,
+    user: &UserRecord,
+    user_id: i64,
+) -> HandlerResult {
+    let Some(message) = query.regular_message() else {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        return Ok(());
+    };
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let chat = message.chat.id;
+    let status_id = message.id;
+    let _ = edit_html(bot, chat, status_id, i18n::album_packing(user.lang)).await;
+
+    let state = state.clone();
+    let bot = bot.clone();
+    let lang = user.lang;
+    let quality = user.quality;
+    let hq_cover = user.hq_cover;
+    let source = source.to_owned();
+    let id = id.to_owned();
+    tokio::spawn(async move {
+        let flow = async {
+            let provider: Provider = source
+                .parse()
+                .map_err(|_| DownloadError::Unsupported("unknown album source".to_owned()))?;
+            let album = state
+                .manager
+                .resolve_album(&AlbumRef {
+                    provider,
+                    url: Some(id.clone()),
+                    title: None,
+                })
+                .await?;
+            let all_keys: Vec<_> = album.tracks.iter().map(|track| track.key.clone()).collect();
+            // zip_album rejects >MAX_ZIP_TRACKS keys outright; pack the first
+            // ones instead of failing the whole request.
+            let keys = &all_keys[..all_keys.len().min(downloader::MAX_ZIP_TRACKS)];
+            let mut cached = 0usize;
+            for key in keys {
+                if state.manager.get_cached(key, quality).await?.is_some() {
+                    cached += 1;
+                }
+            }
+            if cached == 0 {
+                return Ok::<_, common::error::AppError>(None);
+            }
+            Ok(Some((
+                album.title,
+                state.manager.zip_album(keys, quality, hq_cover).await?,
+            )))
+        };
+
+        match tokio::time::timeout(std::time::Duration::from_secs(10 * 60), flow).await {
+            Ok(Ok(Some((title, outcome)))) => {
+                let safe: String = title
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || "-_. ".contains(c) {
+                            c
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                let filename = format!("{}.zip", crate::bot::send::truncate(&safe, 80));
+                let caption = i18n::albums_item(lang, &escape_html(&title), outcome.tracks as u32);
+                let input = InputFile::memory(outcome.bytes).file_name(filename);
+                match bot
+                    .send_document(chat, input)
+                    .caption(caption)
+                    .parse_mode(ParseMode::Html)
+                    .await
+                {
+                    Ok(message) => {
+                        state.maybe_track_deletion(user_id, chat, message.id);
+                        let _ = bot.delete_message(chat, status_id).await;
+                    }
+                    // Keep the packing message as the error report: deleting
+                    // it would leave the user with no feedback at all.
+                    Err(error) => {
+                        warn!(%error, "album ZIP upload failed");
+                        let _ = edit_html(
+                            &bot,
+                            chat,
+                            status_id,
+                            i18n::error(lang, &DownloadError::Internal(error.to_string())),
+                        )
+                        .await;
+                    }
+                }
+            }
+            Ok(Ok(None)) => {
+                let _ = edit_html(&bot, chat, status_id, i18n::album_pack_no_tracks(lang)).await;
+            }
+            Ok(Err(error)) => {
+                let lower = error.to_string().to_ascii_lowercase();
+                let text = if lower.contains("too large") {
+                    i18n::album_pack_too_large(lang, 900)
+                } else if lower.contains("no track could be downloaded") {
+                    i18n::album_pack_no_tracks(lang).to_owned()
+                } else {
+                    i18n::error(lang, &DownloadError::Internal(error.to_string()))
+                };
+                let _ = edit_html(&bot, chat, status_id, text).await;
+            }
+            Err(_) => {
+                let _ = edit_html(
+                    &bot,
+                    chat,
+                    status_id,
+                    i18n::error(lang, &DownloadError::Internal("ZIP timed out".to_owned())),
+                )
+                .await;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// 💾 under a delivered album: resolve the same way `alq:` does, then save
+/// the album's identity and metadata in the user's library.
+async fn handle_album_save(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    source: &str,
+    id: &str,
+    lang: common::domain::Lang,
+    user_id: i64,
+) -> HandlerResult {
+    let Some(message) = query.regular_message() else {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        return Ok(());
+    };
+    let provider: Provider = match source.parse() {
+        Ok(provider) => provider,
+        Err(_) => {
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            return Ok(());
+        }
+    };
+    let album = match state
+        .manager
+        .resolve_album(&AlbumRef {
+            provider,
+            url: Some(id.to_owned()),
+            title: None,
+        })
+        .await
+    {
+        Ok(album) => album,
+        Err(error) => {
+            let _ = edit_html(bot, message.chat.id, message.id, i18n::error(lang, &error)).await;
+            let _ = bot.answer_callback_query(query.id.clone()).await;
+            return Ok(());
+        }
+    };
+    let first = album.tracks.first().and_then(|track| track.meta.as_ref());
+    let artist = first
+        .and_then(|meta| meta.performer.as_deref())
+        .filter(|artist| !artist.trim().is_empty())
+        .unwrap_or("");
+    let cover = first
+        .and_then(|meta| meta.thumbnail_url.as_deref())
+        .filter(|url| !url.trim().is_empty())
+        .map(str::to_owned);
+    let key = format!("{source}:{id}");
+    let payload = serde_json::json!({"source": source, "id": id}).to_string();
+    let inserted = state
+        .db
+        .save_album(
+            user_id,
+            &key,
+            &album.title,
+            artist,
+            cover.as_deref(),
+            &payload,
+        )
+        .await?;
+    let _ = bot
+        .answer_callback_query(query.id.clone())
+        .text(if inserted {
+            i18n::albums_saved(lang)
+        } else {
+            i18n::albums_already_saved(lang)
+        })
+        .await;
     Ok(())
 }
 

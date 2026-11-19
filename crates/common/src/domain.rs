@@ -507,6 +507,8 @@ pub struct UserRecord {
     pub audio_format: String,
     /// Opt-in ffmpeg loudnorm pass.
     pub normalize_audio: bool,
+    /// Per-user auto-delete lifetime in hours; `None` = feature off.
+    pub auto_delete_hours: Option<i32>,
 }
 
 #[derive(Debug, Clone)]

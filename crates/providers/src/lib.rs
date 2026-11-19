@@ -1,3 +1,4 @@
+pub mod acoustid;
 pub mod external;
 pub mod http;
 pub mod lastfm;

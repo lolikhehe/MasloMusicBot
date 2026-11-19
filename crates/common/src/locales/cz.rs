@@ -12,9 +12,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
                 "🎵 <b>Music Bot</b>\n\nPošlete odkaz na skladbu, album nebo jen <code>Interpret — Název</code>. Skladbu najdu a pošlu jako audio s tagy a obalem.\n\nMůžete mě používat i inline: napište <code>@this_bot píseň</code> v libovolném chatu.",
             )
         }
-        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
+        "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/albums — your saved albums\n/recognize — reply to an audio file: identify it by sound\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule" => {
             Some(
-                "<b>Jak používat</b>\n\n• Soukromý chat: pošlete odkaz nebo <code>Interpret — Název</code>.\n• Inline: <code>@this_bot dotaz</code> v libovolném chatu. Prázdný dotaz s připojeným Last.fm navrhne skladbu, která právě hraje.\n• Alba a playlisty se stahují po jedné skladbě se zprávou o průběhu. Pomocí <code>/alb &lt;název&gt;</code> najdete album podle názvu.\n• Opakované požadavky se vracejí z mezipaměti.\n\n<b>Příkazy</b>\n/start — o botovi\n/help — tato nápověda\n/settings — jazyk, kvalita (kbps nebo bezztrátový FLAC), zdroj a tagy\n/alb — najít album podle názvu a stáhnout ho\n/lastfm — připojit Last.fm (prázdný inline dotaz navrhne skladbu, která právě hraje)\n/import [seznam] — import playlisty; bez argumentu se použije další zpráva (soubor nebo řádky Interpret – Název)\n/profile nebo /lastfmstats [období] — statistiky scrobblů (zapněte statistiky Last.fm v /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [období] — PNG graf vašich nejčastěji hraných položek\n/genres [5..20] — graf žánrů z vašich stažených skladeb (zapněte analyzátor v /settings)\n/lyrics [Interpret — Název] — text písně z veřejných zdrojů (bez argumentu: poslední skladba nebo odpověď na audio)\n/changelog — zobrazit poznámky k vydání\n/me — vaše počítadla a oblíbené žánry\n/queue — nedávné úlohy stahování\n/cancel &lt;id&gt; — zrušit aktivní stahování\n/stop — okamžitě zrušit všechny vaše aktivní akce\n/convert auto|m4a|mp3|flac|opus — výstupní formát; odpověď na skladbu převede právě ji\n/normalize on|off — vyrovnání hlasitosti ffmpeg\n/playlist &lt;název&gt; — hledat veřejné playlisty\n/fav — vaše uložené ⭐ skladby (klepni ☆ pod skladbou pro uložení)\n/similar — odpověz na moji skladbu: až 10 podobných skladeb\n/artist &lt;jméno&gt; — top skladby interpreta\n/cover — odpověz na moji skladbu: obal alba v plné velikosti\n/groupmode on|off — administrátor: povolit bota v této skupině\n/history [období] — vaše nedávná historie poslechu\n/dynamics [období] — graf vývoje žánrů v čase\n/digest daily|weekly|off — osobní přehled do vašeho soukromého chatu\n/digest quiet HH-HH|off — tiché hodiny v UTC\n/digest status — aktuální rozvrh",
+                "<b>Jak používat</b>\n\n• Soukromý chat: pošlete odkaz nebo <code>Interpret — Název</code>.\n• Inline: <code>@this_bot dotaz</code> v libovolném chatu. Prázdný dotaz s připojeným Last.fm navrhne skladbu, která právě hraje.\n• Alba a playlisty se stahují po jedné skladbě se zprávou o průběhu. Pomocí <code>/alb &lt;název&gt;</code> najdete album podle názvu.\n• Opakované požadavky se vracejí z mezipaměti.\n\n<b>Příkazy</b>\n/start — o botovi\n/help — tato nápověda\n/settings — jazyk, kvalita (kbps nebo bezztrátový FLAC), zdroj a tagy\n/alb — najít album podle názvu a stáhnout ho\n/lastfm — připojit Last.fm (prázdný inline dotaz navrhne skladbu, která právě hraje)\n/import [seznam] — import playlisty; bez argumentu se použije další zpráva (soubor nebo řádky Interpret – Název)\n/profile nebo /lastfmstats [období] — statistiky scrobblů (zapněte statistiky Last.fm v /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [období] — PNG graf vašich nejčastěji hraných položek\n/genres [5..20] — graf žánrů z vašich stažených skladeb (zapněte analyzátor v /settings)\n/lyrics [Interpret — Název] — text písně z veřejných zdrojů (bez argumentu: poslední skladba nebo odpověď na audio)\n/changelog — zobrazit poznámky k vydání\n/me — vaše počítadla a oblíbené žánry\n/queue — nedávné úlohy stahování\n/cancel &lt;id&gt; — zrušit aktivní stahování\n/stop — okamžitě zrušit všechny vaše aktivní akce\n/convert auto|m4a|mp3|flac|opus — výstupní formát; odpověď na skladbu převede právě ji\n/normalize on|off — vyrovnání hlasitosti ffmpeg\n/playlist &lt;název&gt; — hledat veřejné playlisty\n/fav — vaše uložené ⭐ skladby (klepni ☆ pod skladbou pro uložení)\n/similar — odpověz na moji skladbu: až 10 podobných skladeb\n/artist &lt;jméno&gt; — top skladby interpreta\n/cover — odpověz na moji skladbu: obal alba v plné velikosti\n/albums — uložená alba\n/recognize — odpověz na audio soubor: rozpoznat podle zvuku\n/groupmode on|off — administrátor: povolit bota v této skupině\n/history [období] — vaše nedávná historie poslechu\n/dynamics [období] — graf vývoje žánrů v čase\n/digest daily|weekly|off — osobní přehled do vašeho soukromého chatu\n/digest quiet HH-HH|off — tiché hodiny v UTC\n/digest status — aktuální rozvrh",
             )
         }
         "{base}\n\n<b>Admin</b>\n/stats — counters\n/ban &lt;id&gt;\n/unban &lt;id&gt;\n/purge &lt;key or url&gt;\n/broadcast &lt;text&gt; — one-off notice to all known users" => {
@@ -400,6 +400,48 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📊 Your digest" => Some("📊 Váš přehled"),
         "Tracks" => Some("Skladby"),
         "Top tracks" => Some("Top skladby"),
+        "🎵 Your albums" => Some("🎵 Tvoje alba"),
+        "Library is empty — save an album with the 💾 button under a delivered album" => {
+            Some("Knihovna je prázdná — ulož album tlačítkem 💾 pod doručeným albem")
+        }
+        "💾 Save album" => Some("💾 Uložit album"),
+        "🗑 Remove" => Some("🗑 Odebrat"),
+        "Saved" => Some("Uloženo"),
+        "Already saved" => Some("Již uloženo"),
+        "Removed from library" => Some("Odebráno z knihovny"),
+        "🗜 Packing album…" => Some("🗜 Balím album…"),
+        "Packing failed: no track could be downloaded" => {
+            Some("Balení selhalo: nepodařilo se stáhnout žádnou skladbu")
+        }
+        "🧹 Auto-delete" => Some("🧹 Automatické mazání"),
+        "Auto-delete off" => Some("Automatické mazání vypnuto"),
+        "1 hour" => Some("1 hodina"),
+        "6 hours" => Some("6 hodin"),
+        "12 hours" => Some("12 hodin"),
+        "24 hours" => Some("24 hodin"),
+        "The bot deletes its own audio messages after this time (max 48 h). Applies only to messages sent after enabling." => {
+            Some(
+                "Bot maže své vlastní audiozprávy po této době (max. 48 hod.). Platí jen pro zprávy odeslané po zapnutí.",
+            )
+        }
+        "Reply to an audio file with /recognize" => {
+            Some("Odpověz na audio soubor příkazem /recognize")
+        }
+        "Recognition is not configured on this server" => {
+            Some("Rozpoznávání není na tomto serveru nastaveno")
+        }
+        "🔍 Listening…" => Some("🔍 Poslouchám…"),
+        "Could not identify this track" => Some("Tuto skladbu se nepodařilo rozpoznat"),
+        "Download album" => Some("Stáhnout album"),
+        "Auto-delete: {n} hours" => Some("Automatické mazání: {n} hod."),
+        "Set: {n} hours" => Some("Nastaveno: {n} hod."),
+        "≈ {n} min" => Some("≈ {n} min"),
+        "Album is too large to pack (limit {n} MB)" => {
+            Some("Album je příliž velký k zabalení (limit {n} MB)")
+        }
+        "📦 {album} — {n} tracks" => Some("📦 {album} — {n} skladeb"),
+        "Looks like: {artist} — {title}" => Some("Vypadá to na: {artist} — {title}"),
+        "💿 {album} · {year}" => Some("💿 {album} · {year}"),
         _ => None,
     }
 }

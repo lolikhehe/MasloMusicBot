@@ -30,7 +30,7 @@ ARG DENO_VERSION=2.9.8
 ARG DENO_SHA256=e890975bc2549807bbcc0b584ffafda72cc7c93349dd99c80483dd784f6c4609
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg tini unzip \
+ && apt-get install -y --no-install-recommends ca-certificates libchromaprint-tools curl ffmpeg tini unzip \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fSL "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_linux" \
       -o /usr/local/bin/yt-dlp \
