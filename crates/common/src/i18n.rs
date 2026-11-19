@@ -1394,6 +1394,26 @@ pub fn import_failed(lang: Lang) -> &'static str {
     )
 }
 
+/// Shown after an import when some lines could not be matched to a track.
+pub fn import_unresolved(lang: Lang, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(
+            lang,
+            "⚠ {n} lines could not be resolved and were skipped",
+            n = n
+        ),
+        Lang::Uk => format!("⚠ {n} рядків не вдалося розпізнати — пропущено"),
+    }
+}
+
 pub fn lastfm_stats_disabled(lang: Lang) -> &'static str {
     pick(
         lang,
@@ -2131,6 +2151,34 @@ mod tests {
             assert!(text.contains("X&amp;Y"), "{text}");
             assert!(text.contains(DEV_CHANNEL_HANDLE));
         }
+    }
+
+    #[test]
+    fn import_unresolved_renders_count_in_every_language() {
+        for lang in [
+            Lang::En,
+            Lang::Uk,
+            Lang::Be,
+            Lang::Pl,
+            Lang::De,
+            Lang::Cn,
+            Lang::Jp,
+            Lang::Fr,
+            Lang::Nl,
+            Lang::Cz,
+        ] {
+            let text = import_unresolved(lang, 3);
+            assert!(text.contains('⚠'), "{lang:?}: {text}");
+            assert!(text.contains('3'), "{lang:?}: {text}");
+        }
+        assert_eq!(
+            import_unresolved(Lang::En, 3),
+            "⚠ 3 lines could not be resolved and were skipped"
+        );
+        assert_eq!(
+            import_unresolved(Lang::Uk, 3),
+            "⚠ 3 рядків не вдалося розпізнати — пропущено"
+        );
     }
 
     #[test]

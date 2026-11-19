@@ -210,12 +210,12 @@ impl ExternalResolver {
             .query(&[("q", query), ("limit", limit.as_str())])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
         Ok(deezer_results_from_page(page))
     }
 
@@ -236,12 +236,12 @@ impl ExternalResolver {
             .query(&[("q", query), ("limit", limit.as_str())])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
         Ok(deezer_albums_from_page(page))
     }
 
@@ -263,12 +263,12 @@ impl ExternalResolver {
             .query(&[("q", query), ("limit", limit.as_str())])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
         Ok(deezer_playlists_from_page(page))
     }
 
@@ -295,12 +295,12 @@ impl ExternalResolver {
             .query(&[("q", query), ("limit", "1")])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
         Ok(artwork_from_payload(kind, &payload))
     }
 
@@ -328,12 +328,12 @@ impl ExternalResolver {
             ])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
         Ok(apple_albums_from_response(body))
     }
 
@@ -361,12 +361,12 @@ impl ExternalResolver {
             ])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
         for track in body.results {
             if track.wrapper_type.as_deref() != Some("track") {
                 continue;
@@ -501,12 +501,12 @@ impl ExternalResolver {
             .query(&[("q", query), ("limit", "1")])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
         let Some(artist) = search.data.into_iter().next() else {
             return Ok(None);
         };
@@ -517,12 +517,19 @@ impl ExternalResolver {
             .query(&[("limit", limit_str.as_str())])
             .send()
             .await
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .error_for_status()
-            .map_err(map_reqwest)?
+            .map_err(map_endpoint_reqwest)?
             .json()
             .await
-            .map_err(map_reqwest)?;
+            .map_err(map_endpoint_reqwest)?;
+        // Deezer can answer 200 with an error envelope. That is an outage, not
+        // "this artist has no top tracks" (which callers render as "none").
+        if top.error.is_some() {
+            return Err(DownloadError::SourceUnavailable(
+                "deezer endpoint not found".to_owned(),
+            ));
+        }
         let results = deezer_results_from_page(top);
         Ok((!results.is_empty()).then_some(results))
     }
@@ -756,22 +763,48 @@ fn deezer_results_from_page(page: DeezerTrackList) -> Vec<SearchResult> {
 fn artwork_from_payload(kind: ArtworkKind, payload: &serde_json::Value) -> Option<String> {
     let first = payload.get("data")?.as_array()?.first()?;
     let image = match kind {
-        ArtworkKind::Track => first
-            .get("album")
-            .and_then(|album| album.get("cover_xl").or_else(|| album.get("cover_big"))),
-        ArtworkKind::Album => first.get("cover_xl").or_else(|| first.get("cover_big")),
-        ArtworkKind::Artist => first.get("picture_xl").or_else(|| first.get("picture_big")),
+        ArtworkKind::Track => first.get("album").and_then(|album| {
+            album
+                .get("cover_xl")
+                .or_else(|| album.get("cover_big"))
+                .or_else(|| album.get("cover_medium"))
+        }),
+        ArtworkKind::Album => first
+            .get("cover_xl")
+            .or_else(|| first.get("cover_big"))
+            .or_else(|| first.get("cover_medium")),
+        ArtworkKind::Artist => first
+            .get("picture_xl")
+            .or_else(|| first.get("picture_big"))
+            .or_else(|| first.get("picture_medium")),
     }?
     .as_str()?
     .trim();
     (!image.is_empty()).then(|| image.to_owned())
 }
 
+/// Track/album lookups by id: a 404 means the requested item is gone.
+/// Never use `error`'s Display — reqwest embeds the full URL (with API keys).
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
-    if error.status() == Some(reqwest::StatusCode::NOT_FOUND) {
-        DownloadError::NotFound
-    } else {
-        DownloadError::SourceUnavailable(format!("metadata request failed: {error}"))
+    match error.status() {
+        Some(reqwest::StatusCode::NOT_FOUND) => DownloadError::NotFound,
+        Some(status) => {
+            DownloadError::SourceUnavailable(format!("metadata request failed: {status}"))
+        }
+        None => {
+            DownloadError::SourceUnavailable("metadata request failed: network error".to_owned())
+        }
+    }
+}
+
+/// Search/list endpoints: a 404 means the endpoint itself is unavailable, not
+/// that the user's track was missing. Don't report an outage as "not found".
+fn map_endpoint_reqwest(error: reqwest::Error) -> DownloadError {
+    match error.status() {
+        Some(reqwest::StatusCode::NOT_FOUND) => {
+            DownloadError::SourceUnavailable("deezer endpoint not found".to_owned())
+        }
+        _ => map_reqwest(error),
     }
 }
 
@@ -856,6 +889,8 @@ struct DeezerTrack {
 struct DeezerTrackList {
     #[serde(default)]
     data: Vec<DeezerTrack>,
+    #[serde(default)]
+    error: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1083,8 +1118,50 @@ mod tests {
             Some("https://x/artist.jpg")
         );
 
+        // Medium tier is the last resort when xl/big are absent.
+        let medium = serde_json::json!({
+            "data": [{
+                "album": { "cover_medium": "https://x/250.jpg" },
+                "cover_medium": "https://x/album-250.jpg",
+                "picture_medium": "https://x/artist-250.jpg"
+            }]
+        });
+        assert_eq!(
+            artwork_from_payload(ArtworkKind::Track, &medium).as_deref(),
+            Some("https://x/250.jpg")
+        );
+        assert_eq!(
+            artwork_from_payload(ArtworkKind::Album, &medium).as_deref(),
+            Some("https://x/album-250.jpg")
+        );
+        assert_eq!(
+            artwork_from_payload(ArtworkKind::Artist, &medium).as_deref(),
+            Some("https://x/artist-250.jpg")
+        );
+
         let empty = serde_json::json!({ "data": [] });
         assert_eq!(artwork_from_payload(ArtworkKind::Track, &empty), None);
+    }
+
+    #[test]
+    fn error_mapping_never_leaks_the_url() {
+        let error = reqwest::Client::new()
+            .get("http://[::1")
+            .build()
+            .expect_err("malformed URL");
+        for message in [
+            map_reqwest(error).to_string(),
+            map_endpoint_reqwest(
+                reqwest::Client::new()
+                    .get("http://[::1")
+                    .build()
+                    .expect_err("malformed URL"),
+            )
+            .to_string(),
+        ] {
+            assert!(!message.contains("::1"), "{message}");
+            assert!(!message.contains("http"), "{message}");
+        }
     }
 
     #[test]

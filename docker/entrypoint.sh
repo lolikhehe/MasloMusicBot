@@ -37,9 +37,9 @@ if [ -z "$tag" ]; then
 elif [ "$tag" = "$PINNED_VERSION" ]; then
     log "pinned yt-dlp $PINNED_VERSION is the latest release; using it"
 elif [ -x "$UPDATE_BIN" ] && [ -f "$SUMS_FILE" ] \
-    && [ "$("$UPDATE_BIN" --version 2>/dev/null)" = "$tag" ] \
     && [ "$(grep -E '[[:space:]]yt-dlp_linux$' "$SUMS_FILE" | cut -d' ' -f1)" = \
-         "$(sha256sum "$UPDATE_BIN" | cut -d' ' -f1)" ]; then
+         "$(sha256sum "$UPDATE_BIN" | cut -d' ' -f1)" ] \
+    && [ "$("$UPDATE_BIN" --version 2>/dev/null)" = "$tag" ]; then
     # Previously installed and hash-verified in an earlier container start.
     log "yt-dlp $tag already present and hash-verified in $UPDATE_DIR; using it"
     YTDLP_PATH="$UPDATE_BIN"; export YTDLP_PATH

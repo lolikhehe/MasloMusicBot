@@ -5,10 +5,23 @@
 use metrics_exporter_prometheus::PrometheusHandle;
 use std::borrow::Cow;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use storage::Db;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-pub async fn serve(addr: SocketAddr, db: Db, handle: PrometheusHandle) -> anyhow::Result<()> {
+/// Whole-request read budget; Alertmanager can post several alerts at once.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+/// Refuse absurd Content-Length values instead of allocating without bound.
+const MAX_BODY: usize = 1024 * 1024;
+
+pub async fn serve(
+    addr: SocketAddr,
+    db: Db,
+    handle: PrometheusHandle,
+    ready: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(%addr, "health/metrics listener up (/healthz, /metrics)");
 
@@ -20,8 +33,9 @@ pub async fn serve(addr: SocketAddr, db: Db, handle: PrometheusHandle) -> anyhow
             };
             let db = db.clone();
             let handle = handle.clone();
+            let ready = ready.clone();
             tokio::spawn(async move {
-                if let Err(error) = respond(&mut socket, db, handle).await {
+                if let Err(error) = respond(&mut socket, db, handle, ready).await {
                     tracing::debug!(%error, "health listener connection failed");
                 }
             });
@@ -35,12 +49,14 @@ async fn respond(
     socket: &mut tokio::net::TcpStream,
     db: Db,
     handle: PrometheusHandle,
+    ready: Arc<AtomicBool>,
 ) -> std::io::Result<()> {
-    // Requests are tiny (`GET /healthz HTTP/1.1`); a stack buffer avoids an
-    // allocation per probe.
-    let mut buf = [0u8; 4096];
-    let read = socket.read(&mut buf).await?;
-    let request = String::from_utf8_lossy(&buf[..read]);
+    let buf = tokio::time::timeout(READ_TIMEOUT, read_request(socket))
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "request read timed out")
+        })??;
+    let request = String::from_utf8_lossy(&buf);
     let path = request
         .split_whitespace()
         .nth(1)
@@ -51,7 +67,7 @@ async fn respond(
 
     let (status, content_type, body): (&str, &str, Cow<'static, str>) = match path {
         "/healthz" => {
-            if db.ping().await {
+            if ready.load(Ordering::Relaxed) && db.ping().await {
                 (
                     "200 OK",
                     "application/json",
@@ -73,8 +89,7 @@ async fn respond(
         // Alertmanager webhook sink. Keeps the monitoring stack self-contained:
         // no extra service/image, alerts land in the bot's structured logs.
         "/alert" => {
-            let raw = String::from_utf8_lossy(&buf[..read]);
-            let payload = raw
+            let payload = request
                 .split_once("\r\n\r\n")
                 .map(|(_, body)| body)
                 .unwrap_or("");
@@ -99,4 +114,54 @@ async fn respond(
     );
     socket.write_all(header.as_bytes()).await?;
     socket.write_all(body.as_bytes()).await
+}
+
+/// Read headers, then exactly Content-Length body bytes. A fixed 4096-byte
+/// read silently truncates batch alerts; this follows the advertised length.
+async fn read_request(socket: &mut tokio::net::TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut buf = Vec::with_capacity(4096);
+    let mut chunk = [0u8; 4096];
+    let header_end = loop {
+        let read = socket.read(&mut chunk).await?;
+        if read == 0 {
+            return Ok(buf);
+        }
+        buf.extend_from_slice(&chunk[..read]);
+        if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+    };
+
+    let headers = String::from_utf8_lossy(&buf[..header_end]);
+    let total = header_end + content_length(&headers).min(MAX_BODY);
+    while buf.len() < total {
+        let read = socket.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..read]);
+    }
+    Ok(buf)
+}
+
+fn content_length(headers: &str) -> usize {
+    headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_content_length_case_insensitively() {
+        let headers = "POST /alert HTTP/1.1\r\nHost: bot\r\nContent-Length: 2048\r\n\r\n";
+        assert_eq!(content_length(headers), 2048);
+        assert_eq!(content_length("GET /healthz HTTP/1.1\r\n\r\n"), 0);
+        assert_eq!(content_length("X: y\r\ncontent-length: nope\r\n\r\n"), 0);
+    }
 }

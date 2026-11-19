@@ -444,6 +444,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📦 {album} — {n} tracks" => Some("📦 {album} — {n} 曲"),
         "Looks like: {artist} — {title}" => Some("推定: {artist} — {title}"),
         "💿 {album} · {year}" => Some("💿 {album} · {year}"),
+        "⚠ {n} lines could not be resolved and were skipped" => {
+            Some("⚠ {n} 行を解決できず、スキップしました")
+        }
         _ => None,
     }
 }

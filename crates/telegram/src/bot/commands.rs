@@ -69,7 +69,9 @@ pub async fn albums_page(
         return Ok(None);
     }
     let per_page = i64::from(ALBUMS_PER_PAGE);
-    let offset = i64::from(offset).min(count - per_page).max(0) as u32;
+    // Clamp to the start of the final page so ▶ never overlaps pages.
+    let max_offset = ((count - 1) / per_page) * per_page;
+    let offset = i64::from(offset).min(max_offset).max(0) as u32;
     let rows = state
         .db
         .saved_albums(user_id, ALBUMS_PER_PAGE, offset)
@@ -231,7 +233,8 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
     }
 
     let args = parts.collect::<Vec<_>>().join(" ");
-    let command = match name.to_ascii_lowercase().as_str() {
+    let name_lower = name.to_lowercase();
+    let command = match name_lower.as_str() {
         "start" => Command::Start,
         "help" => Command::Help,
         "settings" => Command::Settings,
@@ -664,8 +667,10 @@ pub async fn handle_command(
             let mut sent = 0usize;
             let mut failed = 0usize;
             for (target, _) in state.db.active_user_ids().await? {
-                match send_plain(bot, ChatId(target), body.clone()).await {
-                    Ok(()) => sent += 1,
+                // `body` is already escaped; send_plain would see no literal '<'
+                // and render the entities as text. Keep Html mode explicitly.
+                match crate::bot::send::send_html(bot, ChatId(target), body.clone()).await {
+                    Ok(_) => sent += 1,
                     Err(error) => {
                         failed += 1;
                         warn!(%error, user_id = target, "broadcast delivery failed");
@@ -686,21 +691,29 @@ pub async fn handle_command(
                 .iter()
                 .filter(|(_, _, status, _)| matches!(status.as_str(), "downloading" | "uploading"))
                 .count() as u32;
-            let mut queued_position = 0u32;
+            // list_jobs is newest-first; a queue position is oldest queued job
+            // first, so number them from the reverse of that listing.
+            let mut queued_positions = std::collections::HashMap::new();
+            let mut position = 0u32;
+            for (id, _, status, _) in jobs.iter().rev() {
+                if status == "queued" {
+                    position += 1;
+                    queued_positions.insert(id.clone(), position);
+                }
+            }
             let mut text = i18n::queue_title(lang).to_owned();
             if jobs.is_empty() {
                 text.push_str(i18n::queue_empty(lang));
             } else {
                 for (id, kind, status, cancelling) in jobs {
                     let mut line = i18n::queue_item(lang, &id, &kind, &status, cancelling);
-                    if status == "queued" {
-                        queued_position += 1;
-                        if let Some(avg) = avg_secs {
-                            // Active jobs finish first, then the queued ones in order.
-                            let minutes = eta_minutes(avg, active, queued_position);
-                            line.push(' ');
-                            line.push_str(&i18n::queue_eta(lang, minutes));
-                        }
+                    if let Some(queued_position) = queued_positions.get(&id)
+                        && let Some(avg) = avg_secs
+                    {
+                        // Active jobs finish first, then the queued ones in order.
+                        let minutes = eta_minutes(avg, active, *queued_position);
+                        line.push(' ');
+                        line.push_str(&i18n::queue_eta(lang, minutes));
                     }
                     text.push_str(&line);
                 }
@@ -754,13 +767,12 @@ pub async fn handle_command(
                     meta: Some(cached.meta.clone()),
                     target: common::domain::DownloadTarget::Url(url),
                 };
-                let duration = cached.meta.duration_secs.map(f64::from);
-                let rate = state.db.download_rate().await?;
-                let avg = state.db.avg_recent_download_secs().await?;
-                let secs = match (rate, duration) {
-                    (Some(rate), Some(duration)) => Some(rate * duration),
-                    _ => avg,
-                };
+                // Honest download-only ETA; unknown duration stays silent.
+                let secs = cached.meta.duration_secs.and_then(|duration| {
+                    state
+                        .manager
+                        .estimate_download_secs(duration, user_record.quality)
+                });
                 let base = i18n::downloading(lang).to_owned();
                 let text = if let Some(secs) = secs {
                     format!("{} {}", base, i18n::download_eta(lang, secs))
@@ -1060,6 +1072,15 @@ pub async fn handle_command(
                             .await?;
                     }
                 }
+                Err(error) => {
+                    let _ = crate::bot::handlers::edit_html(
+                        bot,
+                        msg.chat.id,
+                        progress.id,
+                        i18n::error(lang, &error),
+                    )
+                    .await;
+                }
                 _ => {
                     let _ = crate::bot::handlers::edit_html(
                         bot,
@@ -1183,21 +1204,23 @@ pub async fn handle_command(
                 return Ok(());
             }
             let mut rows = Vec::with_capacity(candidates.len());
+            let mut selections: Vec<(String, common::domain::AlbumRef)> =
+                Vec::with_capacity(candidates.len());
             for candidate in &candidates {
                 let selection_id = state.new_selection_id();
-                state
-                    .put_selection(
-                        &selection_id,
-                        crate::state::selection::ALBUM_REF,
-                        user_id,
-                        &candidate.into_album_ref(),
-                    )
-                    .await?;
+                selections.push((selection_id.clone(), candidate.into_album_ref()));
                 rows.push(vec![InlineKeyboardButton::callback(
                     crate::bot::handlers::truncate(&album_button_label(lang, candidate), 60),
                     format!("alq:{selection_id}"),
                 )]);
             }
+            let selection_refs: Vec<(String, &common::domain::AlbumRef)> = selections
+                .iter()
+                .map(|(id, album)| (id.clone(), album))
+                .collect();
+            state
+                .put_selections(crate::state::selection::ALBUM_REF, user_id, &selection_refs)
+                .await?;
             let header = i18n::playlist_results(
                 lang,
                 &crate::bot::handlers::escape_html(query),
@@ -1249,21 +1272,23 @@ pub async fn handle_command(
                 return Ok(());
             }
             let mut rows = Vec::with_capacity(candidates.len());
+            let mut selections: Vec<(String, common::domain::AlbumRef)> =
+                Vec::with_capacity(candidates.len());
             for candidate in &candidates {
                 let selection_id = state.new_selection_id();
-                state
-                    .put_selection(
-                        &selection_id,
-                        crate::state::selection::ALBUM_REF,
-                        user_id,
-                        &candidate.into_album_ref(),
-                    )
-                    .await?;
+                selections.push((selection_id.clone(), candidate.into_album_ref()));
                 rows.push(vec![InlineKeyboardButton::callback(
                     album_button_label(lang, candidate),
                     format!("alq:{selection_id}"),
                 )]);
             }
+            let selection_refs: Vec<(String, &common::domain::AlbumRef)> = selections
+                .iter()
+                .map(|(id, album)| (id.clone(), album))
+                .collect();
+            state
+                .put_selections(crate::state::selection::ALBUM_REF, user_id, &selection_refs)
+                .await?;
             let keyboard = InlineKeyboardMarkup::new(rows);
             let header =
                 i18n::album_search_results(lang, &crate::bot::handlers::escape_html(query));
@@ -1296,7 +1321,8 @@ pub async fn handle_command(
             } else {
                 i18n::purge_missing(lang).to_owned()
             };
-            send_plain(bot, msg.chat.id, text).await?;
+            // purge_ok contains <code> entities; force Html so they render.
+            crate::bot::send::send_html(bot, msg.chat.id, text).await?;
         }
     }
     Ok(())
@@ -1341,7 +1367,8 @@ async fn send_plain(
 ) -> Result<(), teloxide::RequestError> {
     // Some strings contain HTML markup; only parse those that need it.
     let text = text.into();
-    let result = if text.contains('<') {
+    let html = text.contains('<');
+    let result = if html {
         crate::bot::send::with_retry_after(|| {
             bot.send_message(chat, text.clone())
                 .parse_mode(ParseMode::Html)
@@ -1362,9 +1389,17 @@ async fn send_plain(
         // 4096 units.
         const MAX_TEXT_CHARS: usize = 2040;
         let safe = crate::bot::handlers::truncate(&text, MAX_TEXT_CHARS);
-        crate::bot::send::with_retry_after(|| bot.send_message(chat, safe.clone()))
-            .await
-            .map(|_| ())?;
+        crate::bot::send::with_retry_after(|| {
+            let mut request = bot.send_message(chat, safe.clone());
+            // Keep the original parse mode: dropping Html here would render an
+            // escaped message's entities literally on the retry.
+            if html {
+                request = request.parse_mode(ParseMode::Html);
+            }
+            request
+        })
+        .await
+        .map(|_| ())?;
     }
     Ok(())
 }
@@ -1385,6 +1420,11 @@ mod tests {
     fn parses_album_and_recognize_aliases() {
         assert_eq!(parse_command("/albums", "bot"), Some(Command::Albums));
         assert_eq!(parse_command("/альбоми", "bot"), Some(Command::Albums));
+        assert_eq!(parse_command("/АЛЬБОМИ", "bot"), Some(Command::Albums));
+        assert_eq!(
+            parse_command("/ЖАНРИ", "bot"),
+            Some(Command::GenreStats(None))
+        );
         assert_eq!(parse_command("/recognize", "bot"), Some(Command::Recognize));
         assert_eq!(
             parse_command("/розпізнати", "bot"),

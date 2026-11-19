@@ -10,6 +10,7 @@ use downloader::DownloadManager;
 use providers::acoustid::AcoustId;
 use providers::{ExternalResolver, YtDlp};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use storage::Db;
 use telegram::state::AppState;
@@ -33,8 +34,11 @@ async fn main() -> anyhow::Result<()> {
     // The janitor reuses the app's Db: a second Db::connect would re-run
     // migrate() and its stale-job requeue, which can reset a just-claimed job.
     janitor::spawn(db.clone(), config.tmp_dir.clone());
+    // /healthz stays 503 until the dispatcher is about to start; orchestrators
+    // must not route traffic while DB / Bot API / announce setup is still running.
+    let ready = Arc::new(AtomicBool::new(false));
     if let Some(addr) = config.metrics_addr {
-        health::serve(addr, db.clone(), metrics_handle).await?;
+        health::serve(addr, db.clone(), metrics_handle, ready.clone()).await?;
     } else {
         drop(metrics_handle);
     }
@@ -61,11 +65,22 @@ async fn main() -> anyhow::Result<()> {
     // Opt-in digests. The planner is a detached task; all replicas sweep the
     // same Postgres rows and a CAS on `next_send_at` elects a single sender.
     telegram::bot::digest::spawn(bot.clone(), state.clone());
-    // Best-effort, once per version: never block startup if Telegram refuses a PM.
-    if let Err(error) = telegram::bot::announce::announce_update(&bot, &state).await {
-        tracing::warn!(%error, "could not broadcast update notice");
+    // Best-effort, once per version: a slow Telegram send must not hold startup.
+    match tokio::time::timeout(
+        Duration::from_secs(10),
+        telegram::bot::announce::announce_update(&bot, &state),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(%error, "could not broadcast update notice"),
+        Err(_) => tracing::warn!("update notice broadcast timed out after 10s"),
     }
-    telegram::bot::run(bot, state).await
+
+    ready.store(true, Ordering::Relaxed);
+    let result = telegram::bot::run(bot, state).await;
+    ready.store(false, Ordering::Relaxed);
+    result
 }
 
 fn init_tracing(config: &Config) {

@@ -39,7 +39,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
                 "Stuur eerst een nummer, antwoord op een audioboodschap of geef een zoekterm: <code>/lyrics Artiest — Titel</code>.",
             )
         }
-        "📄 Download .lrc" => Some("📄 Download .lrc"),
+        "📄 Download .lrc" => Some("📄 .lrc downloaden"),
         "🔄 Other source" => Some("🔄 Andere bron"),
         "📄 LRC file saved. Drop it next to the audio in your player." => {
             Some("📄 LRC-bestand opgeslagen. Zet het naast het audiobestand in je speler.")
@@ -187,7 +187,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("⚠️ Ongeldige Last.fm-gebruikersnaam (2–15 Latijnse letters, cijfers, _ of -).")
         }
         "▶ Now playing: {track}" => Some("▶ Nu speelt: {track}"),
-        "FLAC (lossless)" => Some("FLAC (lossless)"),
+        "FLAC (lossless)" => Some("FLAC (verliesvrij)"),
         "🖼 HQ cover (1000px)" => Some("🖼 HQ-hoes (1000px)"),
         "⚠️ Your chosen search source is blocked by the server config — the bot falls back to YouTube. Ask the operator to enable it (SEARCH_PROVIDERS)." => {
             Some(
@@ -446,6 +446,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📦 {album} — {n} tracks" => Some("📦 {album} — {n} nummers"),
         "Looks like: {artist} — {title}" => Some("Lijkt op: {artist} — {title}"),
         "💿 {album} · {year}" => Some("💿 {album} · {year}"),
+        "⚠ {n} lines could not be resolved and were skipped" => {
+            Some("⚠ {n} regels konden niet worden opgelost en zijn overgeslagen")
+        }
         _ => None,
     }
 }

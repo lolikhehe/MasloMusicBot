@@ -2,13 +2,14 @@
 //! the matching track through the regular search-result card.
 
 use crate::bot::handlers::{edit_html, escape_html, search_result_rows};
+use crate::bot::send;
 use crate::state::AppState;
 use common::domain::{Lang, UserRecord};
-use common::error::HandlerResult;
+use common::error::{DownloadError, HandlerResult};
 use common::i18n;
 use teloxide::net::Download;
 use teloxide::prelude::*;
-use teloxide::types::{FileId, InlineKeyboardMarkup, Message, ParseMode};
+use teloxide::types::{File, FileId, InlineKeyboardMarkup, Message, ParseMode};
 use tracing::warn;
 
 const MAX_FILE_BYTES: usize = 50 * 1024 * 1024;
@@ -46,6 +47,30 @@ pub async fn handle_recognize(
         return Ok(());
     };
 
+    let file = bot.get_file(FileId(file_id)).await?;
+    // Cap the size BEFORE reading: a 2 GB document must never be pulled into
+    // RAM. The local path is stat'd; for cloud API paths Telegram's File carries
+    // the size directly.
+    let size = if std::path::Path::new(&file.path).is_absolute() {
+        tokio::fs::metadata(&file.path)
+            .await
+            .map(|meta| meta.len())
+            .unwrap_or(u64::from(file.size))
+    } else {
+        u64::from(file.size)
+    };
+    if size > MAX_FILE_BYTES as u64 {
+        let text = i18n::error(
+            user.lang,
+            &DownloadError::TooLarge {
+                limit: MAX_FILE_BYTES as u64,
+                actual: size,
+            },
+        );
+        send::send_html(bot, msg.chat.id, text).await?;
+        return Ok(());
+    }
+
     let status = bot
         .send_message(msg.chat.id, i18n::recognize_listening(user.lang))
         .await?;
@@ -56,7 +81,7 @@ pub async fn handle_recognize(
     let search_source = user.search_source;
     tokio::spawn(async move {
         let work = async {
-            let bytes = download(&bot, &file_id).await?;
+            let bytes = download(&bot, &file).await?;
             if bytes.len() > MAX_FILE_BYTES {
                 return Ok::<_, Box<dyn std::error::Error + Send + Sync>>(None);
             }
@@ -157,9 +182,8 @@ async fn send_usage_text(bot: &Bot, chat: ChatId, text: impl Into<String>) {
 /// downloader for cloud API paths.
 async fn download(
     bot: &Bot,
-    file_id: &str,
+    file: &File,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
-    let file = bot.get_file(FileId(file_id.to_owned())).await?;
     if std::path::Path::new(&file.path).is_absolute() {
         Ok(tokio::fs::read(&file.path).await?)
     } else {

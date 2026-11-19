@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_jobs\n             SET status = 'queued', claimed_by = NULL, updated_at = $1\n             WHERE status IN ('downloading', 'uploading') AND cancel_requested = false\n               AND updated_at < $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "525a8fd914ab3f4554d13be47ed36114c31295dad4040f77bb4571e5032fa36f"
+}

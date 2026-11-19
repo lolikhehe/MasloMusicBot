@@ -26,8 +26,14 @@ pub struct ZipWriter {
 
 impl ZipWriter {
     pub fn new(budget: u64) -> Self {
+        Self::with_capacity(budget, 0)
+    }
+
+    /// Reserve the output buffer up front so a large archive doesn't repeatedly
+    /// reallocate (and transiently hold two copies of a growing 900 MB Vec).
+    pub fn with_capacity(budget: u64, capacity: usize) -> Self {
         Self {
-            writer: ZipFileWriter::with_tokio(Vec::new()),
+            writer: ZipFileWriter::with_tokio(Vec::with_capacity(capacity)),
             budget,
             used: 0,
         }
@@ -66,22 +72,59 @@ pub(crate) fn exceeds_track_cap(count: usize) -> bool {
     count > MAX_ZIP_TRACKS
 }
 
-/// `{idx:02} - {sanitized}.{ext}` with path separators, quotes and control
-/// characters removed, whitespace collapsed and the title capped at 120 chars.
-pub fn zip_entry_name(idx: usize, title: &str, ext: &str) -> String {
-    let cleaned: String = title
+/// Unicode `Cf` (format) characters such as the bidi override U+202E, zero-
+/// width joiners and the BOM. They have no visible width but can spoof a
+/// filename, so they are stripped just like control characters.
+fn is_format_char(ch: char) -> bool {
+    matches!(ch,
+        '\u{00AD}' | '\u{0600}'..='\u{0605}' | '\u{061C}' | '\u{06DD}' |
+        '\u{070F}' | '\u{08E2}' | '\u{180E}' |
+        '\u{200B}'..='\u{200F}' |
+        '\u{202A}'..='\u{202E}' |
+        '\u{2060}'..='\u{2064}' |
+        '\u{2066}'..='\u{206F}' |
+        '\u{FEFF}' | '\u{FFF9}'..='\u{FFFB}'
+    )
+}
+
+/// Strip path/quote/control/format characters, collapse whitespace and cap the
+/// result at `byte_budget` UTF-8 bytes without splitting a code point (a CJK
+/// title is ~3 bytes per char, so a char count would overflow the ZIP limit).
+fn sanitize_component(input: &str, byte_budget: usize) -> String {
+    let cleaned: String = input
         .chars()
         .map(|ch| match ch {
             '/' | '\\' | '"' | '\'' | '<' | '>' => ' ',
-            ch if ch.is_control() => ' ',
+            ch if ch.is_control() || is_format_char(ch) => ' ',
             ch => ch,
         })
         .collect();
     let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
-    let sanitized: String = if collapsed.is_empty() {
+    if collapsed.len() <= byte_budget {
+        return collapsed;
+    }
+    let mut end = byte_budget;
+    while !collapsed.is_char_boundary(end) {
+        end -= 1;
+    }
+    collapsed[..end].to_owned()
+}
+
+/// `{idx:02} - {sanitized}.{ext}` with unsafe characters removed, whitespace
+/// collapsed and the title capped at a ~200-byte UTF-8 budget. The extension is
+/// sanitized the same way so a malicious title can't escape through it.
+pub fn zip_entry_name(idx: usize, title: &str, ext: &str) -> String {
+    let sanitized = sanitize_component(title, 200);
+    let sanitized = if sanitized.is_empty() {
         "track".to_owned()
     } else {
-        collapsed.chars().take(120).collect()
+        sanitized
+    };
+    let ext = sanitize_component(ext, 16);
+    let ext = if ext.is_empty() {
+        "m4a".to_owned()
+    } else {
+        ext
     };
     format!("{idx:02} - {sanitized}.{ext}")
 }
@@ -131,6 +174,36 @@ mod tests {
         }
         assert!(!name.contains("  "), "spaces must be collapsed");
         assert_eq!(zip_entry_name(2, "", "mp3"), "02 - track.mp3");
+    }
+
+    #[test]
+    fn sanitizer_caps_by_utf8_bytes_not_chars() {
+        // 100 CJK chars = 300 bytes; must be cut to <= 200 bytes on a char
+        // boundary (66 chars = 198 bytes), never mid-codepoint.
+        let title = "音".repeat(100);
+        let name = zip_entry_name(3, &title, "m4a");
+        let stem = name
+            .strip_prefix("03 - ")
+            .unwrap()
+            .strip_suffix(".m4a")
+            .unwrap();
+        assert!(stem.len() <= 200, "stem was {} bytes", stem.len());
+        assert!(stem.chars().all(|c| c == '音'), "no half code points");
+        assert_eq!(stem.chars().count(), 66);
+    }
+
+    #[test]
+    fn sanitizer_strips_format_chars_including_from_extension() {
+        // U+202E (bidi override), U+200D (ZWJ) and U+FEFF (BOM) are invisible
+        // format chars that must not survive in the name or the extension.
+        let name = zip_entry_name(4, "good\u{202E}bad\u{200D}\u{FEFF}title", "m4\u{202E}a");
+        assert!(!name.contains('\u{202E}'));
+        assert!(!name.contains('\u{200D}'));
+        assert!(!name.contains('\u{FEFF}'));
+        assert!(
+            name.ends_with(".m4 a"),
+            "format char in ext becomes a space: {name}"
+        );
     }
 
     #[test]

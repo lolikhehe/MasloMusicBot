@@ -444,6 +444,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📦 {album} — {n} tracks" => Some("📦 {album} — {n} skladeb"),
         "Looks like: {artist} — {title}" => Some("Vypadá to na: {artist} — {title}"),
         "💿 {album} · {year}" => Some("💿 {album} · {year}"),
+        "⚠ {n} lines could not be resolved and were skipped" => {
+            Some("⚠ {n} řádků se nepodařilo rozpoznat — přeskočeno")
+        }
         _ => None,
     }
 }

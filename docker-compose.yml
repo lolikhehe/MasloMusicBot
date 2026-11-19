@@ -72,7 +72,9 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
-    stop_grace_period: 45s
+    # The app drains up to 30s (dispatcher shutdown timeout) + 20s tail;
+    # SIGKILL at 45s would land mid-drain.
+    stop_grace_period: 60s
 
   # Rust-only webhook gateway. Needs a public DNS A record pointing at this
   # host and ports 80/443 open. Enable with --profile webhook.
@@ -96,7 +98,8 @@ services:
     volumes:
       - acme-cache:/cache
     depends_on:
-      - bot
+      bot:
+        condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 45s
 
@@ -137,7 +140,8 @@ services:
     ports:
       - "127.0.0.1:19090:9090"
     depends_on:
-      - bot
+      bot:
+        condition: service_healthy
     restart: unless-stopped
 
   alertmanager:

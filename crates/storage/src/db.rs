@@ -42,6 +42,11 @@ const LAST_SEEN_INTERVAL_SECS: i64 = 5 * 60;
 /// used by the batch writer which has no per-row TTL parameter.
 const SELECTION_TTL_SECS: i64 = 30 * 60;
 
+/// A claimed download job older than this (unix seconds) is treated as
+/// abandoned and may be requeued by a booting replica. Newer leases belong to
+/// a live worker and must be left alone.
+const JOB_LEASE_SECS: i64 = 15 * 60;
+
 /// One saved-album bookmark. `added_at` is a unix timestamp, like every other
 /// row-struct time field in this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,16 +93,20 @@ impl Db {
             .run(pool)
             .await
             .map_err(|error| AppError::Other(error.into()))?;
-        // A replica that crashed mid-download leaves a claimed job behind.
+        // A replica that crashed mid-download leaves a claimed job behind. Only
+        // reclaim stale leases so a booting replica cannot reset a job that
+        // another replica is still actively working on.
+        let now = unix_now();
         let _ = sqlx::query!(
             "UPDATE download_jobs
              SET status = 'queued', claimed_by = NULL, updated_at = $1
-             WHERE status IN ('downloading', 'uploading') AND cancel_requested = false",
-            unix_now()
+             WHERE status IN ('downloading', 'uploading') AND cancel_requested = false
+               AND updated_at < $2",
+            now,
+            now - JOB_LEASE_SECS
         )
         .execute(pool)
         .await;
-        let now = unix_now();
         let _ = sqlx::query!("DELETE FROM search_cache WHERE expires_at < $1", now)
             .execute(pool)
             .await;
@@ -850,7 +859,7 @@ impl Db {
             "SELECT album_key, title, artist, cover_url, payload_json,
                     EXTRACT(EPOCH FROM added_at)::BIGINT AS added_at
              FROM saved_albums WHERE user_id = $1
-             ORDER BY added_at DESC
+             ORDER BY added_at DESC, album_key ASC
              LIMIT $2 OFFSET $3",
             user_id,
             i64::from(limit),
@@ -1597,9 +1606,19 @@ impl Db {
                 .await;
             return Ok(None);
         }
-        serde_json::from_value(row.payload)
-            .map(Some)
-            .map_err(|error| AppError::Other(error.into()))
+        match serde_json::from_value(row.payload) {
+            Ok(value) => Ok(Some(value)),
+            Err(error) => {
+                // A legacy payload the current type cannot decode is useless to
+                // the caller; treat it like an expired row so callbacks never
+                // error out on old data.
+                warn!(%error, id, kind, "dropping selection with undecodable payload");
+                let _ = sqlx::query!("DELETE FROM selections WHERE id = $1", id)
+                    .execute(&self.pool)
+                    .await;
+                Ok(None)
+            }
+        }
     }
 
     pub async fn delete_selection(&self, id: &str) -> AppResult<()> {
@@ -1623,6 +1642,25 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Atomically consume a non-expired selection and return its raw payload.
+    /// One statement replaces the `get_selection` + `delete_selection` pair,
+    /// closing the window where two replicas could both act on a one-shot
+    /// callback (or a duplicate delivery could be replayed).
+    pub async fn consume_selection(&self, id: &str, kind: &str) -> AppResult<Option<String>> {
+        Ok(sqlx::query_scalar!(
+            "DELETE FROM selections
+             WHERE id = $1 AND kind = $2 AND expires_at >= $3
+             RETURNING payload",
+            id,
+            kind,
+            unix_now()
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?
+        .map(|payload| payload.to_string()))
     }
 
     // ---- Persistent download jobs ----------------------------------------
@@ -1673,11 +1711,16 @@ impl Db {
         Ok(claimed.is_some())
     }
 
+    /// Move an active job to its terminal status. The guard makes late writers
+    /// harmless (a terminal job is never overwritten), and a pending cancel
+    /// always wins over the worker's own result. The cancel flag is cleared so
+    /// a reused id cannot inherit a stale cancellation.
     pub async fn finish_job(&self, id: &str, status: &str, error: Option<&str>) -> AppResult<()> {
         sqlx::query!(
             "UPDATE download_jobs
-             SET status = $2, error = $3, updated_at = $4
-             WHERE id = $1",
+             SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,
+                 error = $3, updated_at = $4, cancel_requested = false
+             WHERE id = $1 AND status IN ('queued', 'downloading', 'uploading')",
             id,
             status,
             error,
@@ -1706,35 +1749,6 @@ impl Db {
         .await
         .map_err(db_err)?
         .flatten())
-    }
-
-    /// Weighted download rate: wall-seconds of audio downloaded per second of
-    /// audio duration, over terminal `done` jobs finished in the last 24h.
-    /// Job payloads carry the track key (`payload->>'key'`); the track's
-    /// `duration_secs` supplies the weight (quality is fixed per request, so
-    /// size ∝ duration). Jobs without a usable duration are skipped. The
-    /// result is clamped into 0.25..=8.0 as a sanity bound.
-    pub async fn download_rate(&self) -> AppResult<Option<f64>> {
-        Ok(sqlx::query_scalar!(
-            "SELECT SUM(s.wall) / SUM(s.duration) FROM (
-                 SELECT LEAST(1800, GREATEST(1, j.updated_at - j.created_at))::double precision AS wall,
-                        t.duration_secs::double precision AS duration
-                 FROM download_jobs j
-                 JOIN (
-                     SELECT DISTINCT ON (track_key) track_key, duration_secs
-                     FROM tracks WHERE duration_secs > 0
-                     ORDER BY track_key, quality
-                 ) t ON t.track_key = j.payload->>'key'
-                 WHERE j.status = 'done' AND j.updated_at >= $1
-             ) s
-             HAVING COUNT(*) >= 1",
-            unix_now() - 86_400
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?
-        .flatten()
-        .map(|rate| rate.clamp(0.25, 8.0)))
     }
 
     pub async fn request_cancel(&self, id: &str, user_id: i64) -> AppResult<bool> {
@@ -2163,6 +2177,73 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../../migrations")]
+    async fn consume_selection_returns_payload_once(pool: PgPool) {
+        let db = db(pool).await;
+        db.put_selection(
+            "once",
+            "track",
+            7,
+            serde_json::json!({"v": 42}),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("put");
+        let first = db
+            .consume_selection("once", "track")
+            .await
+            .expect("consume")
+            .expect("some");
+        let value: serde_json::Value = serde_json::from_str(&first).expect("valid payload");
+        assert_eq!(value["v"], 42);
+        assert!(
+            db.consume_selection("once", "track")
+                .await
+                .expect("consume again")
+                .is_none(),
+            "a consumed selection must not be returned twice"
+        );
+        // Wrong kind or expired rows must not be consumed either.
+        db.put_selection(
+            "other-kind",
+            "track",
+            7,
+            serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("put other");
+        assert!(
+            db.consume_selection("other-kind", "album")
+                .await
+                .expect("wrong kind")
+                .is_none()
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn get_selection_drops_legacy_payload(pool: PgPool) {
+        let db = db(pool).await;
+        db.put_selection(
+            "legacy",
+            "track",
+            7,
+            serde_json::json!({"old": true}),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("put");
+        let parsed: Option<Vec<u32>> = db.get_selection("legacy", "track").await.expect("get");
+        assert!(parsed.is_none(), "undecodable payload treated as expired");
+        let remaining: i64 =
+            sqlx::query_scalar!("SELECT COUNT(*) FROM selections WHERE id = 'legacy'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("count")
+                .unwrap_or_default();
+        assert_eq!(remaining, 0, "legacy row deleted after decode failure");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
     async fn audio_prefs_and_group_mode_roundtrip(pool: PgPool) {
         let db = db(pool).await;
         db.ensure_user(88, Lang::En).await.expect("user");
@@ -2218,6 +2299,29 @@ mod tests {
             .await
             .expect("finish");
         let jobs = db.list_jobs(42, 10).await.expect("list");
+        assert_eq!(jobs[0].2, "cancelled");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finish_job_honours_cancel_and_ignores_terminal(pool: PgPool) {
+        let db = db(pool).await;
+        db.enqueue_and_claim_job("j-cancel", 1, "track", serde_json::json!({}), "w")
+            .await
+            .expect("claim");
+        assert!(db.request_cancel("j-cancel", 1).await.expect("cancel"));
+        // Worker finishes after the cancel check: the pending cancel wins.
+        db.finish_job("j-cancel", "done", None)
+            .await
+            .expect("finish");
+        let jobs = db.list_jobs(1, 10).await.expect("jobs");
+        assert_eq!(jobs[0].2, "cancelled");
+        assert!(!jobs[0].3, "cancel_requested cleared on finish");
+
+        // A late second writer must not overwrite an already-terminal job.
+        db.finish_job("j-cancel", "done", None)
+            .await
+            .expect("late finish");
+        let jobs = db.list_jobs(1, 10).await.expect("jobs after late finish");
         assert_eq!(jobs[0].2, "cancelled");
     }
 
@@ -2590,6 +2694,39 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../../migrations")]
+    async fn saved_albums_order_is_stable_with_tied_timestamps(pool: PgPool) {
+        let db = db(pool).await;
+        for (key, title) in [
+            ("z:album", "Zed"),
+            ("a:album", "Alpha"),
+            ("m:album", "Middle"),
+        ] {
+            db.save_album(42, key, title, "Artist", None, "{}")
+                .await
+                .expect("save");
+        }
+        // Give every row an identical added_at so only the tiebreaker decides.
+        sqlx::query!(
+            "UPDATE saved_albums SET added_at = now() - interval '1 hour' WHERE user_id = 42"
+        )
+        .execute(&db.pool)
+        .await
+        .expect("tie timestamps");
+
+        let list = db.saved_albums(42, 10, 0).await.expect("list");
+        let keys: Vec<&str> = list.iter().map(|album| album.album_key.as_str()).collect();
+        assert_eq!(keys, vec!["a:album", "m:album", "z:album"]);
+
+        // The same order holds across pages, so pagination cannot skip/duplicate.
+        let first = db.saved_albums(42, 1, 0).await.expect("page 0");
+        let second = db.saved_albums(42, 1, 1).await.expect("page 1");
+        let third = db.saved_albums(42, 1, 2).await.expect("page 2");
+        assert_eq!(first[0].album_key, "a:album");
+        assert_eq!(second[0].album_key, "m:album");
+        assert_eq!(third[0].album_key, "z:album");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
     async fn sent_messages_track_due_delete(pool: PgPool) {
         let db = db(pool).await;
         db.track_sent_message(-1001, 10, 42, 60)
@@ -2739,66 +2876,6 @@ mod tests {
             db.avg_recent_download_secs().await.expect("avg"),
             Some(15.0)
         );
-    }
-
-    #[sqlx::test(migrations = "../../migrations")]
-    async fn download_rate_weights_by_track_duration(pool: PgPool) {
-        let db = db(pool).await;
-        assert_eq!(db.download_rate().await.expect("rate"), None);
-        for (key, duration) in [("youtube:long", 100u32), ("youtube:short", 50)] {
-            let track = CachedTrack {
-                key: TrackKey::new(key),
-                file_id: "F".into(),
-                file_unique_id: "U".into(),
-                source_url: None,
-                provider: Provider::YouTube,
-                meta: TrackMeta {
-                    title: "t".into(),
-                    duration_secs: Some(duration),
-                    ..Default::default()
-                },
-            };
-            db.put_track(&track, 192, None).await.expect("put track");
-        }
-        let now = unix_now();
-        // Wall 40s over a 100s track and 20s over a 50s track => 60/150 = 0.4.
-        db.enqueue_and_claim_job(
-            "r1",
-            1,
-            "track",
-            serde_json::json!({"key": "youtube:long"}),
-            "w",
-        )
-        .await
-        .expect("job");
-        db.finish_job("r1", "done", None).await.expect("finish");
-        sqlx::query!(
-            "UPDATE download_jobs SET created_at = $1, updated_at = $2 WHERE id = 'r1'",
-            now - 40,
-            now
-        )
-        .execute(&db.pool)
-        .await
-        .expect("backdate");
-        db.enqueue_and_claim_job(
-            "r2",
-            1,
-            "track",
-            serde_json::json!({"key": "youtube:short"}),
-            "w",
-        )
-        .await
-        .expect("job");
-        db.finish_job("r2", "done", None).await.expect("finish");
-        sqlx::query!(
-            "UPDATE download_jobs SET created_at = $1, updated_at = $2 WHERE id = 'r2'",
-            now - 20,
-            now
-        )
-        .execute(&db.pool)
-        .await
-        .expect("backdate");
-        assert_eq!(db.download_rate().await.expect("rate"), Some(0.4));
     }
 
     async fn last_seen(db: &Db, id: i64) -> i64 {

@@ -12,10 +12,10 @@ use common::error::{AppResult, DownloadError};
 use moka::future::Cache;
 use providers::external::{AlbumFacts, ExternalResolver};
 use providers::ytdlp::YtDlp;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use storage::Db;
 use tempfile::TempDir;
 use tokio::sync::{Semaphore, broadcast};
@@ -161,8 +161,52 @@ type InflightResult = Result<PreparedAudio, Arc<DownloadError>>;
 type InflightKey = (TrackKey, u32, bool);
 
 /// ZIP downloads share one sentinel user bucket; the real limiter is the
-/// bounded concurrency in `zip_album` and singleflight keys are user-agnostic.
+/// dedicated `zip_semaphore` held for the whole `zip_album` build.
 const ZIP_USER_ID: i64 = 0;
+
+/// How many recent (bytes, download_secs) samples feed the speed estimate.
+const SPEED_SAMPLE_CAPACITY: usize = 16;
+
+/// Mean bytes/sec over the recent samples, or `None` with no data.
+fn mean_bps(samples: &VecDeque<(u64, u64)>) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let bytes: u64 = samples.iter().map(|(bytes, _)| *bytes).sum();
+    let secs: u64 = samples.iter().map(|(_, secs)| *secs).sum();
+    (secs > 0).then(|| bytes as f64 / secs as f64)
+}
+
+/// Pure ETA formula: bytes = duration_secs * quality_kbps * 1000 / 8, so
+/// seconds = bytes / speed, floored at 1. `quality_kbps == 0` is the
+/// FLAC-lossless sentinel — estimate those with a typical lossless rate
+/// instead of multiplying by zero.
+fn download_secs_for(duration_secs: u32, quality_kbps: u32, speed_bps: f64) -> f64 {
+    let kbps = if quality_kbps == 0 {
+        1000
+    } else {
+        quality_kbps
+    };
+    let bytes = f64::from(duration_secs) * f64::from(kbps) * 125.0;
+    (bytes / speed_bps).max(1.0)
+}
+
+/// Decrements the inflight gauge on **every** exit path, including cancellation
+/// of the leader future (a plain decrement after `.await` leaks on cancel).
+struct InflightMetricGuard;
+
+impl InflightMetricGuard {
+    fn new() -> Self {
+        metrics::gauge!("music_bot_downloads_inflight").increment(1.0);
+        Self
+    }
+}
+
+impl Drop for InflightMetricGuard {
+    fn drop(&mut self) {
+        metrics::gauge!("music_bot_downloads_inflight").decrement(1.0);
+    }
+}
 
 /// Removes this in-flight entry on **every** exit path, including a panic in
 /// the leader. The leader holds one armed guard while downloading; on success
@@ -196,6 +240,11 @@ pub struct DownloadManager {
     external: ExternalResolver,
     cover_client: reqwest::Client,
     semaphore: Arc<Semaphore>,
+    /// Caps whole-album ZIP builds: several concurrent 900 MB archives OOM the
+    /// 2 GB container, so only one is allowed to build at a time.
+    zip_semaphore: Arc<Semaphore>,
+    /// Recent honest network-speed samples: (bytes, download-phase seconds).
+    speed_samples: Arc<Mutex<VecDeque<(u64, u64)>>>,
     inflight: Arc<Mutex<HashMap<InflightKey, broadcast::Sender<InflightResult>>>>,
     user_semaphores: Cache<i64, Arc<Semaphore>>,
     search_cache: Cache<String, Vec<SearchResult>>,
@@ -216,6 +265,8 @@ impl DownloadManager {
         let user_semaphores = Cache::builder().max_capacity(10_000).build();
         Self {
             semaphore: Arc::new(Semaphore::new(config.max_concurrent_downloads)),
+            zip_semaphore: Arc::new(Semaphore::new(1)),
+            speed_samples: Arc::new(Mutex::new(VecDeque::with_capacity(SPEED_SAMPLE_CAPACITY))),
             config,
             db,
             ytdlp,
@@ -226,6 +277,37 @@ impl DownloadManager {
             search_cache,
             album_search_cache,
         }
+    }
+
+    /// Mean bytes/sec measured over the last few completed downloads (network
+    /// phase only: queue wait, cover work and Telegram upload are excluded).
+    /// `None` until at least one download has been recorded.
+    pub fn download_speed_bps(&self) -> Option<f64> {
+        let samples = self
+            .speed_samples
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        mean_bps(&samples)
+    }
+
+    /// Estimated download time in seconds for a track of `duration_secs` at
+    /// `quality_kbps`, derived from the recent network speed. `None` when no
+    /// samples exist yet. Never below 1 second.
+    pub fn estimate_download_secs(&self, duration_secs: u32, quality_kbps: u32) -> Option<f64> {
+        self.download_speed_bps()
+            .map(|speed| download_secs_for(duration_secs, quality_kbps, speed))
+    }
+
+    fn record_speed_sample(&self, bytes: u64, download_secs: u64) {
+        let mut samples = self
+            .speed_samples
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if samples.len() == SPEED_SAMPLE_CAPACITY {
+            samples.pop_front();
+        }
+        // Floor at 1s so a sub-second download cannot divide by zero later.
+        samples.push_back((bytes, download_secs.max(1)));
     }
 
     pub async fn get_cached(&self, key: &TrackKey, quality: u32) -> AppResult<Option<CachedTrack>> {
@@ -533,35 +615,22 @@ impl DownloadManager {
             return Err(DownloadError::ProviderDisabled(request.provider));
         }
 
-        let user_sem = self
-            .user_semaphores
-            .get_with(user_id, async {
-                Arc::new(Semaphore::new(self.config.max_active_downloads_per_user))
-            })
-            .await;
-        let _user_permit = user_sem
-            .acquire_owned()
-            .await
-            .map_err(|_| DownloadError::Internal("user download semaphore closed".to_owned()))?;
-
         let cache_key = (request.key.clone(), quality, hq_cover);
-        let mut receiver = None;
-        let mut sender = None;
-
-        {
+        let (sender, receiver, queued) = {
             let mut inflight = self
                 .inflight
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(existing) = inflight.get(&cache_key) {
-                receiver = Some(existing.subscribe());
+            let (sender, receiver) = if let Some(existing) = inflight.get(&cache_key) {
+                (None, Some(existing.subscribe()))
             } else {
                 let (tx, _rx) = broadcast::channel(4);
                 inflight.insert(cache_key.clone(), tx.clone());
-                sender = Some(tx);
-            }
-            metrics::gauge!("music_bot_downloads_queued").set(inflight.len() as f64);
-        }
+                (Some(tx), None)
+            };
+            (sender, receiver, inflight.len())
+        };
+        metrics::gauge!("music_bot_downloads_queued").set(queued as f64);
 
         if let Some(mut rx) = receiver {
             // A leader that hangs (or whose process dies mid-download) must not
@@ -573,8 +642,20 @@ impl DownloadManager {
                     Ok(Ok(Ok(prepared))) => return Ok(prepared),
                     Ok(Ok(Err(error))) => return Err((*error).clone()),
                     Ok(Err(broadcast::error::RecvError::Closed)) => {
-                        // The leader disappeared without publishing. Try again.
-                        return Box::pin(self.prepare(request, quality, user_id, hq_cover)).await;
+                        // A concurrent request may have finished and cached the
+                        // track while we waited: prefer that source over a blind
+                        // re-download. Followers hold no per-user permit here,
+                        // so nothing is pinned across the retry (the old code
+                        // held it and deadlocked both user permits).
+                        let mut retry = request;
+                        if let Ok(Some(cached)) = self.get_cached(&retry.key, quality).await
+                            && let Some(url) = cached.source_url
+                        {
+                            retry.provider = cached.provider;
+                            retry.target = DownloadTarget::Url(url);
+                            retry.meta = Some(cached.meta);
+                        }
+                        return Box::pin(self.prepare(retry, quality, user_id, hq_cover)).await;
                     }
                     Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
                     Err(_) => {
@@ -591,11 +672,27 @@ impl DownloadManager {
         // this removes the entry so waiters can retry. On success it is
         // disarmed and an identical guard rides along in `PreparedAudio`,
         // keeping the entry alive through the handler's file-id recording.
+        // Created before the permit acquire so a closed semaphore cannot leak
+        // the inflight entry.
         let mut guard = InflightGuard {
             inflight: Arc::clone(&self.inflight),
             key: cache_key.clone(),
             armed: true,
         };
+        // Only the leader takes a per-user slot: followers subscribe above
+        // without ever waiting on this semaphore (fixes followers blocking on
+        // the permit instead of subscribing to the running download).
+        let user_sem = self
+            .user_semaphores
+            .get_with(user_id, async {
+                Arc::new(Semaphore::new(self.config.max_active_downloads_per_user))
+            })
+            .await;
+        let _user_permit = user_sem
+            .acquire_owned()
+            .await
+            .map_err(|_| DownloadError::Internal("user download semaphore closed".to_owned()))?;
+
         let result = match self.prepare_leader(request, quality, hq_cover).await {
             Ok(mut prepared) => {
                 guard.armed = false;
@@ -619,10 +716,9 @@ impl DownloadManager {
         quality: u32,
         hq_cover: bool,
     ) -> Result<PreparedAudio, DownloadError> {
-        metrics::gauge!("music_bot_downloads_inflight").increment(1.0);
-        let result = self.prepare_leader_inner(request, quality, hq_cover).await;
-        metrics::gauge!("music_bot_downloads_inflight").decrement(1.0);
-        result
+        // RAII so a cancelled leader cannot drift the gauge.
+        let _metric = InflightMetricGuard::new();
+        self.prepare_leader_inner(request, quality, hq_cover).await
     }
 
     async fn prepare_leader_inner(
@@ -647,10 +743,13 @@ impl DownloadManager {
             request.target = DownloadTarget::Search(query);
         }
 
-        let _permit = self
-            .semaphore
-            .acquire()
+        // Bound the acquire itself: an unbounded wait here stalls the whole
+        // queue behind one stuck download.
+        let _permit = tokio::time::timeout(self.config.download_timeout, self.semaphore.acquire())
             .await
+            .map_err(|_| {
+                DownloadError::SourceUnavailable("timed out waiting for a download slot".to_owned())
+            })?
             .map_err(|_| DownloadError::Internal("download semaphore closed".to_owned()))?;
 
         let dir = tempfile::Builder::new()
@@ -676,6 +775,9 @@ impl DownloadManager {
             });
 
         info!(key = %request.key, target = ?request.target, "starting download");
+        // Network-phase window: starts with the download, stops as soon as the
+        // file is on disk — before cover/tag work or Telegram upload.
+        let download_started = Instant::now();
         // Fallback chain: the same track on other openly available catalogs.
         // A bare restricted link with no metadata gives us nothing to search
         // for, so it gets only its own attempt; known tracks roll on to
@@ -716,6 +818,14 @@ impl DownloadManager {
                 )
             }));
         };
+
+        // Snapshot honest network speed now: the audio exists on disk and no
+        // cover/tag/upload time has been folded in yet.
+        if let Ok(metadata) = tokio::fs::metadata(&downloaded.audio_path).await
+            && metadata.len() > 0
+        {
+            self.record_speed_sample(metadata.len(), download_started.elapsed().as_secs().max(1));
+        }
 
         let merged_meta = merge_meta(request.meta.as_ref(), &downloaded.meta);
         if let Some(duration) = merged_meta.duration_secs
@@ -766,8 +876,10 @@ impl DownloadManager {
     }
 
     /// Download the given tracks and pack them into a single in-memory ZIP.
-    /// Downloads run two at a time to disk; bytes are read and added one at a
-    /// time and each temp is dropped immediately after being archived.
+    /// A dedicated semaphore allows only one archive build at a time (several
+    /// concurrent 900 MB buffers OOM the container). Downloads run two at a
+    /// time to disk; the output Vec is preallocated to the exact sum of the
+    /// entry sizes before any bytes are copied into it.
     pub async fn zip_album(
         &self,
         keys: &[TrackKey],
@@ -783,10 +895,16 @@ impl DownloadManager {
             .into());
         }
 
-        let mut writer = ZipWriter::new(MAX_ZIP_BYTES);
-        let mut total_bytes: u64 = 0;
-        let mut tracks = 0usize;
+        // Hold for the whole build: two 900 MB archives at once exhausts RAM.
+        let _zip_permit = self
+            .zip_semaphore
+            .acquire()
+            .await
+            .map_err(|_| DownloadError::Internal("zip semaphore closed".to_owned()))?;
 
+        // Download first, keeping each TempDir alive on disk, so the archive
+        // buffer can be reserved once instead of doubling as it grows.
+        let mut prepared_tracks: Vec<(String, PreparedAudio)> = Vec::new();
         for (chunk, pair) in keys.chunks(2).enumerate() {
             let base = chunk * 2;
             let first = self.prepare_zip_track(&pair[0], quality, hq_cover);
@@ -794,48 +912,63 @@ impl DownloadManager {
                 Some(key) => {
                     let (a, b) =
                         tokio::join!(first, self.prepare_zip_track(key, quality, hq_cover));
-                    vec![a, b]
+                    vec![(base, a), (base + 1, b)]
                 }
-                None => vec![first.await],
+                None => vec![(base, first.await)],
             };
 
-            for (offset, result) in results.into_iter().enumerate() {
-                let prepared = match result {
-                    Ok(prepared) => prepared,
+            for (idx, result) in results {
+                match result {
+                    Ok(prepared) => {
+                        let ext = prepared
+                            .audio_path
+                            .extension()
+                            .and_then(|value| value.to_str())
+                            .unwrap_or("m4a");
+                        let name = zip_entry_name(idx, &prepared.meta.title, ext);
+                        prepared_tracks.push((name, prepared));
+                    }
                     Err(error) => {
                         warn!(%error, "album ZIP: could not download track; skipping");
-                        continue;
                     }
-                };
-                let ext = prepared
-                    .audio_path
-                    .extension()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("m4a");
-                let name = zip_entry_name(base + offset, &prepared.meta.title, ext);
-                let bytes = match tokio::fs::read(&prepared.audio_path).await {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        warn!(%error, "album ZIP: could not read downloaded track; skipping");
-                        continue;
-                    }
-                };
-                // Releasing the PreparedAudio drops its TempDir so the file is
-                // gone before the next track's bytes are read into memory.
-                drop(prepared);
-
-                let size = bytes.len() as u64;
-                if total_bytes.saturating_add(size) > MAX_ZIP_BYTES {
-                    return Err(DownloadError::SourceUnavailable(format!(
-                        "album too large: {} bytes already archived plus {size} more exceeds the {MAX_ZIP_BYTES} byte limit",
-                        total_bytes
-                    ))
-                    .into());
                 }
-                writer.add_file(&name, &bytes).await?;
-                total_bytes += size;
-                tracks += 1;
             }
+        }
+
+        let mut capacity: usize = 0;
+        for (_, prepared) in &prepared_tracks {
+            if let Ok(metadata) = tokio::fs::metadata(&prepared.audio_path).await {
+                capacity = capacity.saturating_add(metadata.len() as usize);
+            }
+        }
+        let mut writer =
+            ZipWriter::with_capacity(MAX_ZIP_BYTES, capacity.min(MAX_ZIP_BYTES as usize));
+        let mut total_bytes: u64 = 0;
+        let mut tracks = 0usize;
+
+        for (name, prepared) in prepared_tracks {
+            let bytes = match tokio::fs::read(&prepared.audio_path).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!(%error, "album ZIP: could not read downloaded track; skipping");
+                    continue;
+                }
+            };
+            // Releasing the PreparedAudio drops its TempDir so the file is gone
+            // before the next track's bytes are read into memory.
+            drop(prepared);
+
+            let size = bytes.len() as u64;
+            if total_bytes.saturating_add(size) > MAX_ZIP_BYTES {
+                return Err(DownloadError::SourceUnavailable(format!(
+                    "album too large: {} bytes already archived plus {size} more exceeds the {MAX_ZIP_BYTES} byte limit",
+                    total_bytes
+                ))
+                .into());
+            }
+            writer.add_file(&name, &bytes).await?;
+            total_bytes += size;
+            tracks += 1;
         }
 
         if tracks == 0 {
@@ -866,12 +999,18 @@ impl DownloadManager {
             .await
             .map_err(|error| DownloadError::Internal(error.to_string()))?
             .ok_or(DownloadError::NotFound)?;
+        // A cached track knows its real source (SoundCloud/Deezer keys are not
+        // on YouTube): go straight to it instead of paying a failing search.
+        let target = match &cached.source_url {
+            Some(url) => DownloadTarget::Url(url.clone()),
+            None => DownloadTarget::Search(cached.meta.search_query()),
+        };
         let request = TrackRequest {
             key: cached.key.clone(),
             provider: cached.provider,
-            source_url: cached.source_url.clone(),
-            meta: Some(cached.meta.clone()),
-            target: DownloadTarget::Search(cached.meta.search_query()),
+            source_url: cached.source_url,
+            meta: Some(cached.meta),
+            target,
         };
         self.prepare(request, quality, ZIP_USER_ID, hq_cover).await
     }
@@ -1260,5 +1399,24 @@ mod tests {
         assert_eq!(merged.album.as_deref(), Some("Album"));
         assert_eq!(merged.genres, vec!["Rock".to_owned()]);
         assert_eq!(merged.duration_secs, Some(10));
+    }
+
+    #[test]
+    fn speed_ring_mean_and_empty() {
+        let mut samples = VecDeque::new();
+        assert_eq!(mean_bps(&samples), None);
+        samples.push_back((1_000, 2));
+        samples.push_back((3_000, 2));
+        // 4000 bytes over 4s = 1000 B/s (mean over totals, not per-sample avg).
+        assert_eq!(mean_bps(&samples), Some(1_000.0));
+    }
+
+    #[test]
+    fn estimate_formula_matches_kbps_math_and_floors_at_one() {
+        // 200s at 192 kbps = 200*192*125 = 4_800_000 bytes; / 1_000_000 B/s = 4.8s.
+        let secs = download_secs_for(200, 192, 1_000_000.0);
+        assert!((secs - 4.8).abs() < 1e-9, "got {secs}");
+        // Tiny file at huge speed still reports at least one second.
+        assert_eq!(download_secs_for(1, 8, 1e12), 1.0);
     }
 }

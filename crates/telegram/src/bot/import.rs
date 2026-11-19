@@ -380,8 +380,16 @@ async fn process(
             .await?;
         return Ok(());
     }
+    // Do not silently truncate the playlist: surface how many lines had no
+    // match in the confirmation text (the title is rendered there).
+    let unresolved = (entries.len() - tracks.len()) as u32;
+    let mut title = "Imported playlist".to_owned();
+    if unresolved > 0 {
+        title.push(' ');
+        title.push_str(&i18n::import_unresolved(lang, unresolved));
+    }
     let album = Album {
-        title: "Imported playlist".to_owned(),
+        title,
         provider: Provider::YouTube,
         tracks,
         source_url: None,

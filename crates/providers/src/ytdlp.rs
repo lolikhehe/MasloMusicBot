@@ -101,6 +101,10 @@ impl YtDlp {
                     "--ignore-errors",
                     "--playlist-end",
                     &limit_arg,
+                    "--socket-timeout",
+                    "15",
+                    "--retries",
+                    "2",
                     "--",
                     &target,
                 ],
@@ -140,6 +144,10 @@ impl YtDlp {
                     "--no-playlist",
                     "--skip-download",
                     "--no-warnings",
+                    "--socket-timeout",
+                    "15",
+                    "--retries",
+                    "2",
                     "--",
                     url,
                 ],
@@ -183,6 +191,10 @@ impl YtDlp {
                     "--ignore-errors",
                     "--playlist-end",
                     &limit.to_string(),
+                    "--socket-timeout",
+                    "15",
+                    "--retries",
+                    "2",
                     "--",
                     url,
                 ],
@@ -303,8 +315,9 @@ impl YtDlp {
             .filter(|path| Path::new(path).is_file())
         {
             Some(path) => {
-                let info_path = find_info_only(dir).await;
-                (PathBuf::from(path), info_path)
+                let audio = PathBuf::from(path);
+                let info_path = find_info_only(&audio);
+                (audio, info_path)
             }
             None => {
                 // With the bot's flags a zero-result search exits completely
@@ -350,10 +363,12 @@ impl YtDlp {
         args: &[&str],
         timeout: Duration,
     ) -> Result<std::process::Output, DownloadError> {
-        let _permit = self
-            .metadata_semaphore
-            .acquire()
+        // The semaphore queue is bounded too: a stalled batch of probes can't
+        // hold a caller forever. The wording deliberately avoids the "timed
+        // out"/"timeout" words that manager.rs uses to classify retries.
+        let _permit = tokio::time::timeout(timeout, self.metadata_semaphore.acquire())
             .await
+            .map_err(|_| DownloadError::SourceUnavailable(queue_timeout_message(timeout)))?
             .map_err(|_| DownloadError::Internal("metadata semaphore closed".to_owned()))?;
         self.run(args, timeout).await
     }
@@ -468,6 +483,7 @@ impl Info {
 
 #[derive(Debug, Clone, Deserialize)]
 struct Thumbnail {
+    #[serde(default)]
     url: String,
     #[serde(default)]
     width: Option<u32>,
@@ -564,8 +580,17 @@ fn album_track_from_entry(entry: Info, provider: Provider, album: &str) -> Optio
     }
 }
 
-async fn find_info_only(dir: &Path) -> Option<PathBuf> {
-    // The audio path is known; we only need the .info.json sibling.
+/// The printed audio path is known: use its `.info.json` *sibling*. A plain
+/// directory scan can pick up a stale stub from an earlier run and report the
+/// wrong metadata (or defeat zero-result miss-detection).
+fn find_info_only(audio_path: &Path) -> Option<PathBuf> {
+    let sibling = audio_path.with_extension("info.json");
+    sibling.is_file().then_some(sibling)
+}
+
+/// No printed audio exists in the silent-search case, so a directory scan is
+/// the only way to locate the zero-result stub.
+async fn find_stub_info(dir: &Path) -> Option<PathBuf> {
     let mut entries = tokio::fs::read_dir(dir).await.ok()?;
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
@@ -603,7 +628,7 @@ fn is_zero_count_stub(data: &[u8]) -> bool {
 }
 
 async fn search_stub(dir: &Path) -> bool {
-    let Some(info) = find_info_only(dir).await else {
+    let Some(info) = find_stub_info(dir).await else {
         return false;
     };
     let Ok(data) = tokio::fs::read(&info).await else {
@@ -615,13 +640,9 @@ async fn search_stub(dir: &Path) -> bool {
 async fn find_output(dir: &Path) -> Result<(PathBuf, Option<PathBuf>), DownloadError> {
     let mut entries = tokio::fs::read_dir(dir).await?;
     let mut audio = Vec::new();
-    let mut info = None;
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-        if name.ends_with(".info.json") {
-            info = Some(path);
-        } else if matches!(
+        if matches!(
             path.extension().and_then(|ext| ext.to_str()),
             Some("m4a" | "mp3" | "opus" | "ogg" | "flac" | "webm")
         ) {
@@ -639,7 +660,10 @@ async fn find_output(dir: &Path) -> Result<(PathBuf, Option<PathBuf>), DownloadE
     audio
         .into_iter()
         .next()
-        .map(|audio| (audio, info))
+        .map(|audio| {
+            let info = find_info_only(&audio);
+            (audio, info)
+        })
         .ok_or_else(|| DownloadError::Audio("yt-dlp produced no audio file".to_owned()))
 }
 
@@ -655,6 +679,15 @@ async fn read_info(path: &Option<PathBuf>) -> Result<Option<Info>, DownloadError
             Ok(None)
         }
     }
+}
+
+/// Wording for the semaphore-queue timeout, kept outside manager.rs's
+/// `is_transient` match patterns so it isn't retried across every source.
+fn queue_timeout_message(timeout: Duration) -> String {
+    format!(
+        "yt-dlp metadata queue exceeded {}s — giving up on this source",
+        timeout.as_secs()
+    )
 }
 
 fn classify_failure(stderr: &str, timeout: Duration) -> DownloadError {
@@ -758,6 +791,47 @@ mod tests {
         assert_eq!(duration_secs(Some(12.6)), Some(13));
         assert_eq!(duration_secs(Some(0.0)), None);
         assert_eq!(duration_secs(Some(f64::NAN)), None);
+    }
+
+    #[test]
+    fn picks_info_sibling_not_first_directory_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // This stub sorts before `audio.info.json` alphabetically.
+        let stale = dir.path().join("00-stale.info.json");
+        std::fs::write(&stale, br#"{"playlist_count":0}"#).expect("write stub");
+        let sibling = dir.path().join("audio.info.json");
+        std::fs::write(&sibling, br#"{"title":"This download"}"#).expect("write sibling");
+        let audio = dir.path().join("audio.m4a");
+        assert_eq!(find_info_only(&audio), Some(sibling));
+        assert_eq!(find_info_only(&dir.path().join("missing.m4a")), None);
+    }
+
+    #[test]
+    fn queue_timeout_message_is_not_a_transient_retry() {
+        let message = queue_timeout_message(Duration::from_secs(5)).to_ascii_lowercase();
+        for pattern in [
+            "timed out",
+            "timeout",
+            "connection",
+            "reset",
+            "too many requests",
+            "403",
+            "429",
+        ] {
+            assert!(!message.contains(pattern), "{pattern} in {message}");
+        }
+    }
+
+    #[test]
+    fn malformed_thumbnail_entry_does_not_break_info() {
+        let info: Info = serde_json::from_str(
+            r#"{"title":"Song","thumbnails":[{"width":100},{"url":"https://x/cover.jpg","width":50,"height":50}]}"#,
+        )
+        .expect("info");
+        assert_eq!(
+            info.into_meta().thumbnail_url.as_deref(),
+            Some("https://x/cover.jpg")
+        );
     }
 
     #[test]

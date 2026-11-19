@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE saved_albums SET added_at = now() - interval '1 hour' WHERE user_id = 42",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "2e96dfb9c3e82cf8fce321fa758b7200ce4a4af3c81179d0c519f8e99862bfc8"
+}

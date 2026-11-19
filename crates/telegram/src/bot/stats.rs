@@ -124,6 +124,12 @@ pub async fn handle_collage_menu_callback(
         .db
         .ensure_user(query.from.id.0 as i64, Lang::En)
         .await?;
+    // Group opt-in gate, same as the /profile, /collage and genre command paths.
+    if !message.chat.is_private() && !state.chat_allowed(message.chat.id.0).await? {
+        bot.send_message(message.chat.id, i18n::private_only(user.lang))
+            .await?;
+        return Ok(());
+    }
     let markup = match kind {
         Some(kind) => collage_grid_keyboard(user.lang, kind, period),
         None => collage_kind_keyboard(user.lang, period),
@@ -627,6 +633,12 @@ pub async fn handle_genre_chart_callback(
     };
     let user_id = query.from.id.0 as i64;
     let user = state.db.ensure_user(user_id, Lang::En).await?;
+    // Group opt-in gate, same as the collage callback and the /genres command.
+    if !message.chat.is_private() && !state.chat_allowed(message.chat.id.0).await? {
+        bot.send_message(message.chat.id, i18n::private_only(user.lang))
+            .await?;
+        return Ok(());
+    }
     send_genre_chart(
         state,
         bot,

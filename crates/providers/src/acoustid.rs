@@ -49,15 +49,13 @@ impl AcoustId {
         let stdout = run_fpcalc(audio_path).await?;
         let (duration, fingerprint) = parse_fpcalc(&stdout)?;
         let duration_str = duration.to_string();
+        // POST form: a fingerprint is 8-15k chars, which many proxies reject
+        // as an over-long GET URL (HTTP 414). Keep the same params in the body.
+        let form = lookup_form(&self.api_key, &duration_str, &fingerprint);
         let body = self
             .client
-            .get(LOOKUP_URL)
-            .query(&[
-                ("client", self.api_key.as_str()),
-                ("duration", duration_str.as_str()),
-                ("fingerprint", fingerprint.as_str()),
-                ("meta", "recordings releasegroups"),
-            ])
+            .post(LOOKUP_URL)
+            .form(&form)
             .send()
             .await
             .map_err(map_reqwest)?
@@ -211,8 +209,31 @@ fn year_from_date(date: &str) -> Option<i32> {
         .filter(|year| (1900..=2100).contains(year))
 }
 
+/// Never use `error`'s Display here: reqwest embeds the full URL, which holds
+/// `client=<API key>`. Only the status is safe to surface.
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
-    DownloadError::SourceUnavailable(format!("acoustid request failed: {error}"))
+    match error.status() {
+        Some(status) => {
+            DownloadError::SourceUnavailable(format!("acoustid request failed: {status}"))
+        }
+        None => {
+            DownloadError::SourceUnavailable("acoustid request failed: network error".to_owned())
+        }
+    }
+}
+
+/// The v2 lookup parameters, shared by the request builder and its unit test.
+fn lookup_form<'a>(
+    api_key: &'a str,
+    duration: &'a str,
+    fingerprint: &'a str,
+) -> [(&'static str, &'a str); 4] {
+    [
+        ("client", api_key),
+        ("duration", duration),
+        ("fingerprint", fingerprint),
+        ("meta", "recordings releasegroups"),
+    ]
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,6 +291,26 @@ struct Release {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_is_post_with_form_body() {
+        let form = lookup_form("KEY", "123", "AQADtGabc");
+        assert_eq!(
+            form,
+            [
+                ("client", "KEY"),
+                ("duration", "123"),
+                ("fingerprint", "AQADtGabc"),
+                ("meta", "recordings releasegroups"),
+            ]
+        );
+        let request = reqwest::Client::new()
+            .post(LOOKUP_URL)
+            .form(&form)
+            .build()
+            .expect("request");
+        assert_eq!(request.method(), reqwest::Method::POST);
+    }
 
     #[test]
     fn parses_fpcalc_output() {

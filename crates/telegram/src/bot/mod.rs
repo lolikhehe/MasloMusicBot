@@ -112,7 +112,16 @@ async fn await_shutdown(
     shutdown::wait_for_shutdown().await;
     info!("shutdown requested");
     match shutdown_token.shutdown() {
-        Ok(future) => future.await,
+        Ok(future) => {
+            // A 300s download can outlast the orchestrator's stop grace period;
+            // bound the graceful drain so the process exits before SIGKILL.
+            if tokio::time::timeout(std::time::Duration::from_secs(30), future)
+                .await
+                .is_err()
+            {
+                warn!("dispatcher shutdown timed out");
+            }
+        }
         Err(error) => warn!(%error, "dispatcher was already idle"),
     }
     match tokio::time::timeout(std::time::Duration::from_secs(20), &mut *dispatcher_task).await {

@@ -406,8 +406,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             Some("Aucun digest n'est activé. Commencez avec <code>/digest daily</code>.")
         }
         "none" => Some("aucune"),
-        "daily" => Some("daily"),
-        "weekly" => Some("weekly"),
+        "daily" => Some("quotidien"),
+        "weekly" => Some("hebdomadaire"),
         "📊 Your digest" => Some("📊 Votre digest"),
         "Tracks" => Some("Morceaux"),
         "Top tracks" => Some("Morceaux les plus écoutés"),
@@ -454,6 +454,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📦 {album} — {n} tracks" => Some("📦 {album} — {n} morceaux"),
         "Looks like: {artist} — {title}" => Some("Ça ressemble à : {artist} — {title}"),
         "💿 {album} · {year}" => Some("💿 {album} · {year}"),
+        "⚠ {n} lines could not be resolved and were skipped" => {
+            Some("⚠ {n} lignes n'ont pas pu être résolues et ont été ignorées")
+        }
         _ => None,
     }
 }

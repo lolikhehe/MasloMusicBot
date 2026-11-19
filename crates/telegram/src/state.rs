@@ -8,9 +8,55 @@ use moka::future::Cache;
 use providers::acoustid::AcoustId;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use storage::Db;
+
+type FavLocks = Mutex<HashMap<(i64, String), Arc<tokio::sync::Mutex<()>>>>;
+
+/// Process-local guards that serialize one-shot user actions. Entries are
+/// short-lived and bounded by the number of distinct (user, item) pairs.
+#[derive(Default)]
+pub(crate) struct Inflight {
+    zips: Mutex<HashSet<(i64, String, String)>>,
+    favs: FavLocks,
+}
+
+impl Inflight {
+    /// Claim an album-ZIP key. Returns `false` (and leaves the set untouched)
+    /// when a packing task for this key is already running.
+    pub(crate) fn claim_zip(&self, user_id: i64, source: &str, id: &str) -> bool {
+        self.zips
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert((user_id, source.to_owned(), id.to_owned()))
+    }
+
+    pub(crate) fn release_zip(&self, user_id: i64, source: &str, id: &str) {
+        self.zips
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&(user_id, source.to_owned(), id.to_owned()));
+    }
+
+    /// Per-(user, track) favorite toggle lock; holding it serializes taps.
+    pub(crate) fn fav_lock(&self, user_id: i64, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut map = self
+            .favs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The map is only advisory serialization, so a hard clear beats an
+        // unbounded one-mutex-per-track leak; a rare clear just lets two
+        // simultaneous taps race once more.
+        if map.len() >= 4096 {
+            map.clear();
+        }
+        map.entry((user_id, key.to_owned()))
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+}
 
 /// Minimal identity of the last successfully delivered track. Used by
 /// `/lyrics` with no arguments, so users don't have to retype Artist — Title.
@@ -88,6 +134,8 @@ pub struct AppState {
     pub selection_ttl: Duration,
     /// Identifies this replica in the shared job ledger.
     pub worker_id: String,
+    /// Process-local dedup/serialization guards for ZIP packing and favorites.
+    pub(crate) inflight: Arc<Inflight>,
 }
 
 /// Selection kinds stored in the `selections` table.
@@ -112,10 +160,16 @@ impl AppState {
         bot_username: String,
         acoustid: Option<AcoustId>,
     ) -> Self {
-        let lastfm = config
-            .lastfm_api_key
-            .clone()
-            .map(providers::lastfm::LastFmClient::new);
+        let lastfm =
+            config.lastfm_api_key.clone().and_then(
+                |key| match providers::lastfm::LastFmClient::new(key) {
+                    Ok(client) => Some(client),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not build Last.fm client; stats disabled");
+                        None
+                    }
+                },
+            );
         let genre_cache = Cache::builder()
             .max_capacity(5_000)
             .time_to_live(Duration::from_secs(24 * 60 * 60))
@@ -176,6 +230,7 @@ impl AppState {
             last_tracks,
             selection_ttl: Duration::from_secs(30 * 60),
             worker_id: uuid::Uuid::new_v4().simple().to_string(),
+            inflight: Arc::new(Inflight::default()),
         }
     }
 

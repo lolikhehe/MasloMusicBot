@@ -594,14 +594,28 @@ pub async fn confirm_album(
 
     let selection_id = state.new_selection_id();
     let count = album.tracks.len();
-    state
+    if let Err(error) = state
         .put_selection(
             &selection_id,
             crate::state::selection::ALBUM,
             user_id,
             album,
         )
-        .await?;
+        .await
+    {
+        warn!(%error, "could not store album confirmation");
+        let _ = edit_html(
+            bot,
+            chat,
+            progress,
+            i18n::error(
+                lang,
+                &DownloadError::Internal("could not prepare the album".to_owned()),
+            ),
+        )
+        .await;
+        return Ok(());
+    }
     let title = escape_html(&album.title);
     let mut first_row = vec![InlineKeyboardButton::callback(
         i18n::album_download_all(lang).to_owned(),
@@ -625,10 +639,24 @@ pub async fn confirm_album(
             format!("alx:{selection_id}"),
         )],
     ]);
-    bot.edit_message_text(chat, progress, i18n::album_confirm(lang, &title, count))
+    if let Err(error) = bot
+        .edit_message_text(chat, progress, i18n::album_confirm(lang, &title, count))
         .parse_mode(ParseMode::Html)
         .reply_markup(keyboard)
-        .await?;
+        .await
+    {
+        warn!(%error, "could not render album confirmation");
+        let _ = edit_html(
+            bot,
+            chat,
+            progress,
+            i18n::error(
+                lang,
+                &DownloadError::Internal("could not render the album".to_owned()),
+            ),
+        )
+        .await;
+    }
     Ok(())
 }
 
@@ -656,9 +684,9 @@ pub async fn deliver_album(
     // save/ZIP callbacks carry it, and over-long ids are dropped per button.
     let album_identity = album_identity(&album);
     let base = i18n::album_started(lang, &title, total);
-    // Static ETA up front. The per-track progress edits below already animate
-    // this same message every ~2 s, so a wall-clock countdown would only
-    // fight them for the edit slot.
+    // Download-only ETA from the live measured speed, divided by the number of
+    // tracks the send semaphore actually runs at once. Unknown durations borrow
+    // the mean of the known ones; with none known we stay silent (no guess).
     let known: Vec<f64> = album
         .tracks
         .iter()
@@ -667,19 +695,17 @@ pub async fn deliver_album(
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.duration_secs)
-                .map(f64::from)
+                .and_then(|duration| state.manager.estimate_download_secs(duration, quality))
         })
         .collect();
-    let rate = state.db.download_rate().await.ok().flatten();
-    let avg = state.db.avg_recent_download_secs().await.ok().flatten();
-    let estimate = match (rate, &known[..]) {
-        (Some(rate), durations) if !durations.is_empty() => {
-            let sum: f64 = durations.iter().sum();
-            let mean = sum / durations.len() as f64;
-            Some(rate * (sum + mean * (total - durations.len()) as f64))
-        }
-        // No known durations: fall back to the per-job mean scaled by count.
-        _ => avg.map(|avg| avg * total as f64),
+    let parallelism = state.config.max_active_downloads_per_user.min(total).max(1);
+    let estimate = if known.is_empty() {
+        None
+    } else {
+        let sum: f64 = known.iter().sum();
+        let mean = sum / known.len() as f64;
+        let total_work = sum + mean * (total - known.len()) as f64;
+        Some(total_work / parallelism as f64)
     };
     if let Some(secs) = estimate {
         let eta = i18n::download_eta(lang, secs);
@@ -687,6 +713,7 @@ pub async fn deliver_album(
     } else {
         let _ = edit_html(bot, chat, progress, base).await;
     }
+    let started = Instant::now();
 
     // The album-info toggle sends the cover and facts before the first track.
     if album_info && let Some(meta) = album.tracks.first().and_then(|track| track.meta.as_ref()) {
@@ -699,9 +726,12 @@ pub async fn deliver_album(
     let send_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(
         state.config.max_active_downloads_per_user,
     ));
+    // Owned clone so each spawned task can carry the guard into its delivery
+    // path; cancellation must reach in-flight tracks, not just the spawn loop.
+    let job = job.cloned();
     let mut set = tokio::task::JoinSet::new();
     for track in album.tracks {
-        if let Some(job) = job
+        if let Some(job) = &job
             && job.cancelled().await
         {
             break;
@@ -714,6 +744,7 @@ pub async fn deliver_album(
             .map(|meta| meta.display_title())
             .unwrap_or_else(|| track.key.to_string());
         let send_slots = send_slots.clone();
+        let job_clone = job.clone();
         set.spawn(async move {
             let Ok(_permit) = send_slots.acquire().await else {
                 return (
@@ -721,7 +752,16 @@ pub async fn deliver_album(
                     Err(AppError::Message("album send semaphore closed".to_owned()).into()),
                 );
             };
-            let result = deliver_track(
+            // Cancellation may have landed while this track waited for a slot.
+            if let Some(job) = &job_clone
+                && job.cancelled().await
+            {
+                return (
+                    track_title,
+                    Err(crate::bot::jobs::JobGuard::cancelled_error().into()),
+                );
+            }
+            let result = deliver_track_inner(
                 &state,
                 &bot_clone,
                 chat,
@@ -731,6 +771,7 @@ pub async fn deliver_album(
                 tags_enabled,
                 hq_cover,
                 genre_analysis,
+                job_clone.as_ref(),
             )
             .await;
             (track_title, result)
@@ -752,7 +793,7 @@ pub async fn deliver_album(
                 failed += 1;
                 warn!(%track_title, %error, "album track delivery failed");
                 if failed_titles.len() < 8 {
-                    failed_titles.push(escape_html(&track_title));
+                    failed_titles.push(truncate_escaped_utf16(&escape_html(&track_title), 80));
                 }
             }
             Err(error) => {
@@ -762,13 +803,14 @@ pub async fn deliver_album(
         }
         done += 1;
         if last_edit.elapsed() >= std::time::Duration::from_secs(2) || done == total {
-            let _ = edit_html(
-                bot,
-                chat,
-                progress,
-                i18n::album_progress(lang, done, total, &title),
-            )
-            .await;
+            let mut progress_text = i18n::album_progress(lang, done, total, &title);
+            if let Some(remaining) =
+                empirical_remaining_secs(total, done, started.elapsed().as_secs_f64())
+            {
+                progress_text.push_str(" · ");
+                progress_text.push_str(&i18n::download_eta(lang, remaining));
+            }
+            let _ = edit_html(bot, chat, progress, progress_text).await;
             last_edit = Instant::now();
         }
     }
@@ -822,6 +864,17 @@ pub async fn deliver_album(
 fn album_identity(album: &common::domain::Album) -> Option<(String, String)> {
     let id = album.source_url.as_deref()?.trim();
     (!id.is_empty()).then(|| (album.provider.as_str().to_owned(), id.to_owned()))
+}
+
+/// Remaining seconds from the pace of already-finished tracks: `(left) ×
+/// (elapsed / done)`. `None` before the first track lands (or once all did),
+/// so an album never shows an invented countdown.
+fn empirical_remaining_secs(total: usize, done: usize, elapsed_secs: f64) -> Option<f64> {
+    if done > 0 && done < total {
+        Some((total - done) as f64 * elapsed_secs / done as f64)
+    } else {
+        None
+    }
 }
 
 /// Cover photo + caption sent before an album's tracks (the
@@ -918,10 +971,10 @@ async fn send_info_sections(
 }
 
 /// One long-form info section. Telegram's text limit applies per message, so
-/// each section is sent separately; a rare over-long source text is cut at
-/// 4000 characters to stay safely inside the 4096 cap.
+/// each section is sent separately; an over-long source is cut at 2040 UTF-16
+/// units (astral emoji count double) to stay safely inside the 4096 cap.
 fn info_section(icon: &str, name: &str, body: &str) -> String {
-    let short: String = body.trim().chars().take(4000).collect();
+    let short = truncate_utf16(body.trim(), 2040);
     format!(
         "{icon} <b>{}</b>\n\n{}",
         escape_html(name.trim()),
@@ -934,10 +987,12 @@ fn info_section(icon: &str, name: &str, body: &str) -> String {
 /// album wiki are sent as separate messages instead of being squeezed into
 /// the 1024-character caption limit.
 fn album_info_caption(title: &str, artist: &str, facts: Option<&providers::AlbumFacts>) -> String {
+    let title = truncate_utf16(title.trim(), 400);
+    let artist = truncate_utf16(artist.trim(), 400);
     let mut header = format!(
         "💿 <b>{}</b>\n🎤 {}",
-        escape_html(title.trim()),
-        escape_html(artist.trim())
+        escape_html(&title),
+        escape_html(&artist)
     );
     if let Some(facts) = facts {
         let mut parts: Vec<String> = Vec::new();
@@ -955,7 +1010,7 @@ fn album_info_caption(title: &str, artist: &str, facts: Option<&providers::Album
             .map(str::trim)
             .filter(|label| !label.is_empty())
         {
-            parts.push(escape_html(&label.chars().take(60).collect::<String>()));
+            parts.push(escape_html(&truncate_utf16(label, 60)));
         }
         let genres = facts
             .genres
@@ -973,7 +1028,8 @@ fn album_info_caption(title: &str, artist: &str, facts: Option<&providers::Album
             header.push_str(&line);
         }
     }
-    header
+    // Hard cap on the whole caption: Telegram's 1024 limit counts UTF-16 units.
+    truncate_escaped_utf16(&header, 1000)
 }
 
 #[cfg(test)]
@@ -1005,8 +1061,8 @@ mod album_info_tests {
         let long = "word ".repeat(3000);
         let text = info_section("👤", "Artist <&>", &long);
         assert!(
-            text.chars().count() <= 4096,
-            "section message under Telegram's text cap"
+            text.encode_utf16().count() <= 4096,
+            "section message under Telegram's UTF-16 text cap"
         );
         assert!(text.starts_with("👤 <b>Artist &lt;&amp;&gt;</b>\n\n"));
         let text = info_section("💿", "Album", "Short story.");
@@ -1124,10 +1180,10 @@ pub fn merge_genres(meta: &mut TrackMeta, tags: Vec<String>) {
 
 /// Caption for a sent track. The developer-channel line always goes out (that
 /// is the point — every track carries it); the optional album/genre tags sit
-/// above it. Telegram caps audio captions at 1024 characters, so long tags are
-/// trimmed and a little room is left for the FLAC-fallback note.
+/// above it. Telegram caps audio captions at 1024 UTF-16 units, so long tags are
+/// trimmed by that measure and room is left for the FLAC-fallback note.
 pub fn tags_caption(meta: &TrackMeta, tags_enabled: bool) -> Option<String> {
-    const MAX_CAPTION_CHARS: usize = 1024;
+    const MAX_CAPTION_UNITS: usize = 1000;
     const RESERVED_FOR_NOTES: usize = 80;
     let body = if tags_enabled {
         meta.tags_caption().unwrap_or_default()
@@ -1137,9 +1193,9 @@ pub fn tags_caption(meta: &TrackMeta, tags_enabled: bool) -> Option<String> {
     if body.is_empty() {
         return Some(DEV_CHANNEL_LINE.to_owned());
     }
-    let max_body =
-        MAX_CAPTION_CHARS.saturating_sub(DEV_CHANNEL_LINE.chars().count() + 1 + RESERVED_FOR_NOTES);
-    let mut caption: String = body.chars().take(max_body).collect();
+    let dev_units = DEV_CHANNEL_LINE.encode_utf16().count();
+    let max_body = MAX_CAPTION_UNITS.saturating_sub(dev_units + 1 + RESERVED_FOR_NOTES);
+    let mut caption = truncate_utf16(&body, max_body);
     caption.push('\n');
     caption.push_str(DEV_CHANNEL_LINE);
     Some(caption)
@@ -1552,6 +1608,50 @@ pub fn truncate(value: &str, max: usize) -> String {
     result
 }
 
+/// Cut back a trailing partial HTML entity (`&am` without its `;`) left
+/// behind by truncation, so an already-escaped string can never split an
+/// escape sequence. Raw ampersands not followed by entity chars are kept.
+fn trim_partial_entity(s: &str) -> String {
+    if let Some(pos) = s.rfind('&') {
+        let tail = &s[pos..];
+        let partial = !tail.contains(';')
+            && tail.len() <= 10
+            && tail[1..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '#');
+        if partial {
+            return s[..pos].to_owned();
+        }
+    }
+    s.to_owned()
+}
+
+/// Truncate an already-escaped string to `max_units` UTF-16 units without
+/// ever splitting an HTML entity.
+fn truncate_escaped_utf16(s: &str, max_units: usize) -> String {
+    trim_partial_entity(&truncate_utf16(s, max_units))
+}
+
+/// Truncate to at most `max_units` UTF-16 units (Telegram's text/caption limits
+/// count units, so astral emoji cost two). The trailing ellipsis is itself one
+/// unit and is only appended when there is room for it.
+fn truncate_utf16(s: &str, max_units: usize) -> String {
+    let mut units = 0usize;
+    let mut result = String::with_capacity(s.len().min(max_units.saturating_mul(2) + 3));
+    for ch in s.chars() {
+        let len = ch.len_utf16();
+        if units + len > max_units {
+            if units < max_units {
+                result.push('…');
+            }
+            break;
+        }
+        units += len;
+        result.push(ch);
+    }
+    result
+}
+
 #[cfg(test)]
 mod caption_tests {
     use super::tags_caption;
@@ -1586,14 +1686,46 @@ mod caption_tests {
             ..Default::default()
         };
         let caption = tags_caption(&meta, true).expect("caption");
-        assert!(caption.chars().count() <= 1024);
+        assert!(caption.encode_utf16().count() <= 1024);
         assert!(caption.ends_with(DEV_CHANNEL_LINE));
+
+        // Astral chars count as two units; a char-based cap would overshoot.
+        let astral = TrackMeta {
+            album: Some("🌀".repeat(2000)),
+            ..Default::default()
+        };
+        let caption = tags_caption(&astral, true).expect("caption");
+        assert!(caption.encode_utf16().count() <= 1024);
+    }
+}
+
+#[cfg(test)]
+mod utf16_tests {
+    use super::truncate_utf16;
+
+    #[test]
+    fn truncation_counts_astral_chars_as_two_units() {
+        let text = "a🌀b🌀c"; // units: a=1, 🌀=2, b=1, 🌀=2, c=1
+        assert_eq!(truncate_utf16(text, 7), text); // exactly 7 units, no cut
+        assert_eq!(truncate_utf16(text, 6), "a🌀b🌀"); // no room for ellipsis
+        assert_eq!(truncate_utf16(text, 5), "a🌀b…"); // 1+2+1+1 = 5 units
+        assert_eq!(truncate_utf16(text, 2), "a…"); // 1+1 units
+        assert_eq!(truncate_utf16(text, 0), "");
+        assert_eq!(truncate_utf16("short", 16), "short");
+    }
+
+    #[test]
+    fn astral_emoji_never_exceed_unit_budget() {
+        let text = "🌀".repeat(3000); // 6000 UTF-16 units
+        let clipped = truncate_utf16(&text, 2041);
+        assert_eq!(clipped.encode_utf16().count(), 2041); // 1020 emoji + ellipsis
+        assert!(clipped.ends_with('…'));
     }
 }
 
 #[cfg(test)]
 mod countdown_tests {
-    use super::countdown_interval;
+    use super::{countdown_interval, empirical_remaining_secs};
     use common::domain::Lang;
     use common::i18n;
 
@@ -1603,5 +1735,14 @@ mod countdown_tests {
         assert_eq!(countdown_interval(120), 5);
         assert_eq!(i18n::download_eta(Lang::En, 89.0), "≈ 89 sec");
         assert_eq!(i18n::download_eta(Lang::En, 90.0), "≈ 2 min");
+    }
+
+    #[test]
+    fn empirical_remaining_scales_with_completed_pace() {
+        // 10 of 40 tracks in 100s -> 30 left at 10s/track.
+        assert_eq!(empirical_remaining_secs(40, 10, 100.0), Some(300.0));
+        assert_eq!(empirical_remaining_secs(40, 5, 20.0), Some(140.0));
+        assert_eq!(empirical_remaining_secs(40, 0, 100.0), None);
+        assert_eq!(empirical_remaining_secs(40, 40, 100.0), None);
     }
 }

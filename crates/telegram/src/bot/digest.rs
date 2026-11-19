@@ -157,12 +157,22 @@ pub fn spawn(bot: Bot, state: AppState) {
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
-                    if let Err(error) = sweep(&bot, &state).await {
-                        warn!(%error, "digest sweep failed");
-                    }
+                    // Each arm runs detached so a slow sweep cannot stall the
+                    // other timer (or block the planner tick).
+                    let bot = bot.clone();
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = sweep(&bot, &state).await {
+                            warn!(%error, "digest sweep failed");
+                        }
+                    });
                 }
                 _ = delete_ticker.tick() => {
-                    sweep_deletions(&bot, &state).await;
+                    let bot = bot.clone();
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        sweep_deletions(&bot, &state).await;
+                    });
                 }
             }
         }
@@ -195,8 +205,8 @@ async fn sweep_deletions(bot: &Bot, state: &AppState) {
                 }
             }
             Err(teloxide::RequestError::RetryAfter(_)) => {
-                // No sleep here: a long retry_after would stall this shared
-                // loop; the row stays due and the next tick retries it.
+                // Don't sleep for Telegram's full retry_after; the pacing below
+                // plus the next tick retries this row without stalling the loop.
             }
             Err(error) if error.to_string().to_ascii_lowercase().contains("not found") => {
                 if let Err(error) = state
@@ -211,7 +221,9 @@ async fn sweep_deletions(bot: &Bot, state: &AppState) {
                 warn!(%error, chat_id = entry.chat_id, "auto-delete deletion failed");
             }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // Telegram allows ~30 deletes/minute per chat; 2s keeps us at that
+        // ceiling instead of firing 20/s and looping on mass 429s.
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 }
 

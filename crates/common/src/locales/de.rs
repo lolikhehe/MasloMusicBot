@@ -452,6 +452,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "📦 {album} — {n} tracks" => Some("📦 {album} — {n} Tracks"),
         "Looks like: {artist} — {title}" => Some("Klingt nach: {artist} — {title}"),
         "💿 {album} · {year}" => Some("💿 {album} · {year}"),
+        "⚠ {n} lines could not be resolved and were skipped" => {
+            Some("⚠ {n} Zeilen konnten nicht aufgelöst werden und wurden übersprungen")
+        }
         _ => None,
     }
 }

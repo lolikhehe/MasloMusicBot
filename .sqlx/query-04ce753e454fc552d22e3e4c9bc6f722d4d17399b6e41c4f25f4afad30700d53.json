@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT album_key, title, artist, cover_url, payload_json,\n                    EXTRACT(EPOCH FROM added_at)::BIGINT AS added_at\n             FROM saved_albums WHERE user_id = $1\n             ORDER BY added_at DESC\n             LIMIT $2 OFFSET $3",
+  "query": "SELECT album_key, title, artist, cover_url, payload_json,\n                    EXTRACT(EPOCH FROM added_at)::BIGINT AS added_at\n             FROM saved_albums WHERE user_id = $1\n             ORDER BY added_at DESC, album_key ASC\n             LIMIT $2 OFFSET $3",
   "describe": {
     "columns": [
       {
@@ -81,5 +81,5 @@
       null
     ]
   },
-  "hash": "8ff7f2f0621fbe749fa056eae1bb436a98156e0a5494ffe1972d32b61174a0ff"
+  "hash": "04ce753e454fc552d22e3e4c9bc6f722d4d17399b6e41c4f25f4afad30700d53"
 }

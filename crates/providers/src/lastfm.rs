@@ -9,6 +9,8 @@
 use common::domain::{Lang, TrackMeta};
 use common::error::DownloadError;
 use serde::Deserialize;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Period accepted by Last.fm chart endpoints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,11 +207,16 @@ pub struct ProfileSummary {
 }
 
 const API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
+/// Error code 29 means the key is being throttled. Back off so a burst of
+/// parallel charts can't get the operator's key banned.
+const RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct LastFmClient {
     api_key: String,
     client: reqwest::Client,
+    /// Instant a code-29 reply was last seen; all calls refuse until it expires.
+    rate_limited_at: Arc<Mutex<Option<Instant>>>,
 }
 
 /// One recently/now playing track.
@@ -223,39 +230,79 @@ pub struct NowPlaying {
 }
 
 impl LastFmClient {
-    pub fn new(api_key: String) -> Self {
-        Self {
+    /// A failed builder must surface as an error: `Client::default()` would have
+    /// no timeout and let a hung Last.fm call block a request forever.
+    pub fn new(api_key: String) -> Result<Self, reqwest::Error> {
+        Ok(Self {
             api_key,
-            client: crate::http::client(std::time::Duration::from_secs(5)).unwrap_or_default(),
+            client: crate::http::client(Duration::from_secs(5))?,
+            rate_limited_at: Arc::new(Mutex::new(None)),
+        })
+    }
+
+    fn ensure_ready(&self) -> Result<(), DownloadError> {
+        let recorded = self
+            .rate_limited_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if recorded.is_some_and(|at| at.elapsed() < RATE_LIMIT_COOLDOWN) {
+            return Err(DownloadError::SourceUnavailable(
+                "last.fm: rate limited, cooling down".to_owned(),
+            ));
         }
+        Ok(())
+    }
+
+    fn note_rate_limit(&self, code: Option<u16>) {
+        if code == Some(29) {
+            let mut recorded = self
+                .rate_limited_at
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *recorded = Some(Instant::now());
+        }
+    }
+
+    fn check_error(&self, error: &LastFmError) -> Result<(), DownloadError> {
+        self.note_rate_limit(error.error);
+        error.check()
+    }
+
+    /// Parse a JSON reply from a bounded body: `.json()` buffers whatever the
+    /// server sends, while `fetch_bytes` stops at the cap (256 KB here).
+    async fn fetch_json<T: serde::de::DeserializeOwned>(
+        &self,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<T, DownloadError> {
+        let url = builder.build().map_err(map_reqwest)?.url().clone();
+        let bytes = crate::http::fetch_bytes(&self.client, url.as_str(), 256 * 1024)
+            .await
+            .ok_or_else(|| {
+                DownloadError::SourceUnavailable(
+                    "lastfm response empty, oversized, or failed".to_owned(),
+                )
+            })?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            DownloadError::SourceUnavailable(format!("lastfm invalid response: {error}"))
+        })
     }
 
     /// Fetch the user's latest track. Prefers the `nowplaying` entry, falls
     /// back to the most recent scrobbled track.
     pub async fn now_playing(&self, user: &str) -> Result<Option<NowPlaying>, DownloadError> {
-        let url = "https://ws.audioscrobbler.com/2.0/";
-        let response = self
-            .client
-            .get(url)
-            .query(&[
+        self.ensure_ready()?;
+        let body: RecentTracksResponse = self
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", "user.getRecentTracks"),
                 ("user", user),
                 ("api_key", &self.api_key),
                 ("format", "json"),
                 ("limit", "1"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?;
-        if !response.status().is_success() {
-            return Err(DownloadError::SourceUnavailable(format!(
-                "lastfm rejected the request: {}",
-                response.status()
-            )));
-        }
-        let body: RecentTracksResponse = response.json().await.map_err(map_reqwest)?;
+            ]))
+            .await?;
         if let Some(error) = body.error {
             // Public API error payload, e.g. {"error":6,"message":"User not found"}.
+            self.note_rate_limit(u16::try_from(error).ok());
             return Err(DownloadError::SourceUnavailable(format!(
                 "lastfm error {error}: {}",
                 body.message.unwrap_or_else(|| "unknown".to_owned())
@@ -277,32 +324,23 @@ impl LastFmClient {
         artist: &str,
         title: &str,
     ) -> Result<Vec<String>, DownloadError> {
+        self.ensure_ready()?;
         let artist = artist.trim();
         let title = title.trim();
         if title.is_empty() || artist.is_empty() {
             return Ok(Vec::new());
         }
-        let url = "https://ws.audioscrobbler.com/2.0/";
         let info: TrackInfoResponse = self
-            .client
-            .get(url)
-            .query(&[
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", "track.getInfo"),
                 ("artist", artist),
                 ("track", title),
                 ("api_key", &self.api_key),
                 ("format", "json"),
                 ("autocorrect", "1"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?
-            .error_for_status()
-            .map_err(map_reqwest)?
-            .json()
-            .await
-            .map_err(map_reqwest)?;
-        info.error.check()?;
+            ]))
+            .await?;
+        self.check_error(&info.error)?;
         let tags = info
             .track
             .and_then(|track| track.toptags)
@@ -313,23 +351,14 @@ impl LastFmClient {
         }
 
         let top: ArtistTagsResponse = self
-            .client
-            .get(url)
-            .query(&[
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", "artist.getTopTags"),
                 ("artist", artist),
                 ("api_key", &self.api_key),
                 ("format", "json"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?
-            .error_for_status()
-            .map_err(map_reqwest)?
-            .json()
-            .await
-            .map_err(map_reqwest)?;
-        top.error.check()?;
+            ]))
+            .await?;
+        self.check_error(&top.error)?;
         Ok(top.toptags.map(TagList::into_names).unwrap_or_default())
     }
 
@@ -337,40 +366,25 @@ impl LastFmClient {
     /// back to `bio.summary`) with the "Read more on Last.fm" link stripped.
     /// `None` when Last.fm has no biography for the name.
     pub async fn artist_bio(&self, artist: &str) -> Result<Option<String>, DownloadError> {
+        self.ensure_ready()?;
         let artist = artist.trim();
         if artist.is_empty() {
             return Ok(None);
         }
         let body: ArtistInfoResponse = self
-            .client
-            .get(API_URL)
-            .query(&[
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", "artist.getinfo"),
                 ("artist", artist),
                 ("api_key", &self.api_key),
                 ("format", "json"),
                 ("autocorrect", "1"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?
-            .error_for_status()
-            .map_err(map_reqwest)?
-            .json()
-            .await
-            .map_err(map_reqwest)?;
-        body.error.check()?;
+            ]))
+            .await?;
+        self.check_error(&body.error)?;
         let bio = body
             .artist
             .and_then(|artist| artist.bio)
-            // `content` is the full biography; `summary` is its shortened form.
-            .and_then(|bio| {
-                bio.content
-                    .filter(|content| !content.trim().is_empty())
-                    .or(bio.summary)
-            })
-            .map(|text| strip_read_more(&text))
-            .filter(|text| !text.is_empty());
+            .and_then(|bio| pick_bio(bio.content, bio.summary));
         Ok(bio)
     }
 
@@ -382,31 +396,23 @@ impl LastFmClient {
         artist: &str,
         album: &str,
     ) -> Result<Option<String>, DownloadError> {
+        self.ensure_ready()?;
         let artist = artist.trim();
         let album = album.trim();
         if artist.is_empty() || album.is_empty() {
             return Ok(None);
         }
         let body: AlbumInfoResponse = self
-            .client
-            .get(API_URL)
-            .query(&[
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", "album.getinfo"),
                 ("artist", artist),
                 ("album", album),
                 ("api_key", &self.api_key),
                 ("format", "json"),
                 ("autocorrect", "1"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?
-            .error_for_status()
-            .map_err(map_reqwest)?
-            .json()
-            .await
-            .map_err(map_reqwest)?;
-        body.error.check()?;
+            ]))
+            .await?;
+        self.check_error(&body.error)?;
         let wiki = body
             .album
             .and_then(|album| album.wiki)
@@ -427,15 +433,14 @@ impl LastFmClient {
         artist: &str,
         title: &str,
     ) -> Result<Vec<(String, String)>, DownloadError> {
+        self.ensure_ready()?;
         let artist = artist.trim();
         let title = title.trim();
         if artist.is_empty() || title.is_empty() {
             return Ok(Vec::new());
         }
         let body: SimilarResponse = self
-            .client
-            .get(API_URL)
-            .query(&[
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", "track.getsimilar"),
                 ("artist", artist),
                 ("track", title),
@@ -443,16 +448,9 @@ impl LastFmClient {
                 ("format", "json"),
                 ("autocorrect", "1"),
                 ("limit", "10"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?
-            .error_for_status()
-            .map_err(map_reqwest)?
-            .json()
-            .await
-            .map_err(map_reqwest)?;
-        body.error.check()?;
+            ]))
+            .await?;
+        self.check_error(&body.error)?;
         let similar = body
             .similar
             .map(|similar| similar.track)
@@ -477,23 +475,16 @@ impl LastFmClient {
 
     /// Public profile totals: scrobbles, library size and country.
     pub async fn profile(&self, user: &str) -> Result<ProfileSummary, DownloadError> {
+        self.ensure_ready()?;
         let body: UserInfoResponse = self
-            .client
-            .get(API_URL)
-            .query(&[
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", "user.getInfo"),
                 ("user", user),
                 ("api_key", &self.api_key),
                 ("format", "json"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?
-            .error_for_status()
-            .map_err(map_reqwest)?
-            .json()
-            .await
-            .map_err(map_reqwest)?;
+            ]))
+            .await?;
+        self.check_error(&body.error)?;
         let info = body
             .user
             .ok_or_else(|| DownloadError::SourceUnavailable("Last.fm user not found".to_owned()))?;
@@ -520,31 +511,29 @@ impl LastFmClient {
         kind: StatsKind,
         limit: usize,
     ) -> Result<Vec<ScrobbleItem>, DownloadError> {
+        self.ensure_ready()?;
         let method = match kind {
             StatsKind::Tracks => "user.getTopTracks",
             StatsKind::Albums => "user.getTopAlbums",
             StatsKind::Artists => "user.getTopArtists",
         };
         let limit = limit.clamp(1, 100).to_string();
-        let response = self
-            .client
-            .get(API_URL)
-            .query(&[
+        let response: serde_json::Value = self
+            .fetch_json(self.client.get(API_URL).query(&[
                 ("method", method),
                 ("user", user),
                 ("period", period.as_str()),
                 ("limit", limit.as_str()),
                 ("api_key", &self.api_key),
                 ("format", "json"),
-            ])
-            .send()
-            .await
-            .map_err(map_reqwest)?
-            .error_for_status()
-            .map_err(map_reqwest)?
-            .json::<serde_json::Value>()
-            .await
-            .map_err(map_reqwest)?;
+            ]))
+            .await?;
+        self.note_rate_limit(
+            response
+                .get("error")
+                .and_then(|value| value.as_u64())
+                .and_then(|code| u16::try_from(code).ok()),
+        );
         check_value_error(&response)?;
         let mut items = parse_top_items(kind, &response);
         items.sort_by_key(|item| std::cmp::Reverse(item.playcount));
@@ -620,8 +609,14 @@ fn parse_top_items(kind: StatsKind, response: &serde_json::Value) -> Vec<Scrobbl
         .collect()
 }
 
+/// Never use Display here: reqwest embeds the URL, including `api_key`.
 fn map_reqwest(error: reqwest::Error) -> DownloadError {
-    DownloadError::SourceUnavailable(format!("lastfm request failed: {error}"))
+    match error.status() {
+        Some(status) => {
+            DownloadError::SourceUnavailable(format!("lastfm request failed: {status}"))
+        }
+        None => DownloadError::SourceUnavailable("lastfm request failed: network error".to_owned()),
+    }
 }
 
 /// Last.fm reports application errors (e.g. code 29 "Rate limit exceeded")
@@ -671,15 +666,33 @@ fn strip_read_more(text: &str) -> String {
     text[..end].trim().to_owned()
 }
 
+/// Strip the full text first: a `content` that is only a "Read more" link
+/// becomes empty and must fall back to `summary`, not hide the whole bio.
+fn pick_bio(content: Option<String>, summary: Option<String>) -> Option<String> {
+    let content = content
+        .map(|text| strip_read_more(&text))
+        .filter(|text| !text.is_empty());
+    content.or_else(|| {
+        summary
+            .map(|text| strip_read_more(&text))
+            .filter(|text| !text.is_empty())
+    })
+}
+
 /// Last.fm can include empty-name rows (e.g. `@attr`-only placeholders); skip
-/// them so a one-item now-playing reply doesn't resolve to a blank track.
+/// them and prefer a row explicitly marked as now playing.
 fn first_named_track(page: RecentTracksPage) -> Option<RecentTrack> {
-    page.track.into_iter().find(|track| {
+    let mut tracks = page.track.into_iter().filter(|track| {
         track
             .name
             .as_deref()
             .is_some_and(|name| !name.trim().is_empty())
-    })
+    });
+    let first = tracks.next()?;
+    if first.is_now_playing() {
+        return Some(first);
+    }
+    tracks.find(|track| track.is_now_playing()).or(Some(first))
 }
 
 /// Last.fm returns a single object instead of an array when there is only one
@@ -709,6 +722,8 @@ where
 struct UserInfoResponse {
     #[serde(default)]
     user: Option<UserInfo>,
+    #[serde(flatten)]
+    error: LastFmError,
 }
 
 #[derive(Debug, Deserialize)]
@@ -957,7 +972,15 @@ impl LastFmImage {
 }
 
 impl RecentTrack {
+    fn is_now_playing(&self) -> bool {
+        self.attr
+            .as_ref()
+            .and_then(|attr| attr.nowplaying.as_deref())
+            .is_some_and(|value| value == "true")
+    }
+
     fn into_now_playing(self) -> NowPlaying {
+        let is_now_playing = self.is_now_playing();
         let title = self.name.unwrap_or_default().trim().to_owned();
         let artist = self
             .artist
@@ -987,10 +1010,7 @@ impl RecentTrack {
                 thumbnail_url,
                 ..Default::default()
             },
-            is_now_playing: self
-                .attr
-                .and_then(|attr| attr.nowplaying)
-                .is_some_and(|value| value == "true"),
+            is_now_playing,
             url: self.url,
         }
     }
@@ -1282,5 +1302,56 @@ mod tests {
             "trailing Read-more anchor must be cut"
         );
         assert_eq!(strip_read_more("plain text").as_str(), "plain text");
+    }
+
+    #[test]
+    fn profile_error_envelope_is_surfaced() {
+        let json = r##"{"error":6,"message":"User not found"}"##;
+        let body: UserInfoResponse = serde_json::from_str(json).expect("json");
+        let error = body.error.check().expect_err("error must fail");
+        assert!(error.to_string().contains("User not found"));
+    }
+
+    #[test]
+    fn rate_limit_cooldown_blocks_then_expires() {
+        let client = LastFmClient::new("key".to_owned()).expect("client");
+        client.note_rate_limit(Some(29));
+        let error = client.ensure_ready().expect_err("should be cooling down");
+        assert!(error.to_string().contains("cooling down"), "{error}");
+        // Rewind the timestamp instead of sleeping a full minute.
+        *client
+            .rate_limited_at
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) =
+            Some(Instant::now() - RATE_LIMIT_COOLDOWN - Duration::from_secs(1));
+        assert!(client.ensure_ready().is_ok());
+        client.note_rate_limit(Some(6));
+        assert!(client.ensure_ready().is_ok(), "other codes don't cool down");
+    }
+
+    #[test]
+    fn nowplaying_row_is_preferred_over_first_named() {
+        let json = r##"{"recenttracks":{"track":[
+            {"name":"Old","artist":{"#text":"A"}},
+            {"name":"Live","artist":{"#text":"B"},"@attr":{"nowplaying":"true"}}
+        ]}}"##;
+        let body: RecentTracksResponse = serde_json::from_str(json).expect("json");
+        let track = first_named_track(body.recent_tracks.expect("page")).expect("track");
+        assert_eq!(track.name.as_deref(), Some("Live"));
+    }
+
+    #[test]
+    fn bio_uses_summary_when_content_strips_to_nothing() {
+        let only_link =
+            Some("<a href=\"https://www.last.fm/music/X\">Read more on Last.fm</a>".to_owned());
+        let summary = Some("Real biography text.".to_owned());
+        assert_eq!(
+            pick_bio(only_link.clone(), summary.clone()).as_deref(),
+            Some("Real biography text.")
+        );
+        assert_eq!(
+            pick_bio(Some("Full biography.".to_owned()), summary).as_deref(),
+            Some("Full biography.")
+        );
     }
 }

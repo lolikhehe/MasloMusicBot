@@ -66,13 +66,14 @@ impl Config {
             bail!("TELOXIDE_TOKEN is empty");
         }
 
-        let telegram_api_url = env_optional("TELEGRAM_API_URL").map(|value| {
-            if value.starts_with("http://") || value.starts_with("https://") {
-                value.trim_end_matches('/').to_owned()
-            } else {
-                format!("http://{}", value.trim_end_matches('/'))
-            }
-        });
+        let telegram_api_url = env_optional("TELEGRAM_API_URL")
+            .map(|value| validate_http_url("TELEGRAM_API_URL", &value))
+            .transpose()?;
+
+        let database_url = match env_optional("DATABASE_URL") {
+            Some(value) => validate_database_url(&value)?,
+            None => "sqlite://data/bot.db".to_owned(),
+        };
 
         let enabled_providers = parse_providers(
             &env_optional("ENABLED_PROVIDERS").unwrap_or_else(|| "all".to_owned()),
@@ -178,8 +179,7 @@ impl Config {
         Ok(Self {
             token,
             telegram_api_url,
-            database_url: env_optional("DATABASE_URL")
-                .unwrap_or_else(|| "sqlite://data/bot.db".to_owned()),
+            database_url,
             tmp_dir,
             enabled_providers,
             search_providers,
@@ -264,9 +264,59 @@ where
     match env_optional(key) {
         Some(value) => value
             .parse::<T>()
-            .map_err(|error| anyhow::anyhow!("{key}: {error}")),
+            .map_err(|error| anyhow::anyhow!("{key}={}: {error}", clip(&value))),
         None => Ok(default),
     }
+}
+
+/// Capped, password-free echo of a bad value for error messages.
+fn clip(value: &str) -> String {
+    const LIMIT: usize = 64;
+    let mut chars = value.chars();
+    let head: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
+/// Postgres-only at runtime; the sqlite URL is the unset fallback. The value is
+/// never echoed in errors because it carries the password.
+fn validate_database_url(value: &str) -> Result<String> {
+    if !(value.starts_with("postgres://") || value.starts_with("postgresql://")) {
+        bail!("DATABASE_URL must start with postgres:// or postgresql://");
+    }
+    let parsed = url::Url::parse(value)
+        .map_err(|_| anyhow::anyhow!("DATABASE_URL is not a valid postgres URL"))?;
+    if parsed.host_str().is_none() {
+        // Hostless URLs are valid when the socket path rides in the query:
+        // `postgresql:///db?host=/var/run/postgresql`.
+        if parsed.query().is_some_and(|q| q.contains("host=")) {
+            return Ok(value.to_owned());
+        }
+        bail!("DATABASE_URL must include a host");
+    }
+    Ok(value.to_owned())
+}
+
+/// Accept the legacy scheme-less form (`host:port`) by prefixing http, then
+/// require a real http(s) URL with a host so bad values fail at startup.
+fn validate_http_url(key: &str, value: &str) -> Result<String> {
+    if value.chars().any(char::is_whitespace) {
+        bail!("{key} must not contain whitespace");
+    }
+    let normalized = if value.contains("://") {
+        value.trim_end_matches('/').to_owned()
+    } else {
+        format!("http://{}", value.trim_end_matches('/'))
+    };
+    let parsed = url::Url::parse(&normalized)
+        .map_err(|_| anyhow::anyhow!("{key} is not a valid http(s) URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        bail!("{key} must be an http(s) URL with a host");
+    }
+    Ok(normalized)
 }
 
 fn parse_providers(value: &str, allowed: &[Provider]) -> Result<HashSet<Provider>> {
@@ -309,5 +359,38 @@ mod tests {
     #[test]
     fn search_only_allows_youtube() {
         assert!(parse_providers("soundcloud", &[Provider::YouTube]).is_err());
+    }
+
+    #[test]
+    fn database_url_requires_postgres_scheme_and_host() {
+        assert!(validate_database_url("postgresql://u:p@db:5432/bot").is_ok());
+        assert!(validate_database_url("postgres://db/bot").is_ok());
+        assert!(validate_database_url("sqlite://data/bot.db").is_err());
+        assert!(validate_database_url("postgresql://").is_err());
+        let err = validate_database_url("mysql://secret@db/bot")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("DATABASE_URL"));
+        assert!(!err.contains("secret"));
+    }
+
+    #[test]
+    fn telegram_api_url_requires_http_host() {
+        assert_eq!(
+            validate_http_url("TELEGRAM_API_URL", "host:8081/").unwrap(),
+            "http://host:8081"
+        );
+        assert!(validate_http_url("TELEGRAM_API_URL", "https://api.example.org").is_ok());
+        assert!(validate_http_url("TELEGRAM_API_URL", "ftp://host").is_err());
+        assert!(validate_http_url("TELEGRAM_API_URL", "http://").is_err());
+        assert!(validate_http_url("TELEGRAM_API_URL", "http://host junk").is_err());
+    }
+
+    #[test]
+    fn clip_truncates_long_values() {
+        assert_eq!(clip("short"), "short");
+        let clipped = clip(&"x".repeat(80));
+        assert_eq!(clipped.chars().count(), 65);
+        assert!(clipped.ends_with('…'));
     }
 }

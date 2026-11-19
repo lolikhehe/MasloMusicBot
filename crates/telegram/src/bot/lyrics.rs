@@ -163,9 +163,12 @@ pub async fn send_lyrics(
         .reply_markup(keyboard(lang, &selection_id, has_lrc, has_other))
         .await;
     if result.is_err() {
-        // Reuse the body already escaped for HTML: sending raw snapshot text
-        // with parse mode broke on `&`/`<` exactly when this fallback fired.
-        send::send_html(bot, chat, text).await?;
+        // Retry once with the LRC / other-source buttons intact — dropping the
+        // markup here left the user with no way to fetch the synced file.
+        bot.send_message(chat, text)
+            .parse_mode(ParseMode::Html)
+            .reply_markup(keyboard(lang, &selection_id, has_lrc, has_other))
+            .await?;
     }
     Ok(())
 }
