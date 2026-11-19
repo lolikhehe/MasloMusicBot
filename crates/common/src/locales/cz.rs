@@ -81,7 +81,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing saved yet — tap ☆ under any track." => {
             Some("Zatím nic — klepni ☆ pod skladbou.")
         }
-        "More results ▸" => Some("Další výsledky ▸"),
         "Reply to one of my tracks with /similar." => {
             Some("Odpověz na moji skladbu příkazem /similar.")
         }

@@ -446,10 +446,6 @@ pub fn favorites_empty(lang: Lang) -> &'static str {
     )
 }
 
-pub fn search_more(lang: Lang) -> &'static str {
-    pick(lang, "More results ▸", "Ще результати ▸")
-}
-
 pub fn similar_usage(lang: Lang) -> &'static str {
     pick(
         lang,

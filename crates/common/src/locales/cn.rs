@@ -79,7 +79,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Removed from favorites." => Some("已从收藏中移除。"),
         "⭐ Your favorites" => Some("⭐ 我的收藏"),
         "Nothing saved yet — tap ☆ under any track." => Some("还没有收藏 — 点任意曲目下的 ☆。"),
-        "More results ▸" => Some("更多结果 ▸"),
         "Reply to one of my tracks with /similar." => Some("回复我的曲目并发送 /similar。"),
         "No similar tracks found." => Some("未找到相似曲目。"),
         "🎧 Similar to «{track}»" => Some("🎧 与 «{track}» 相似"),

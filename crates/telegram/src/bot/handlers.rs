@@ -355,13 +355,15 @@ async fn handle_search(
                 &SearchPage {
                     query: query.clone(),
                     source: search_source,
-                    offset: 8,
+                    // pg: buttons carry the offset themselves; stays 0.
+                    offset: 0,
                 },
             )
             .await?;
+        // One selection backs every page; symbols skip any language.
         rows.push(vec![InlineKeyboardButton::callback(
-            i18n::search_more(lang),
-            format!("more:{selection_id}"),
+            "▶",
+            format!("pg:{selection_id}:8"),
         )]);
     }
     let keyboard = InlineKeyboardMarkup::new(rows);
@@ -415,13 +417,16 @@ pub async fn search_result_rows(
     Ok(rows)
 }
 
-/// "More results ▸": re-run the same provider search and slice the next
-/// window out of it; the sentinel result decides whether another page follows.
-pub async fn handle_more_results(
+/// Chat search page turning (`pg:<selection>:<offset>`). Re-runs the same
+/// provider search and slices the requested window; the ninth result stays
+/// the sentinel that decides whether ▶ appears. `target: None` is the legacy
+/// pre-2.6.18 `more:` button, whose offset lives in the selection.
+pub async fn handle_search_page(
     state: &AppState,
     bot: &Bot,
     query: &CallbackQuery,
     selection_id: &str,
+    target: Option<u32>,
     lang: Lang,
     user_id: i64,
 ) -> HandlerResult {
@@ -442,7 +447,7 @@ pub async fn handle_more_results(
         .await;
         return Ok(());
     };
-    let offset = page.offset as usize;
+    let offset = target.unwrap_or(page.offset) as usize;
     let results = match state
         .manager
         .search(&page.query, offset + 9, page.source)
@@ -457,6 +462,10 @@ pub async fn handle_more_results(
     let total = results.len();
     let slice: Vec<SearchResult> = results.into_iter().skip(offset).take(8).collect();
     if slice.is_empty() {
+        if offset > 0 {
+            // Stale ▶ tap: keep the current menu instead of wiping it.
+            return Ok(());
+        }
         let _ = edit_html(bot, message.chat.id, message.id, i18n::no_results(lang)).await;
         return Ok(());
     }
@@ -467,24 +476,21 @@ pub async fn handle_more_results(
         .await
         .unwrap_or_default();
     let mut rows = search_result_rows(state, user_id, &slice, &heard, offset).await?;
+    let mut arrows: Vec<InlineKeyboardButton> = Vec::new();
+    if offset > 0 {
+        arrows.push(InlineKeyboardButton::callback(
+            "◀",
+            format!("pg:{selection_id}:{}", offset.saturating_sub(8)),
+        ));
+    }
     if total > offset + 8 {
-        let selection_id = state.new_selection_id();
-        state
-            .put_selection(
-                &selection_id,
-                crate::state::selection::SEARCH_PAGE,
-                user_id,
-                &SearchPage {
-                    query: page.query.clone(),
-                    source: page.source,
-                    offset: (offset + 8) as u32,
-                },
-            )
-            .await?;
-        rows.push(vec![InlineKeyboardButton::callback(
-            i18n::search_more(lang),
-            format!("more:{selection_id}"),
-        )]);
+        arrows.push(InlineKeyboardButton::callback(
+            "▶",
+            format!("pg:{selection_id}:{}", offset + 8),
+        ));
+    }
+    if !arrows.is_empty() {
+        rows.push(arrows);
     }
     let header = i18n::search_results(lang, &escape_html(&page.query), slice.len());
     let _ = bot

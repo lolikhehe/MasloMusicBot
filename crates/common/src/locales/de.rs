@@ -87,7 +87,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing saved yet — tap ☆ under any track." => {
             Some("Noch nichts gespeichert — tippe ☆ unter einem Track.")
         }
-        "More results ▸" => Some("Weitere Ergebnisse ▸"),
         "Reply to one of my tracks with /similar." => {
             Some("Antworte mit /similar auf einen meiner Tracks.")
         }

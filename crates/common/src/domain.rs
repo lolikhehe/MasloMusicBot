@@ -475,8 +475,8 @@ impl AlbumSearchResult {
     }
 }
 
-/// One page of search results to continue from (`more:` callback): the same
-/// provider search is re-run and a window is sliced out of it.
+/// One page of search results to continue from: `pg:` callbacks carry the
+/// absolute window offset; `offset` is only read by legacy `more:` buttons.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchPage {
     pub query: String,

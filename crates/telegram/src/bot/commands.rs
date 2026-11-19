@@ -696,20 +696,29 @@ pub async fn handle_command(
                 send_plain(bot, msg.chat.id, i18n::similar_none(lang)).await?;
                 return Ok(());
             }
-            let results: Vec<common::domain::SearchResult> = similar
-                .into_iter()
-                .map(|(artist, title)| common::domain::SearchResult {
+            // Delivery only downloads a cover when the request carries
+            // thumbnail_url (search picks always do); Last.fm gives us no
+            // images, so resolve each similar track through the Deezer catalog.
+            let mut results: Vec<common::domain::SearchResult> = Vec::with_capacity(similar.len());
+            for (artist, title) in similar {
+                let query = format!("{artist} {title}");
+                let thumbnail_url = state
+                    .manager
+                    .artwork_url(providers::external::ArtworkKind::Track, &query)
+                    .await;
+                results.push(common::domain::SearchResult {
                     key: common::domain::TrackKey::new(format!("similar:{artist} - {title}")),
                     provider: common::domain::Provider::YouTube,
                     source_url: String::new(),
                     meta: common::domain::TrackMeta {
-                        title: title.clone(),
-                        performer: Some(artist.clone()),
+                        title,
+                        performer: Some(artist),
+                        thumbnail_url,
                         ..Default::default()
                     },
-                    target: common::domain::DownloadTarget::Search(format!("{artist} {title}")),
-                })
-                .collect();
+                    target: common::domain::DownloadTarget::Search(query),
+                });
+            }
             let keys: Vec<String> = results
                 .iter()
                 .map(|result| result.key.to_string())

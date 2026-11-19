@@ -81,7 +81,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing saved yet — tap ☆ under any track." => {
             Some("まだ何もありません — 曲の下の ☆ をタップ。")
         }
-        "More results ▸" => Some("さらに結果 ▸"),
         "Reply to one of my tracks with /similar." => {
             Some("私の曲に /similar で返信してください。")
         }

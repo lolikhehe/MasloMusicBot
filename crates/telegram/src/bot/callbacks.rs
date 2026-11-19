@@ -64,8 +64,25 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
     } else if let Some(id) = data.strip_prefix("alx:") {
         handle_album_cancel(&state, &bot, &query, id, user.lang).await?;
     } else if let Some(id) = data.strip_prefix("more:") {
-        crate::bot::handlers::handle_more_results(&state, &bot, &query, id, user.lang, user_id)
-            .await?;
+        // Legacy pre-2.6.18 forward button: its target offset is in the selection.
+        crate::bot::handlers::handle_search_page(
+            &state, &bot, &query, id, None, user.lang, user_id,
+        )
+        .await?;
+    } else if let Some(payload) = data.strip_prefix("pg:")
+        && let Some((id, offset)) = payload.rsplit_once(':')
+        && let Ok(offset) = offset.parse::<u32>()
+    {
+        crate::bot::handlers::handle_search_page(
+            &state,
+            &bot,
+            &query,
+            id,
+            Some(offset),
+            user.lang,
+            user_id,
+        )
+        .await?;
     } else if let Some(key) = data.strip_prefix("fav:") {
         handle_fav_toggle(&state, &bot, &query, key, user.lang, user_id).await?;
     } else if let Some(payload) = data.strip_prefix("s:") {

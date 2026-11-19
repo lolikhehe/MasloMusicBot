@@ -81,7 +81,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Nothing saved yet — tap ☆ under any track." => {
             Some("Nog niets — tik op ☆ onder een nummer.")
         }
-        "More results ▸" => Some("Meer resultaten ▸"),
         "Reply to one of my tracks with /similar." => {
             Some("Beantwoord een van mijn nummers met /similar.")
         }
