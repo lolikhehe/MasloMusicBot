@@ -3,7 +3,7 @@
 use common::domain::CachedTrack;
 use downloader::PreparedAudio;
 use teloxide::prelude::*;
-use teloxide::types::{FileId, InputFile, Message, ParseMode};
+use teloxide::types::{FileId, InlineKeyboardMarkup, InputFile, Message, ParseMode};
 
 pub async fn send_html(
     bot: &Bot,
@@ -20,6 +20,7 @@ pub async fn send_cached(
     chat: ChatId,
     track: &CachedTrack,
     caption: Option<String>,
+    markup: Option<InlineKeyboardMarkup>,
 ) -> Result<Message, teloxide::RequestError> {
     let title = track.meta.stripped_title();
     let mut request = bot
@@ -34,6 +35,9 @@ pub async fn send_cached(
     if let Some(caption) = caption {
         request = request.caption(caption);
     }
+    if let Some(markup) = markup {
+        request = request.reply_markup(markup);
+    }
     request.await
 }
 
@@ -42,6 +46,7 @@ pub async fn send_prepared(
     chat: ChatId,
     prepared: &PreparedAudio,
     caption: Option<String>,
+    markup: Option<InlineKeyboardMarkup>,
 ) -> Result<Message, teloxide::RequestError> {
     let input = InputFile::file(prepared.audio_path.clone()).file_name(prepared.file_name());
     let title = prepared.meta.stripped_title();
@@ -64,6 +69,9 @@ pub async fn send_prepared(
     if let Some(caption) = caption {
         request = request.caption(caption);
     }
+    if let Some(markup) = markup {
+        request = request.reply_markup(markup);
+    }
     request.await
 }
 
@@ -81,6 +89,6 @@ pub fn is_invalid_file_id(error: &teloxide::RequestError) -> bool {
         || text.contains("invalid file")
 }
 
-fn truncate(value: &str, max: usize) -> String {
+pub fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }

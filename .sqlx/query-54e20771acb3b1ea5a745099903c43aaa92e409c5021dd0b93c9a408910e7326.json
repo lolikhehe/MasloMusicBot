@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT track_key FROM listens WHERE user_id = $1 AND track_key = ANY($2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "listens",
+            "name": "track_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "54e20771acb3b1ea5a745099903c43aaa92e409c5021dd0b93c9a408910e7326"
+}

@@ -75,6 +75,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Output format" => Some("Format de sortie"),
         "ℹ️ Album & artist info" => Some("ℹ️ Infos album et artiste"),
+        "⭐ Added to favorites." => Some("⭐ Ajouté aux favoris."),
+        "Removed from favorites." => Some("Retiré des favoris."),
+        "⭐ Your favorites" => Some("⭐ Vos favoris"),
+        "Nothing saved yet — tap ☆ under any track." => {
+            Some("Rien d'enregistré — appuyez sur ☆ sous un titre.")
+        }
+        "More results ▸" => Some("Plus de résultats ▸"),
+        "Reply to one of my tracks with /similar." => {
+            Some("Répondez à l'un de mes titres avec /similar.")
+        }
+        "No similar tracks found." => Some("Aucun titre similaire trouvé."),
+        "🎧 Similar to «{track}»" => Some("🎧 Similaire à «{track}»"),
+        "Usage: /artist <name>" => Some("Utilisation : /artist <nom>"),
+        "Artist not found in the catalog." => Some("Artiste introuvable dans le catalogue."),
+        "🎤 Top tracks of {name}" => Some("🎤 Meilleurs titres de {name}"),
+        "Reply to one of my tracks with /cover." => {
+            Some("Répondez à l'un de mes titres avec /cover.")
+        }
+        "This track has no cover." => Some("Ce titre n'a pas de pochette."),
         "⚙ Advanced" => Some("⚙ Avancé"),
         "<b>Advanced settings</b>" => Some("<b>Réglages avancés</b>"),
         "on" => Some("activé"),

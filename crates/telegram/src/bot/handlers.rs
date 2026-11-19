@@ -3,7 +3,9 @@
 use crate::bot::commands::{self, Command};
 use crate::bot::send;
 use crate::state::AppState;
-use common::domain::{Lang, TrackKey, TrackMeta, TrackRequest, clean_genres};
+use common::domain::{
+    Lang, SearchPage, SearchResult, TrackKey, TrackMeta, TrackRequest, clean_genres,
+};
 use common::error::{AppError, DownloadError, HandlerResult};
 use common::i18n;
 use common::version::DEV_CHANNEL_LINE;
@@ -13,8 +15,8 @@ use std::borrow::Cow;
 use std::time::Instant;
 use teloxide::prelude::*;
 use teloxide::types::{
-    InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, MessageEntityKind, MessageId,
-    ParseMode,
+    CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message,
+    MessageEntityKind, MessageId, ParseMode,
 };
 use tracing::{debug, info, warn};
 
@@ -319,7 +321,9 @@ async fn handle_search(
 ) -> HandlerResult {
     let query: String = query.chars().take(200).collect();
     let progress = send::send_html(bot, chat, i18n::searching(lang)).await?;
-    let results = match state.manager.search(&query, 8, search_source).await {
+    // The ninth result is only a sentinel: it decides whether the
+    // "more results" button appears.
+    let results = match state.manager.search(&query, 9, search_source).await {
         Ok(results) => results,
         Err(error) => {
             let _ = edit_html(bot, chat, progress.id, i18n::error(lang, &error)).await;
@@ -331,23 +335,33 @@ async fn handle_search(
         return Ok(());
     }
 
-    let result_count = results.len();
-    let mut rows = Vec::with_capacity(result_count);
-    for (index, result) in results.into_iter().enumerate() {
+    let has_more = results.len() > 8;
+    let page: Vec<SearchResult> = results.into_iter().take(8).collect();
+    let result_count = page.len();
+    let keys: Vec<String> = page.iter().map(|result| result.key.to_string()).collect();
+    let heard = state
+        .db
+        .heard_before(user_id, &keys)
+        .await
+        .unwrap_or_default();
+    let mut rows = search_result_rows(state, user_id, &page, &heard, 0).await?;
+    if has_more {
         let selection_id = state.new_selection_id();
-        let title = result.meta.display_title();
-        let button_text = format!("{}. {}", index + 1, truncate(&title, 60));
         state
             .put_selection(
                 &selection_id,
-                crate::state::selection::TRACK,
+                crate::state::selection::SEARCH_PAGE,
                 user_id,
-                &result.into_request(),
+                &SearchPage {
+                    query: query.clone(),
+                    source: search_source,
+                    offset: 8,
+                },
             )
             .await?;
         rows.push(vec![InlineKeyboardButton::callback(
-            button_text,
-            format!("q:{selection_id}"),
+            i18n::search_more(lang),
+            format!("more:{selection_id}"),
         )]);
     }
     let keyboard = InlineKeyboardMarkup::new(rows);
@@ -366,6 +380,137 @@ async fn handle_search(
             .await?;
     }
     Ok(())
+}
+
+/// One row of search-result buttons; the `q:` selection re-delivers the track
+/// through the normal pipeline. `↩` marks tracks the user already downloaded.
+pub async fn search_result_rows(
+    state: &AppState,
+    user_id: i64,
+    results: &[SearchResult],
+    heard: &std::collections::HashSet<String>,
+    start_index: usize,
+) -> Result<Vec<Vec<InlineKeyboardButton>>, common::error::AppError> {
+    let mut rows = Vec::with_capacity(results.len());
+    for (offset, result) in results.iter().enumerate() {
+        let selection_id = state.new_selection_id();
+        let title = result.meta.display_title();
+        let mut button_text = format!("{}. {}", start_index + offset + 1, truncate(&title, 56));
+        if heard.contains(result.key.as_str()) {
+            button_text.push_str(" · ↩");
+        }
+        state
+            .put_selection(
+                &selection_id,
+                crate::state::selection::TRACK,
+                user_id,
+                &result.clone().into_request(),
+            )
+            .await?;
+        rows.push(vec![InlineKeyboardButton::callback(
+            button_text,
+            format!("q:{selection_id}"),
+        )]);
+    }
+    Ok(rows)
+}
+
+/// "More results ▸": re-run the same provider search and slice the next
+/// window out of it; the sentinel result decides whether another page follows.
+pub async fn handle_more_results(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    selection_id: &str,
+    lang: Lang,
+    user_id: i64,
+) -> HandlerResult {
+    let _ = bot.answer_callback_query(query.id.clone()).await;
+    let Some(message) = query.regular_message() else {
+        return Ok(());
+    };
+    let Some(page) = state
+        .get_selection::<SearchPage>(selection_id, crate::state::selection::SEARCH_PAGE)
+        .await?
+    else {
+        let _ = edit_html(
+            bot,
+            message.chat.id,
+            message.id,
+            i18n::selection_expired(lang),
+        )
+        .await;
+        return Ok(());
+    };
+    let offset = page.offset as usize;
+    let results = match state
+        .manager
+        .search(&page.query, offset + 9, page.source)
+        .await
+    {
+        Ok(results) => results,
+        Err(error) => {
+            let _ = edit_html(bot, message.chat.id, message.id, i18n::error(lang, &error)).await;
+            return Ok(());
+        }
+    };
+    let total = results.len();
+    let slice: Vec<SearchResult> = results.into_iter().skip(offset).take(8).collect();
+    if slice.is_empty() {
+        let _ = edit_html(bot, message.chat.id, message.id, i18n::no_results(lang)).await;
+        return Ok(());
+    }
+    let keys: Vec<String> = slice.iter().map(|result| result.key.to_string()).collect();
+    let heard = state
+        .db
+        .heard_before(user_id, &keys)
+        .await
+        .unwrap_or_default();
+    let mut rows = search_result_rows(state, user_id, &slice, &heard, offset).await?;
+    if total > offset + 8 {
+        let selection_id = state.new_selection_id();
+        state
+            .put_selection(
+                &selection_id,
+                crate::state::selection::SEARCH_PAGE,
+                user_id,
+                &SearchPage {
+                    query: page.query.clone(),
+                    source: page.source,
+                    offset: (offset + 8) as u32,
+                },
+            )
+            .await?;
+        rows.push(vec![InlineKeyboardButton::callback(
+            i18n::search_more(lang),
+            format!("more:{selection_id}"),
+        )]);
+    }
+    let header = i18n::search_results(lang, &escape_html(&page.query), slice.len());
+    let _ = bot
+        .edit_message_text(message.chat.id, message.id, header)
+        .parse_mode(ParseMode::Html)
+        .reply_markup(InlineKeyboardMarkup::new(rows))
+        .await;
+    Ok(())
+}
+
+/// The ⭐/☆ toggle row under a delivered track. Symbol-only so the hot
+/// delivery path needs no language lookup; the toggle toast is localized.
+pub async fn fav_markup_for(state: &AppState, user_id: i64, key: &str) -> InlineKeyboardMarkup {
+    let added = state.db.is_favorite(user_id, key).await.unwrap_or(false);
+    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
+        if added { "⭐" } else { "☆" },
+        format!("fav:{key}"),
+    )]])
+}
+
+/// Largest cover URL the CDN can serve for this artwork. Apple stores
+/// 600x600 and serves the same asset at any size; Deezer is already
+/// 1000px (`cover_xl`).
+pub fn hq_cover_url(url: &str) -> String {
+    url.replace("600x600bb", "1000x1000bb")
+        .replace("100x100bb", "1000x1000bb")
 }
 
 /// Collections are never downloaded silently: the user confirms the size and
@@ -628,9 +773,7 @@ async fn send_album_info(
         Some(url) => {
             // Apple artwork is stored at 600x600; the CDN serves the same asset
             // at any size. Deezer thumbnails are already 1000px (`cover_xl`).
-            let url = url
-                .replace("600x600bb", "1000x1000bb")
-                .replace("100x100bb", "1000x1000bb");
+            let url = hq_cover_url(url);
             match providers::http::fetch_bytes(&state.http, &url, 8 * 1024 * 1024).await {
                 Some(bytes) => {
                     let _ = bot
@@ -928,7 +1071,8 @@ async fn try_cache_send(
     let mut caption_meta = cached.meta.clone();
     enrich_tags(state, &mut caption_meta, tags_enabled).await;
     let caption = tags_caption(&caption_meta, tags_enabled);
-    match send::send_cached(bot, chat, &cached, caption).await {
+    let fav_markup = fav_markup_for(state, user_id, key.as_str()).await;
+    match send::send_cached(bot, chat, &cached, caption, Some(fav_markup)).await {
         Ok(_) => {
             state.manager.touch_cached(key, quality).await;
             state
@@ -1088,7 +1232,8 @@ async fn deliver_track_inner(
     let caption =
         caption_with_flac_fallback(tags_caption(&prepared.meta, tags_enabled), flac_fell_back);
     let upload_started = Instant::now();
-    let message = match send::send_prepared(bot, chat, &prepared, caption).await {
+    let fav_markup = fav_markup_for(state, user_id, request.key.as_str()).await;
+    let message = match send::send_prepared(bot, chat, &prepared, caption, Some(fav_markup)).await {
         Ok(message) => message,
         Err(error) => {
             warn!(key = %request.key, %error, "track upload to Telegram failed");

@@ -517,6 +517,97 @@ impl Db {
         Ok(())
     }
 
+    /// Add the track to the caller's favorites; returns `true` when it was
+    /// added and `false` when an existing entry was removed (toggle).
+    pub async fn toggle_favorite(
+        &self,
+        id: i64,
+        key: &str,
+        title: &str,
+        performer: Option<&str>,
+    ) -> AppResult<bool> {
+        let inserted = sqlx::query!(
+            "INSERT INTO favorites (user_id, track_key, title, performer, added_at)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (user_id, track_key) DO NOTHING",
+            id,
+            key,
+            title,
+            performer,
+            unix_now()
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?
+        .rows_affected()
+            > 0;
+        if inserted {
+            return Ok(true);
+        }
+        sqlx::query!(
+            "DELETE FROM favorites WHERE user_id = $1 AND track_key = $2",
+            id,
+            key
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(false)
+    }
+
+    pub async fn is_favorite(&self, id: i64, key: &str) -> AppResult<bool> {
+        let row = sqlx::query!(
+            "SELECT 1 AS present FROM favorites WHERE user_id = $1 AND track_key = $2 LIMIT 1",
+            id,
+            key
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(row.is_some())
+    }
+
+    /// `(key, title, performer)` saved via the ⭐ button, newest first.
+    pub async fn favorites(
+        &self,
+        id: i64,
+        limit: u64,
+    ) -> AppResult<Vec<(String, String, Option<String>)>> {
+        let rows = sqlx::query!(
+            "SELECT track_key, title, performer FROM favorites
+             WHERE user_id = $1 ORDER BY added_at DESC LIMIT $2",
+            id,
+            limit as i64
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.track_key, row.title, row.performer))
+            .collect())
+    }
+
+    /// Keys from the list the caller has already listened to (the ↩ marker).
+    pub async fn heard_before(
+        &self,
+        id: i64,
+        keys: &[String],
+    ) -> AppResult<std::collections::HashSet<String>> {
+        if keys.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+        let rows = sqlx::query!(
+            "SELECT DISTINCT track_key FROM listens WHERE user_id = $1 AND track_key = ANY($2)",
+            id,
+            keys
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows.into_iter().map(|row| row.track_key).collect())
+    }
+
     pub async fn set_audio_format(&self, id: i64, format: &str) -> AppResult<()> {
         sqlx::query!(
             "UPDATE users SET audio_format = $1, last_seen_at = $2 WHERE user_id = $3",
@@ -1468,6 +1559,55 @@ mod tests {
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert!(!user.album_info);
         db.set_album_info(42, true).await.expect("album info on");
+
+        db.record_listen(
+            42,
+            "deezer:track:2246288",
+            "Alison",
+            Some("Slowdive"),
+            &["Dream Pop".to_owned()],
+        )
+        .await
+        .expect("listen");
+        let heard = db
+            .heard_before(
+                42,
+                &["deezer:track:2246288".to_owned(), "youtube:x".to_owned()],
+            )
+            .await
+            .expect("heard");
+        assert!(heard.contains("deezer:track:2246288"));
+        assert!(!heard.contains("youtube:x"));
+        assert!(
+            !db.is_favorite(42, "deezer:track:2246288")
+                .await
+                .expect("fav off")
+        );
+        assert!(
+            db.toggle_favorite(42, "deezer:track:2246288", "Alison", Some("Slowdive"))
+                .await
+                .expect("fav add")
+        );
+        assert!(
+            db.is_favorite(42, "deezer:track:2246288")
+                .await
+                .expect("fav on")
+        );
+        assert!(
+            !db.toggle_favorite(42, "deezer:track:2246288", "Alison", Some("Slowdive"))
+                .await
+                .expect("fav remove")
+        );
+        let favorites = db.favorites(42, 30).await.expect("favorites");
+        assert!(favorites.is_empty(), "toggled back off");
+        db.toggle_favorite(42, "deezer:track:2246288", "Alison", Some("Slowdive"))
+            .await
+            .expect("fav add again");
+        let favorites = db.favorites(42, 30).await.expect("favorites");
+        assert_eq!(favorites.len(), 1);
+        assert_eq!(favorites[0].0, "deezer:track:2246288");
+        assert_eq!(favorites[0].1, "Alison");
+        assert_eq!(favorites[0].2.as_deref(), Some("Slowdive"));
         db.set_lastfm_user(42, None).await.expect("lastfm off");
         let user = db.ensure_user(42, Lang::Uk).await.expect("user");
         assert!(user.lastfm_user.is_none());

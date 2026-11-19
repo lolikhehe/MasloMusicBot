@@ -456,6 +456,15 @@ impl DownloadManager {
         }
     }
 
+    /// `/artist <name>`: the Deezer catalog's top tracks for the best match.
+    pub async fn artist_top(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<SearchResult>>, DownloadError> {
+        self.external.artist_top(query, limit).await
+    }
+
     /// Download once per key, even when several requests arrive together.
     /// `user_id` enforces the per-user cap on concurrently active downloads;
     /// cached sends never reach here and are not throttled by it.

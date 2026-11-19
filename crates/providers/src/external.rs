@@ -483,6 +483,50 @@ impl ExternalResolver {
         }))
     }
 
+    /// Top tracks of an artist by name, for `/artist <name>`. Deezer's
+    /// anonymous `/artist/{id}/top` needs no key; `None` when the catalog
+    /// does not know the artist.
+    pub async fn artist_top(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Option<Vec<SearchResult>>, DownloadError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(None);
+        }
+        let search: DeezerArtistSearchPage = self
+            .client
+            .get("https://api.deezer.com/search/artist")
+            .query(&[("q", query), ("limit", "1")])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        let Some(artist) = search.data.into_iter().next() else {
+            return Ok(None);
+        };
+        let limit_str = limit.to_string();
+        let top: DeezerTrackList = self
+            .client
+            .get(format!("https://api.deezer.com/artist/{}/top", artist.id))
+            .query(&[("limit", limit_str.as_str())])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        let results = deezer_results_from_page(top);
+        Ok((!results.is_empty()).then_some(results))
+    }
+
     async fn apple_album(&self, album: &AlbumRef, limit: usize) -> Result<Album, DownloadError> {
         let id = album_id_from_url(album.url.as_deref(), "music.apple.com", &["album"])
             .ok_or_else(|| {
@@ -773,7 +817,15 @@ struct ItunesTrack {
 
 #[derive(Debug, Deserialize)]
 struct DeezerArtist {
+    #[serde(default)]
+    id: u64,
     name: String,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct DeezerArtistSearchPage {
+    #[serde(default)]
+    data: Vec<DeezerArtist>,
 }
 
 #[derive(Debug, Deserialize)]

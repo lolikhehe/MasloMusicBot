@@ -475,6 +475,15 @@ impl AlbumSearchResult {
     }
 }
 
+/// One page of search results to continue from (`more:` callback): the same
+/// provider search is re-run and a window is sliced out of it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchPage {
+    pub query: String,
+    pub source: Provider,
+    pub offset: u32,
+}
+
 #[derive(Debug, Clone)]
 pub struct UserRecord {
     pub lang: Lang,

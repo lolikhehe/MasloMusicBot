@@ -94,6 +94,8 @@ pub mod selection {
     pub const LYRICS: &str = "lyrics";
     /// One-shot `/import` prompt: the next message from this user is a playlist.
     pub const PENDING_IMPORT: &str = "pending_import";
+    /// Search page cursor for the "more results" button.
+    pub const SEARCH_PAGE: &str = "search_page";
 }
 
 impl AppState {

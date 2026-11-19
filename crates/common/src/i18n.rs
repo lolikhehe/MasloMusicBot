@@ -426,6 +426,108 @@ pub fn additional_title(lang: Lang) -> &'static str {
     )
 }
 
+pub fn fav_toggled(lang: Lang, added: bool) -> &'static str {
+    if added {
+        pick(lang, "⭐ Added to favorites.", "⭐ Додано в обрані.")
+    } else {
+        pick(lang, "Removed from favorites.", "Прибрано з обраних.")
+    }
+}
+
+pub fn favorites_title(lang: Lang) -> &'static str {
+    pick(lang, "⭐ Your favorites", "⭐ Обрані треки")
+}
+
+pub fn favorites_empty(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Nothing saved yet — tap ☆ under any track.",
+        "Поки нічого — натисни ☆ під треком.",
+    )
+}
+
+pub fn search_more(lang: Lang) -> &'static str {
+    pick(lang, "More results ▸", "Ще результати ▸")
+}
+
+pub fn similar_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Reply to one of my tracks with /similar.",
+        "Надішліть /similar у відповідь на мій трек.",
+    )
+}
+
+pub fn similar_none(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "No similar tracks found.",
+        "Схожих треків не знайшов.",
+    )
+}
+
+pub fn similar_title(lang: Lang, track: &str) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "🎧 Similar to «{track}»", track = track),
+        Lang::Uk => format!("🎧 Схоже на «{track}»"),
+    }
+}
+
+pub fn artist_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage: /artist <name>",
+        "Використання: /artist <ім'я>",
+    )
+}
+
+pub fn artist_none(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Artist not found in the catalog.",
+        "Виконавця не знайшов у каталозі.",
+    )
+}
+
+pub fn artist_title(lang: Lang, name: &str) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "🎤 Top tracks of {name}", name = name),
+        Lang::Uk => format!("🎤 Топ треків {name}"),
+    }
+}
+
+pub fn cover_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Reply to one of my tracks with /cover.",
+        "Надішліть /cover у відповідь на мій трек.",
+    )
+}
+
+pub fn cover_none(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "This track has no cover.",
+        "У цього трека нема обкладинки.",
+    )
+}
+
 pub fn genre_chart_label(lang: Lang) -> &'static str {
     pick(lang, "📊 Genre chart", "📊 Графік жанрів")
 }

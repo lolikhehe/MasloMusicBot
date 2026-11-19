@@ -425,6 +425,60 @@ impl LastFmClient {
         Ok(wiki)
     }
 
+    /// Up to 10 `(artist, title)` pairs similar to a track, from
+    /// `track.getsimilar`. Empty when Last.fm knows nothing similar.
+    pub async fn similar_tracks(
+        &self,
+        artist: &str,
+        title: &str,
+    ) -> Result<Vec<(String, String)>, DownloadError> {
+        let artist = artist.trim();
+        let title = title.trim();
+        if artist.is_empty() || title.is_empty() {
+            return Ok(Vec::new());
+        }
+        let body: SimilarResponse = self
+            .client
+            .get(API_URL)
+            .query(&[
+                ("method", "track.getsimilar"),
+                ("artist", artist),
+                ("track", title),
+                ("api_key", &self.api_key),
+                ("format", "json"),
+                ("autocorrect", "1"),
+                ("limit", "10"),
+            ])
+            .send()
+            .await
+            .map_err(map_reqwest)?
+            .error_for_status()
+            .map_err(map_reqwest)?
+            .json()
+            .await
+            .map_err(map_reqwest)?;
+        let similar = body
+            .similar
+            .map(|similar| similar.track)
+            .unwrap_or_default();
+        Ok(similar
+            .into_iter()
+            .filter(|track| {
+                !track.name.trim().is_empty()
+                    && track
+                        .artist
+                        .as_ref()
+                        .is_some_and(|artist| !artist.name.trim().is_empty())
+            })
+            .map(|track| {
+                (
+                    track.artist.map(|artist| artist.name).unwrap_or_default(),
+                    track.name,
+                )
+            })
+            .collect())
+    }
+
     /// Public profile totals: scrobbles, library size and country.
     pub async fn profile(&self, user: &str) -> Result<ProfileSummary, DownloadError> {
         let body: UserInfoResponse = self
@@ -683,6 +737,32 @@ struct AlbumWiki {
     content: Option<String>,
     #[serde(default)]
     summary: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SimilarResponse {
+    #[serde(default)]
+    similar: Option<SimilarTracks>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SimilarTracks {
+    #[serde(default, deserialize_with = "one_or_many")]
+    track: Vec<SimilarTrack>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SimilarTrack {
+    #[serde(default)]
+    artist: Option<SimilarArtist>,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SimilarArtist {
+    #[serde(default)]
+    name: String,
 }
 
 #[derive(Debug, Deserialize)]

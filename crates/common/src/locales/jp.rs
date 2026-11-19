@@ -75,6 +75,23 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Output format" => Some("出力形式"),
         "ℹ️ Album & artist info" => Some("ℹ️ アルバムとアーティストの情報"),
+        "⭐ Added to favorites." => Some("⭐ お気に入りに追加しました。"),
+        "Removed from favorites." => Some("お気に入りから削除しました。"),
+        "⭐ Your favorites" => Some("⭐ お気に入り"),
+        "Nothing saved yet — tap ☆ under any track." => {
+            Some("まだ何もありません — 曲の下の ☆ をタップ。")
+        }
+        "More results ▸" => Some("さらに結果 ▸"),
+        "Reply to one of my tracks with /similar." => {
+            Some("私の曲に /similar で返信してください。")
+        }
+        "No similar tracks found." => Some("似た曲は見つかりませんでした。"),
+        "🎧 Similar to «{track}»" => Some("🎧 «{track}» に似た曲"),
+        "Usage: /artist <name>" => Some("使い方: /artist <名前>"),
+        "Artist not found in the catalog." => Some("カタログにアーティストが見つかりません。"),
+        "🎤 Top tracks of {name}" => Some("🎤 {name} の人気曲"),
+        "Reply to one of my tracks with /cover." => Some("私の曲に /cover で返信してください。"),
+        "This track has no cover." => Some("この曲にはカバーがありません。"),
         "⚙ Advanced" => Some("⚙ 詳細設定"),
         "<b>Advanced settings</b>" => Some("<b>詳細設定</b>"),
         "on" => Some("オン"),

@@ -63,6 +63,11 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         .await?;
     } else if let Some(id) = data.strip_prefix("alx:") {
         handle_album_cancel(&state, &bot, &query, id, user.lang).await?;
+    } else if let Some(id) = data.strip_prefix("more:") {
+        crate::bot::handlers::handle_more_results(&state, &bot, &query, id, user.lang, user_id)
+            .await?;
+    } else if let Some(key) = data.strip_prefix("fav:") {
+        handle_fav_toggle(&state, &bot, &query, key, user.lang, user_id).await?;
     } else if let Some(payload) = data.strip_prefix("s:") {
         let Some(message) = query.regular_message() else {
             let _ = bot.answer_callback_query(query.id.clone()).await;
@@ -439,6 +444,48 @@ async fn handle_album_cancel(
     }
     state.delete_selection(selection_id).await?;
     info!(selection_id, "album download cancelled");
+    Ok(())
+}
+
+/// ⭐/☆ toggle under a delivered track. Inline messages are edited through
+/// their inline id; regular ones through chat + message id.
+async fn handle_fav_toggle(
+    state: &AppState,
+    bot: &Bot,
+    query: &CallbackQuery,
+    key: &str,
+    lang: common::domain::Lang,
+    user_id: i64,
+) -> HandlerResult {
+    // Title/performer from the message audio keep /fav readable without a
+    // catalog lookup; the key stays authoritative.
+    let (title, performer) = match query.regular_message().and_then(|message| message.audio()) {
+        Some(audio) => (
+            audio.title.clone().unwrap_or_else(|| key.to_owned()),
+            audio.performer.clone(),
+        ),
+        None => (key.to_owned(), None),
+    };
+    let added = state
+        .db
+        .toggle_favorite(user_id, key, &title, performer.as_deref())
+        .await?;
+    let _ = bot
+        .answer_callback_query(query.id.clone())
+        .text(i18n::fav_toggled(lang, added))
+        .await;
+    let markup = crate::bot::handlers::fav_markup_for(state, user_id, key).await;
+    if let Some(inline_message_id) = query.inline_message_id.clone() {
+        let _ = bot
+            .edit_message_reply_markup_inline(inline_message_id)
+            .reply_markup(markup)
+            .await;
+    } else if let Some(message) = query.regular_message() {
+        let _ = bot
+            .edit_message_reply_markup(message.chat.id, message.id)
+            .reply_markup(markup)
+            .await;
+    }
     Ok(())
 }
 

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT track_key, title, performer FROM favorites\n             WHERE user_id = $1 ORDER BY added_at DESC LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "track_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "favorites",
+            "name": "track_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "favorites",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "performer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "favorites",
+            "name": "performer"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "53c190c8b28535205ddb1ee3dea547d1c87c7e115cba1a8894b372530658f94a"
+}

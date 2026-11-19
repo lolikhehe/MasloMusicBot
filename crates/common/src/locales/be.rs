@@ -75,6 +75,23 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Output format" => Some("Фармат вываду"),
         "ℹ️ Album & artist info" => Some("ℹ️ Пра альбом і выканаўца"),
+        "⭐ Added to favorites." => Some("⭐ Дададзена ў выбранае."),
+        "Removed from favorites." => Some("Выдалена са выбранага."),
+        "⭐ Your favorites" => Some("⭐ Выбраныя трэкі"),
+        "Nothing saved yet — tap ☆ under any track." => {
+            Some("Пакуль нічога — націсні ☆ пад трэкам.")
+        }
+        "More results ▸" => Some("Яшчэ вынікі ▸"),
+        "Reply to one of my tracks with /similar." => {
+            Some("Адпраўце /similar у адказ на мой трэк.")
+        }
+        "No similar tracks found." => Some("Падобных трэкаў не знайшоў."),
+        "🎧 Similar to «{track}»" => Some("🎧 Падобна да «{track}»"),
+        "Usage: /artist <name>" => Some("Выкарыстанне: /artist <ім'я>"),
+        "Artist not found in the catalog." => Some("Выканаўцы не знайшоў у каталогу."),
+        "🎤 Top tracks of {name}" => Some("🎤 Топ трэкаў {name}"),
+        "Reply to one of my tracks with /cover." => Some("Адпраўце /cover у адказ на мой трэк."),
+        "This track has no cover." => Some("У гэтага трэка няма абкладінкі."),
         "⚙ Advanced" => Some("⚙ Дадатковае"),
         "<b>Advanced settings</b>" => Some("<b>Дадатковыя налады</b>"),
         "on" => Some("укл."),

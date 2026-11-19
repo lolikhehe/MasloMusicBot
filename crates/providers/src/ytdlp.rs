@@ -568,7 +568,11 @@ fn stdout_last_line(stdout: &[u8]) -> Option<String> {
 fn is_zero_count_stub(data: &[u8]) -> bool {
     serde_json::from_slice::<serde_json::Value>(data)
         .ok()
-        .and_then(|value| value.get("playlist_count").and_then(serde_json::Value::as_i64))
+        .and_then(|value| {
+            value
+                .get("playlist_count")
+                .and_then(serde_json::Value::as_i64)
+        })
         .is_some_and(|count| count == 0)
 }
 

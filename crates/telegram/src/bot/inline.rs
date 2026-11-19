@@ -57,6 +57,9 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
 
     let text = query.query.trim();
     let short = text.chars().count() < 2;
+    // Telegram's native inline pagination: the panel shows a "next" arrow
+    // and re-asks the same query with an incremented offset.
+    let offset: usize = query.offset.trim().parse().unwrap_or(0);
 
     let generation = state.bump_inline_generation(user_id).await;
     let mut generation_rx = state.subscribe_inline_generation(user_id).await;
@@ -72,7 +75,7 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
     } else {
         tokio::select! {
             result = async {
-                search_requests(&state, &user, text).await
+                search_requests(&state, &user, text, offset).await
             } => result,
             _ = generation_rx.changed() => {
                 info!("inline query superseded; dropping in-flight search");
@@ -92,6 +95,16 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
         return Ok(());
     }
 
+    let keys: Vec<String> = requests
+        .iter()
+        .map(|request| request.key.to_string())
+        .collect();
+    let heard = state
+        .db
+        .heard_before(user_id, &keys)
+        .await
+        .unwrap_or_default();
+    let page_full = !short && requests.len() >= 10;
     let mut results = Vec::with_capacity(requests.len());
     for request in requests {
         let selection_id = state.new_selection_id();
@@ -135,6 +148,9 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
                 }
                 if let Some(duration) = meta.duration_secs {
                     parts.push(format_duration(duration));
+                }
+                if heard.contains(&request.key.to_string()) {
+                    parts.push("↩".to_owned());
                 }
                 parts.join(" • ")
             })
@@ -181,10 +197,14 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
     // Results are personalized by the user's /settings search source, so
     // server-side caching must be off: a 30 s shared cache meant the old
     // source kept being served after the user switched it.
-    bot.answer_inline_query(query.id.clone(), results)
+    let mut answer = bot
+        .answer_inline_query(query.id.clone(), results)
         .cache_time(0)
-        .is_personal(true)
-        .await?;
+        .is_personal(true);
+    if page_full {
+        answer = answer.next_offset((offset + 10).to_string());
+    }
+    answer.await?;
     Ok(())
 }
 
@@ -261,8 +281,11 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
             return Ok(());
         };
         let caption = Some(compact_caption(&state, Some(&cached.meta)));
+        let fav_markup =
+            crate::bot::handlers::fav_markup_for(&state, user_id, &request.key.to_string()).await;
         match bot
             .edit_message_media_inline(inline_message_id, cached_media(&cached, caption))
+            .reply_markup(fav_markup)
             .await
         {
             Ok(_) => {
@@ -339,7 +362,7 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     );
     let mut minted: Option<(String, String)> = None;
     for chat in upload_targets {
-        match send::send_prepared(&bot, chat, &prepared, caption.clone()).await {
+        match send::send_prepared(&bot, chat, &prepared, caption.clone(), None).await {
             Ok(message) => match send::extract_file_id(&message) {
                 Some(pair) => {
                     minted = Some(pair);
@@ -400,8 +423,11 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     metrics::counter!("music_bot_uploads_total").increment(1);
     if let Some(inline_message_id) = result.inline_message_id.clone() {
         let media = file_id_media(&prepared, &file_id, caption.clone());
+        let fav_markup =
+            crate::bot::handlers::fav_markup_for(&state, user_id, &request.key.to_string()).await;
         match bot
             .edit_message_media_inline(inline_message_id.clone(), media)
+            .reply_markup(fav_markup)
             .await
         {
             Ok(_) => return Ok(()),
@@ -527,6 +553,7 @@ async fn search_requests(
     state: &AppState,
     user: &common::domain::UserRecord,
     text: &str,
+    offset: usize,
 ) -> Vec<TrackRequest> {
     match parse_input(text) {
         ParsedInput::Track(request) => match state.manager.describe(request).await {
@@ -537,9 +564,14 @@ async fn search_requests(
             }
         },
         ParsedInput::Search(query) => {
-            match state.manager.search(&query, 10, user.search_source).await {
+            match state
+                .manager
+                .search(&query, offset + 10, user.search_source)
+                .await
+            {
                 Ok(results) => results
                     .into_iter()
+                    .skip(offset)
                     .map(|result| result.into_request())
                     .collect(),
                 Err(error) => {

@@ -75,6 +75,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Output format" => Some("Výstupní formát"),
         "ℹ️ Album & artist info" => Some("ℹ️ O albu a interpretovi"),
+        "⭐ Added to favorites." => Some("⭐ Přidáno do oblíbených."),
+        "Removed from favorites." => Some("Odebráno z oblíbených."),
+        "⭐ Your favorites" => Some("⭐ Tvoje oblíbené skladby"),
+        "Nothing saved yet — tap ☆ under any track." => {
+            Some("Zatím nic — klepni ☆ pod skladbou.")
+        }
+        "More results ▸" => Some("Další výsledky ▸"),
+        "Reply to one of my tracks with /similar." => {
+            Some("Odpověz na moji skladbu příkazem /similar.")
+        }
+        "No similar tracks found." => Some("Podobné skladby nenalezeny."),
+        "🎧 Similar to «{track}»" => Some("🎧 Podobné k «{track}»"),
+        "Usage: /artist <name>" => Some("Použití: /artist <jméno>"),
+        "Artist not found in the catalog." => Some("Interpreta v katalogu nenalezen."),
+        "🎤 Top tracks of {name}" => Some("🎤 Top skladby od {name}"),
+        "Reply to one of my tracks with /cover." => {
+            Some("Odpověz na moji skladbu příkazem /cover.")
+        }
+        "This track has no cover." => Some("Tato skladba nemá obal."),
         "⚙ Advanced" => Some("⚙ Další nastavení"),
         "<b>Advanced settings</b>" => Some("<b>Další nastavení</b>"),
         "on" => Some("zap."),

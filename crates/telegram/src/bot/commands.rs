@@ -1,13 +1,15 @@
 //! Command parsing and handlers. Commands are parsed manually so `@botname`
 //! suffixes and admin arguments behave predictably in groups.
 
+use crate::bot::handlers::escape_html;
+use crate::bot::send::truncate;
 use crate::state::AppState;
 use common::domain::{Lang, Provider};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::key_from_input;
 use teloxide::prelude::*;
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, Message, ParseMode};
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode};
 use tracing::warn;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,14 @@ pub enum Command {
     Convert(Option<String>),
     Normalize(Option<String>),
     Playlist(Option<String>),
+    /// `/fav` — saved tracks, re-served instantly from the Telegram cache.
+    Favorites,
+    /// `/similar` in reply to a bot track — similar tracks as buttons.
+    Similar,
+    /// `/artist <name>` — top catalog tracks of an artist as buttons.
+    Artist(Option<String>),
+    /// `/cover` in reply to a bot track — the 1000px album art as a photo.
+    Cover,
     /// `/groupmode on|off` — admin-only opt-in for this group.
     GroupMode(Option<String>),
     Unknown(String),
@@ -106,6 +116,10 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
             Command::Normalize((!args.is_empty()).then_some(args))
         }
         "playlist" | "плейлист" => Command::Playlist((!args.is_empty()).then_some(args)),
+        "fav" | "favorites" | "обране" | "улюблене" => Command::Favorites,
+        "similar" | "схожі" => Command::Similar,
+        "artist" | "виконавець" => Command::Artist((!args.is_empty()).then_some(args)),
+        "cover" | "обкладинка" => Command::Cover,
         "groupmode" | "група" => Command::GroupMode((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
@@ -603,6 +617,198 @@ pub async fn handle_command(
                 i18n::convert_saved(lang, &value, user_record.normalize_audio),
             )
             .await?;
+        }
+        Command::Favorites => {
+            let rows = state.db.favorites(user_id, 30).await?;
+            let mut buttons: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+            for (key, _title, _performer) in rows {
+                // Only favorites with a live Telegram file_id can be replayed;
+                // the rest silently drop off the list until re-downloaded.
+                let Some(cached) = state
+                    .manager
+                    .get_cached(&common::domain::TrackKey(key.clone()), user_record.quality)
+                    .await?
+                else {
+                    continue;
+                };
+                let request = common::domain::TrackRequest {
+                    key: cached.key.clone(),
+                    provider: cached.provider,
+                    source_url: cached.source_url.clone(),
+                    meta: Some(cached.meta.clone()),
+                    target: common::domain::DownloadTarget::Search(cached.meta.search_query()),
+                };
+                let selection_id = state.new_selection_id();
+                state
+                    .put_selection(
+                        &selection_id,
+                        crate::state::selection::TRACK,
+                        user_id,
+                        &request,
+                    )
+                    .await?;
+                let label = truncate(&cached.meta.display_title(), 60);
+                buttons.push(vec![InlineKeyboardButton::callback(
+                    format!("⭐ {label}"),
+                    format!("q:{selection_id}"),
+                )]);
+            }
+            if buttons.is_empty() {
+                send_plain(bot, msg.chat.id, i18n::favorites_empty(lang)).await?;
+                return Ok(());
+            }
+            bot.send_message(msg.chat.id, i18n::favorites_title(lang))
+                .reply_markup(InlineKeyboardMarkup::new(buttons))
+                .await?;
+        }
+        Command::Similar => {
+            let reply_file_id = msg.reply_to_message().and_then(|m| {
+                m.audio()
+                    .map(|audio| audio.file.id.0.clone())
+                    .or_else(|| m.document().map(|doc| doc.file.id.0.clone()))
+            });
+            let Some(file_id) = reply_file_id else {
+                send_plain(bot, msg.chat.id, i18n::similar_usage(lang)).await?;
+                return Ok(());
+            };
+            let Some(cached) = state.db.track_by_file_id(&file_id).await? else {
+                send_plain(bot, msg.chat.id, i18n::similar_usage(lang)).await?;
+                return Ok(());
+            };
+            let Some(artist) = cached
+                .meta
+                .performer
+                .as_deref()
+                .map(str::trim)
+                .filter(|artist| !artist.is_empty())
+            else {
+                send_plain(bot, msg.chat.id, i18n::similar_usage(lang)).await?;
+                return Ok(());
+            };
+            let similar = match &state.lastfm {
+                Some(client) => client
+                    .similar_tracks(artist, &cached.meta.title)
+                    .await
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            if similar.is_empty() {
+                send_plain(bot, msg.chat.id, i18n::similar_none(lang)).await?;
+                return Ok(());
+            }
+            let results: Vec<common::domain::SearchResult> = similar
+                .into_iter()
+                .map(|(artist, title)| common::domain::SearchResult {
+                    key: common::domain::TrackKey::new(format!("similar:{artist} - {title}")),
+                    provider: common::domain::Provider::YouTube,
+                    source_url: String::new(),
+                    meta: common::domain::TrackMeta {
+                        title: title.clone(),
+                        performer: Some(artist.clone()),
+                        ..Default::default()
+                    },
+                    target: common::domain::DownloadTarget::Search(format!("{artist} {title}")),
+                })
+                .collect();
+            let keys: Vec<String> = results
+                .iter()
+                .map(|result| result.key.to_string())
+                .collect();
+            let heard = state
+                .db
+                .heard_before(user_id, &keys)
+                .await
+                .unwrap_or_default();
+            let rows =
+                crate::bot::handlers::search_result_rows(state, user_id, &results, &heard, 0)
+                    .await?;
+            let subject = escape_html(&cached.meta.display_title());
+            bot.send_message(msg.chat.id, i18n::similar_title(lang, &subject))
+                .reply_markup(InlineKeyboardMarkup::new(rows))
+                .await?;
+        }
+        Command::Artist(name) => {
+            let Some(name) = name
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+            else {
+                send_plain(bot, msg.chat.id, i18n::artist_usage(lang)).await?;
+                return Ok(());
+            };
+            let progress = bot.send_message(msg.chat.id, i18n::searching(lang)).await?;
+            match state.manager.artist_top(&name, 8).await {
+                Ok(Some(results)) if !results.is_empty() => {
+                    let keys: Vec<String> = results
+                        .iter()
+                        .map(|result| result.key.to_string())
+                        .collect();
+                    let heard = state
+                        .db
+                        .heard_before(user_id, &keys)
+                        .await
+                        .unwrap_or_default();
+                    let rows = crate::bot::handlers::search_result_rows(
+                        state, user_id, &results, &heard, 0,
+                    )
+                    .await?;
+                    let header = i18n::artist_title(lang, &escape_html(&name));
+                    let markup = InlineKeyboardMarkup::new(rows);
+                    let edited = bot
+                        .edit_message_text(msg.chat.id, progress.id, header.clone())
+                        .reply_markup(markup.clone())
+                        .await;
+                    if edited.is_err() {
+                        let _ = bot.delete_message(msg.chat.id, progress.id).await;
+                        bot.send_message(msg.chat.id, header)
+                            .reply_markup(markup)
+                            .await?;
+                    }
+                }
+                _ => {
+                    let _ = crate::bot::handlers::edit_html(
+                        bot,
+                        msg.chat.id,
+                        progress.id,
+                        i18n::artist_none(lang),
+                    )
+                    .await;
+                }
+            }
+        }
+        Command::Cover => {
+            let reply_file_id = msg.reply_to_message().and_then(|m| {
+                m.audio()
+                    .map(|audio| audio.file.id.0.clone())
+                    .or_else(|| m.document().map(|doc| doc.file.id.0.clone()))
+            });
+            let Some(file_id) = reply_file_id else {
+                send_plain(bot, msg.chat.id, i18n::cover_usage(lang)).await?;
+                return Ok(());
+            };
+            let Some(cached) = state.db.track_by_file_id(&file_id).await? else {
+                send_plain(bot, msg.chat.id, i18n::cover_usage(lang)).await?;
+                return Ok(());
+            };
+            let Some(url) = cached
+                .meta
+                .thumbnail_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+            else {
+                send_plain(bot, msg.chat.id, i18n::cover_none(lang)).await?;
+                return Ok(());
+            };
+            let url = crate::bot::handlers::hq_cover_url(url);
+            match providers::http::fetch_bytes(&state.http, &url, 8 * 1024 * 1024).await {
+                Some(bytes) => {
+                    bot.send_photo(msg.chat.id, InputFile::memory(bytes))
+                        .await?;
+                }
+                None => {
+                    send_plain(bot, msg.chat.id, i18n::cover_none(lang)).await?;
+                }
+            }
         }
         Command::Normalize(value) => {
             let Some(enabled) = value.as_deref().and_then(|value| {
