@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_jobs SET updated_at = 0 WHERE id = 'old-done'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "6e0a3b31c1d94711b8708054ba3c0ea31b0f4aca31ee3bbdf6b96e2a77bb66a4"
+}

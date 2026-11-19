@@ -163,9 +163,9 @@ pub async fn send_lyrics(
         .reply_markup(keyboard(lang, &selection_id, has_lrc, has_other))
         .await;
     if result.is_err() {
-        let mut plain = format!("📝 {} — {title}\n\n{}", snapshot.source, snapshot.text);
-        plain.push_str(&i18n::lyrics_footer(lang));
-        send::send_html(bot, chat, plain).await?;
+        // Reuse the body already escaped for HTML: sending raw snapshot text
+        // with parse mode broke on `&`/`<` exactly when this fallback fired.
+        send::send_html(bot, chat, text).await?;
     }
     Ok(())
 }

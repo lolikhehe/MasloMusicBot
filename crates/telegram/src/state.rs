@@ -186,6 +186,26 @@ impl AppState {
             .await
     }
 
+    /// Serialize and batch-write callback selections in one round trip. Same
+    /// TTL and `ON CONFLICT` semantics as `put_selection`.
+    pub async fn put_selections<T: Serialize>(
+        &self,
+        kind: &str,
+        user_id: i64,
+        items: &[(String, &T)],
+    ) -> AppResult<()> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let mut rows = Vec::with_capacity(items.len());
+        for (id, payload) in items {
+            let value = serde_json::to_value(payload)
+                .map_err(|error| common::error::AppError::Other(error.into()))?;
+            rows.push((id.clone(), kind.to_owned(), user_id, value.to_string()));
+        }
+        self.db.put_selections(&rows).await
+    }
+
     pub async fn get_selection<T: DeserializeOwned>(
         &self,
         id: &str,

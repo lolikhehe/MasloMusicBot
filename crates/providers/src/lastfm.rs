@@ -261,10 +261,7 @@ impl LastFmClient {
                 body.message.unwrap_or_else(|| "unknown".to_owned())
             )));
         }
-        let Some(track) = body
-            .recent_tracks
-            .and_then(|page| page.track.into_iter().next())
-        else {
+        let Some(track) = body.recent_tracks.and_then(first_named_track) else {
             return Ok(None);
         };
         Ok(Some(track.into_now_playing()))
@@ -305,6 +302,7 @@ impl LastFmClient {
             .json()
             .await
             .map_err(map_reqwest)?;
+        info.error.check()?;
         let tags = info
             .track
             .and_then(|track| track.toptags)
@@ -331,6 +329,7 @@ impl LastFmClient {
             .json()
             .await
             .map_err(map_reqwest)?;
+        top.error.check()?;
         Ok(top.toptags.map(TagList::into_names).unwrap_or_default())
     }
 
@@ -360,6 +359,7 @@ impl LastFmClient {
             .json()
             .await
             .map_err(map_reqwest)?;
+        body.error.check()?;
         let bio = body
             .artist
             .and_then(|artist| artist.bio)
@@ -369,10 +369,7 @@ impl LastFmClient {
                     .filter(|content| !content.trim().is_empty())
                     .or(bio.summary)
             })
-            .map(|text| {
-                let cut = text.find("<a ").unwrap_or(text.len());
-                text[..cut].trim().to_owned()
-            })
+            .map(|text| strip_read_more(&text))
             .filter(|text| !text.is_empty());
         Ok(bio)
     }
@@ -409,6 +406,7 @@ impl LastFmClient {
             .json()
             .await
             .map_err(map_reqwest)?;
+        body.error.check()?;
         let wiki = body
             .album
             .and_then(|album| album.wiki)
@@ -417,10 +415,7 @@ impl LastFmClient {
                     .filter(|content| !content.trim().is_empty())
                     .or(wiki.summary)
             })
-            .map(|text| {
-                let cut = text.find("<a ").unwrap_or(text.len());
-                text[..cut].trim().to_owned()
-            })
+            .map(|text| strip_read_more(&text))
             .filter(|text| !text.is_empty());
         Ok(wiki)
     }
@@ -457,6 +452,7 @@ impl LastFmClient {
             .json()
             .await
             .map_err(map_reqwest)?;
+        body.error.check()?;
         let similar = body
             .similar
             .map(|similar| similar.track)
@@ -549,6 +545,7 @@ impl LastFmClient {
             .json::<serde_json::Value>()
             .await
             .map_err(map_reqwest)?;
+        check_value_error(&response)?;
         let mut items = parse_top_items(kind, &response);
         items.sort_by_key(|item| std::cmp::Reverse(item.playcount));
         Ok(items)
@@ -627,6 +624,64 @@ fn map_reqwest(error: reqwest::Error) -> DownloadError {
     DownloadError::SourceUnavailable(format!("lastfm request failed: {error}"))
 }
 
+/// Last.fm reports application errors (e.g. code 29 "Rate limit exceeded")
+/// inside an HTTP 200 JSON body; without this every failure parses as "no
+/// data" and the user is told there are no results.
+#[derive(Debug, Default, Deserialize)]
+struct LastFmError {
+    #[serde(default)]
+    error: Option<u16>,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+impl LastFmError {
+    fn check(&self) -> Result<(), DownloadError> {
+        if self.error.is_some() {
+            let message = self
+                .message
+                .clone()
+                .unwrap_or_else(|| "unknown error".to_owned());
+            return Err(DownloadError::SourceUnavailable(format!(
+                "last.fm: {message}"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// Value-based counterpart of [`LastFmError::check`] for endpoints that parse
+/// the raw JSON (top_items).
+fn check_value_error(value: &serde_json::Value) -> Result<(), DownloadError> {
+    serde_json::from_value::<LastFmError>(value.clone())
+        .unwrap_or_default()
+        .check()
+}
+
+/// Last.fm appends `<a href="...">Read more on Last.fm</a>` to bios and wikis.
+/// Cut at that trailing anchor — not the first `<a` in the body, which may be
+/// an ordinary link and would lose the whole article.
+fn strip_read_more(text: &str) -> String {
+    const MARKER: &str = "Read more on Last.fm";
+    let end = text
+        .find(MARKER)
+        .and_then(|marker| text[..marker].rfind("<a "))
+        .or_else(|| text.find(MARKER))
+        .unwrap_or(text.len());
+    text[..end].trim().to_owned()
+}
+
+/// Last.fm can include empty-name rows (e.g. `@attr`-only placeholders); skip
+/// them so a one-item now-playing reply doesn't resolve to a blank track.
+fn first_named_track(page: RecentTracksPage) -> Option<RecentTrack> {
+    page.track.into_iter().find(|track| {
+        track
+            .name
+            .as_deref()
+            .is_some_and(|name| !name.trim().is_empty())
+    })
+}
+
 /// Last.fm returns a single object instead of an array when there is only one
 /// item — handle both shapes so a one-tag response doesn't fail to parse.
 fn one_or_many<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -637,12 +692,15 @@ where
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum OneOrMany<T> {
-        One(T),
+        // Try the array first: with `One` first, a one-element array whose
+        // first field is a map type parses as a struct-from-seq and yields a
+        // phantom row, and `[]` yields a single defaulted row.
         Many(Vec<T>),
+        One(T),
     }
     Ok(match Option::<OneOrMany<T>>::deserialize(deserializer)? {
-        Some(OneOrMany::One(value)) => vec![value],
         Some(OneOrMany::Many(values)) => values,
+        Some(OneOrMany::One(value)) => vec![value],
         None => Vec::new(),
     })
 }
@@ -685,6 +743,8 @@ struct UserInfo {
 struct TrackInfoResponse {
     #[serde(default)]
     track: Option<TrackInfo>,
+    #[serde(flatten)]
+    error: LastFmError,
 }
 
 #[derive(Debug, Deserialize)]
@@ -697,12 +757,16 @@ struct TrackInfo {
 struct ArtistTagsResponse {
     #[serde(default)]
     toptags: Option<TagList>,
+    #[serde(flatten)]
+    error: LastFmError,
 }
 
 #[derive(Debug, Deserialize)]
 struct ArtistInfoResponse {
     #[serde(default)]
     artist: Option<ArtistBioInfo>,
+    #[serde(flatten)]
+    error: LastFmError,
 }
 
 #[derive(Debug, Deserialize)]
@@ -723,6 +787,8 @@ struct ArtistBio {
 struct AlbumInfoResponse {
     #[serde(default)]
     album: Option<AlbumWikiInfo>,
+    #[serde(flatten)]
+    error: LastFmError,
 }
 
 #[derive(Debug, Deserialize)]
@@ -745,6 +811,8 @@ struct SimilarResponse {
     // wrong name silently parsed every reply as "no similar tracks".
     #[serde(default, rename = "similartracks")]
     similar: Option<SimilarTracks>,
+    #[serde(flatten)]
+    error: LastFmError,
 }
 
 #[derive(Debug, Deserialize)]
@@ -755,9 +823,9 @@ struct SimilarTracks {
 
 #[derive(Debug, Deserialize)]
 struct SimilarTrack {
-    // `name` must stay first: one_or_many's untagged `One` arm tries a
-    // one-element array as struct-from-seq, and only `artist` (a map type)
-    // could swallow the map element — which would leave `name` empty.
+    // Field order no longer matters: one_or_many tries the array arm first,
+    // so a one-element array can't be misread as a struct-from-seq (which used
+    // to leave `name` empty when a map-typed field came first).
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -827,7 +895,8 @@ struct RecentTracksResponse {
 
 #[derive(Debug, Deserialize)]
 struct RecentTracksPage {
-    #[serde(default)]
+    // A one-item page is a bare object (now_playing uses limit=1), not an array.
+    #[serde(default, deserialize_with = "one_or_many")]
     track: Vec<RecentTrack>,
 }
 
@@ -1137,5 +1206,81 @@ mod tests {
         assert_eq!(items[0].playcount, 42);
         assert_eq!(items[1].image_url.as_deref(), Some("https://x/mega.jpg"));
         assert_eq!(items[1].playcount, 7);
+    }
+
+    #[test]
+    fn recent_tracks_single_object_is_accepted() {
+        // now_playing requests limit=1, so Last.fm sends one bare object.
+        let json = r##"{
+            "recenttracks": {
+                "track": {
+                    "name": "Walk",
+                    "artist": {"#text": "Pantera"},
+                    "@attr": {"nowplaying": "true"}
+                }
+            }
+        }"##;
+        let body: RecentTracksResponse = serde_json::from_str(json).expect("json");
+        let tracks = body.recent_tracks.expect("page").track;
+        assert_eq!(tracks.len(), 1);
+        let now = first_named_track(RecentTracksPage { track: tracks })
+            .expect("track")
+            .into_now_playing();
+        assert_eq!(now.meta.title, "Walk");
+        assert_eq!(now.meta.performer.as_deref(), Some("Pantera"));
+        assert!(now.is_now_playing);
+    }
+
+    #[test]
+    fn empty_track_array_has_no_phantom_row() {
+        // With `One` tried first, `[]` used to yield one defaulted track.
+        let json = r##"{"recenttracks":{"track":[]}}"##;
+        let body: RecentTracksResponse = serde_json::from_str(json).expect("json");
+        assert!(body.recent_tracks.expect("page").track.is_empty());
+    }
+
+    #[test]
+    fn one_element_track_array_parses_to_one_row() {
+        // Reordering the enum must not break the normal single-item array.
+        let json = r##"{"recenttracks":{"track":[{"name":"Walk","artist":{"#text":"Pantera"}}]}}"##;
+        let body: RecentTracksResponse = serde_json::from_str(json).expect("json");
+        let tracks = body.recent_tracks.expect("page").track;
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].name.as_deref(), Some("Walk"));
+    }
+
+    #[test]
+    fn empty_name_rows_are_skipped() {
+        let json = r##"{"recenttracks":{"track":[{"name":""},{"name":"Walk","artist":{"#text":"Pantera"}}]}}"##;
+        let body: RecentTracksResponse = serde_json::from_str(json).expect("json");
+        let page = body.recent_tracks.expect("page");
+        let track = first_named_track(page).expect("named track");
+        assert_eq!(track.name.as_deref(), Some("Walk"));
+    }
+
+    #[test]
+    fn rate_limit_error_is_surfaced() {
+        let json = r##"{"error":29,"message":"Rate limit exceeded"}"##;
+        let body: SimilarResponse = serde_json::from_str(json).expect("json");
+        let error = body.error.check().expect_err("error 29 must fail");
+        assert!(error.to_string().contains("Rate limit exceeded"));
+        // Value-based path used by top_items.
+        let value: serde_json::Value = serde_json::from_str(json).expect("json");
+        let error = check_value_error(&value).expect_err("error 29 must fail");
+        assert!(error.to_string().contains("Rate limit exceeded"));
+    }
+
+    #[test]
+    fn strip_read_more_keeps_body_links() {
+        let text = "<p>See <a href=\"https://x\">this band</a> for context.</p> \
+                    <a href=\"https://www.last.fm/music/X\">Read more on Last.fm</a>";
+        let stripped = strip_read_more(text);
+        assert!(stripped.contains("this band"), "body link must survive");
+        assert!(!stripped.contains("Read more on Last.fm"));
+        assert!(
+            !stripped.contains("last.fm/music/X"),
+            "trailing Read-more anchor must be cut"
+        );
+        assert_eq!(strip_read_more("plain text").as_str(), "plain text");
     }
 }

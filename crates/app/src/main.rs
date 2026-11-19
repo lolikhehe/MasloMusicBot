@@ -27,9 +27,11 @@ async fn main() -> anyhow::Result<()> {
     let metrics_handle = common::metrics::install()?;
 
     tokio::fs::create_dir_all(&config.tmp_dir).await?;
-    janitor::spawn(config.tmp_dir.clone());
 
     let db = Db::connect(&config.database_url).await?;
+    // The janitor reuses the app's Db: a second Db::connect would re-run
+    // migrate() and its stale-job requeue, which can reset a just-claimed job.
+    janitor::spawn(db.clone(), config.tmp_dir.clone());
     if let Some(addr) = config.metrics_addr {
         health::serve(addr, db.clone(), metrics_handle).await?;
     } else {
@@ -45,9 +47,7 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let bot = make_bot(&config)?;
-    wait_for_bot_api(&config).await;
-
-    let me = bot.get_me().await?;
+    let me = wait_for_bot_api(&config, &bot).await?;
     let bot_username = me
         .user
         .username
@@ -98,36 +98,50 @@ fn make_bot(config: &Config) -> anyhow::Result<teloxide::Bot> {
     }
 }
 
-/// When a local Bot API server is used (docker compose), give it a chance to
-/// become healthy before the first getMe instead of crashing on a race.
-async fn wait_for_bot_api(config: &Config) {
+/// When a local Bot API server is used (docker compose), retry getMe with
+/// backoff until it becomes healthy instead of crashing on a startup race.
+async fn wait_for_bot_api(
+    config: &Config,
+    bot: &teloxide::Bot,
+) -> anyhow::Result<teloxide::types::Me> {
     let Some(url) = &config.telegram_api_url else {
-        return;
+        return bot.get_me().await.context("getMe failed");
     };
     let Ok(parsed) = reqwest::Url::parse(url) else {
-        return;
+        return bot.get_me().await.context("getMe failed");
     };
     let Some(host) = parsed.host_str().map(str::to_owned) else {
-        return;
+        return bot.get_me().await.context("getMe failed");
     };
     let port = parsed.port().unwrap_or(80);
     let deadline = std::time::Instant::now() + config.bot_api_wait;
+    let mut backoff = Duration::from_millis(250);
 
-    while std::time::Instant::now() < deadline {
-        match tokio::time::timeout(
-            Duration::from_secs(2),
-            tokio::net::TcpStream::connect((host.as_str(), port)),
-        )
-        .await
+    loop {
+        let reachable = matches!(
+            tokio::time::timeout(
+                Duration::from_secs(2),
+                tokio::net::TcpStream::connect((host.as_str(), port)),
+            )
+            .await,
+            Ok(Ok(_))
+        );
+        if reachable
+            && let Ok(Ok(me)) = tokio::time::timeout(Duration::from_secs(2), bot.get_me()).await
         {
-            Ok(Ok(_)) => return,
-            _ => tokio::time::sleep(Duration::from_millis(500)).await,
+            return Ok(me);
         }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(2));
     }
-    tracing::warn!(
-        host = %host,
-        %port,
-        "Bot API server did not respond within {:?}; continuing anyway",
-        config.bot_api_wait
-    );
+
+    bot.get_me().await.with_context(|| {
+        format!(
+            "Bot API server at {host}:{port} did not become ready within {:?}",
+            config.bot_api_wait
+        )
+    })
 }

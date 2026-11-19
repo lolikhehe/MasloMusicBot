@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM download_jobs\n             WHERE status IN ('done', 'failed', 'cancelled') AND updated_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6a7a2ae67ebee320a11d8c091191eff5222349e8e288889220a94fcaedd7e29b"
+}

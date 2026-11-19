@@ -393,27 +393,28 @@ pub async fn search_result_rows(
     heard: &std::collections::HashSet<String>,
     start_index: usize,
 ) -> Result<Vec<Vec<InlineKeyboardButton>>, common::error::AppError> {
+    let requests: Vec<TrackRequest> = results
+        .iter()
+        .map(|result| result.clone().into_request())
+        .collect();
     let mut rows = Vec::with_capacity(results.len());
-    for (offset, result) in results.iter().enumerate() {
+    let mut selections: Vec<(String, &TrackRequest)> = Vec::with_capacity(results.len());
+    for (offset, (result, request)) in results.iter().zip(&requests).enumerate() {
         let selection_id = state.new_selection_id();
         let title = result.meta.display_title();
         let mut button_text = format!("{}. {}", start_index + offset + 1, truncate(&title, 56));
         if heard.contains(result.key.as_str()) {
             button_text.push_str(" · ↩");
         }
-        state
-            .put_selection(
-                &selection_id,
-                crate::state::selection::TRACK,
-                user_id,
-                &result.clone().into_request(),
-            )
-            .await?;
+        selections.push((selection_id.clone(), request));
         rows.push(vec![InlineKeyboardButton::callback(
             button_text,
             format!("q:{selection_id}"),
         )]);
     }
+    state
+        .put_selections(crate::state::selection::TRACK, user_id, &selections)
+        .await?;
     Ok(rows)
 }
 
@@ -503,12 +504,24 @@ pub async fn handle_search_page(
 
 /// The ⭐/☆ toggle row under a delivered track. Symbol-only so the hot
 /// delivery path needs no language lookup; the toggle toast is localized.
-pub async fn fav_markup_for(state: &AppState, user_id: i64, key: &str) -> InlineKeyboardMarkup {
-    let added = state.db.is_favorite(user_id, key).await.unwrap_or(false);
-    InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-        if added { "⭐" } else { "☆" },
-        format!("fav:{key}"),
-    )]])
+pub async fn fav_markup_for(
+    state: &AppState,
+    user_id: i64,
+    key: &str,
+) -> Option<InlineKeyboardMarkup> {
+    // Telegram caps callback_data at 64 bytes; a longer `fav:` key makes the
+    // ENTIRE audio send fail with BUTTON_DATA_INVALID.
+    if format!("fav:{key}").len() > 64 {
+        return None;
+    }
+    // A transient DB error must not render ☆ for a favorited track: one tap
+    // would then silently DELETE the favorite. Skip the button instead.
+    let Ok(added) = state.db.is_favorite(user_id, key).await else {
+        return None;
+    };
+    Some(InlineKeyboardMarkup::new(vec![vec![
+        InlineKeyboardButton::callback(if added { "⭐" } else { "☆" }, format!("fav:{key}")),
+    ]]))
 }
 
 /// Largest cover URL the CDN can serve for this artwork. Apple stores
@@ -624,7 +637,7 @@ pub async fn deliver_album(
     genre_analysis: bool,
     album_info: bool,
     job: Option<&crate::bot::jobs::JobGuard>,
-) -> HandlerResult {
+) -> Result<usize, BoxError> {
     let total = album.tracks.len();
     let title = escape_html(&album.title);
     let _ = edit_html(
@@ -730,7 +743,9 @@ pub async fn deliver_album(
         ));
     }
     let _ = edit_html(bot, chat, progress, final_text).await;
-    Ok(())
+    // The caller marks the job "done" only if at least one track landed: an
+    // album where every track failed must be recorded as "failed".
+    Ok(ok)
 }
 
 /// Cover photo + caption sent before an album's tracks (the
@@ -1078,7 +1093,7 @@ async fn try_cache_send(
     enrich_tags(state, &mut caption_meta, tags_enabled).await;
     let caption = tags_caption(&caption_meta, tags_enabled);
     let fav_markup = fav_markup_for(state, user_id, key.as_str()).await;
-    match send::send_cached(bot, chat, &cached, caption, Some(fav_markup)).await {
+    match send::send_cached(bot, chat, &cached, caption, fav_markup).await {
         Ok(_) => {
             state.manager.touch_cached(key, quality).await;
             state
@@ -1239,7 +1254,7 @@ async fn deliver_track_inner(
         caption_with_flac_fallback(tags_caption(&prepared.meta, tags_enabled), flac_fell_back);
     let upload_started = Instant::now();
     let fav_markup = fav_markup_for(state, user_id, request.key.as_str()).await;
-    let message = match send::send_prepared(bot, chat, &prepared, caption, Some(fav_markup)).await {
+    let message = match send::send_prepared(bot, chat, &prepared, caption, fav_markup).await {
         Ok(message) => message,
         Err(error) => {
             warn!(key = %request.key, %error, "track upload to Telegram failed");

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO selections (id, kind, user_id, payload, expires_at)\n             SELECT row.id, row.kind, row.user_id, row.payload::jsonb, $5\n             FROM unnest($1::text[], $2::text[], $3::bigint[], $4::text[])\n                  AS row(id, kind, user_id, payload)\n             ON CONFLICT(id) DO UPDATE SET\n                 kind = excluded.kind,\n                 user_id = excluded.user_id,\n                 payload = excluded.payload,\n                 expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "TextArray",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3401d25ea5c1810e42c7e1b2fb13942069eb31054fbea6f1c2eb04d30804ed53"
+}

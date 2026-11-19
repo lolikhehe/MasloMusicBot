@@ -38,6 +38,10 @@ pub struct Db {
 /// one write per active user per five minutes is plenty.
 const LAST_SEEN_INTERVAL_SECS: i64 = 5 * 60;
 
+/// Default lifetime of a callback selection. Matches `AppState::selection_ttl`,
+/// used by the batch writer which has no per-row TTL parameter.
+const SELECTION_TTL_SECS: i64 = 30 * 60;
+
 impl Db {
     pub async fn connect(database_url: &str) -> AppResult<Self> {
         let options = PgConnectOptions::from_str(database_url)
@@ -81,6 +85,37 @@ impl Db {
         let _ = sqlx::query!("DELETE FROM selections WHERE expires_at < $1", now)
             .execute(pool)
             .await;
+        Ok(())
+    }
+
+    /// Periodic counterparts of the one-shot cleanup in `migrate()`.
+    pub async fn delete_expired_selections(&self) -> AppResult<()> {
+        sqlx::query!("DELETE FROM selections WHERE expires_at < $1", unix_now())
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn delete_expired_search_cache(&self) -> AppResult<()> {
+        sqlx::query!("DELETE FROM search_cache WHERE expires_at < $1", unix_now())
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Drop only finished jobs older than `retention_secs`; active and recently
+    /// finished jobs stay so a slow replica can still report their outcome.
+    pub async fn delete_old_finished_jobs(&self, retention_secs: i64) -> AppResult<()> {
+        sqlx::query!(
+            "DELETE FROM download_jobs
+             WHERE status IN ('done', 'failed', 'cancelled') AND updated_at < $1",
+            unix_now() - retention_secs
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
         Ok(())
     }
 
@@ -137,6 +172,53 @@ impl Db {
                 },
             }
         }))
+    }
+
+    /// Batch variant of `get_track`: rows for a set of keys at one quality.
+    /// Callers dedup per key; `(track_key, quality)` is already the primary key.
+    pub async fn tracks_for_keys(
+        &self,
+        keys: &[TrackKey],
+        quality: u32,
+    ) -> AppResult<Vec<CachedTrack>> {
+        if keys.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<String> = keys.iter().map(|key| key.as_str().to_owned()).collect();
+        let rows = sqlx::query!(
+            "SELECT track_key, quality, file_id, file_unique_id, source_url, provider, title,
+                    performer, album, duration_secs, size_bytes, thumbnail_url, genres
+             FROM tracks WHERE track_key = ANY($1) AND quality = $2",
+            &keys,
+            i64::from(quality)
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| CachedTrack {
+                key: TrackKey(row.track_key),
+                file_id: row.file_id,
+                file_unique_id: row.file_unique_id,
+                source_url: row.source_url,
+                provider: row
+                    .provider
+                    .parse::<Provider>()
+                    .unwrap_or(Provider::YouTube),
+                meta: TrackMeta {
+                    title: row.title,
+                    performer: row.performer,
+                    album: row.album,
+                    duration_secs: row
+                        .duration_secs
+                        .and_then(|value| u32::try_from(value).ok()),
+                    thumbnail_url: row.thumbnail_url,
+                    genres: serde_json::from_str(&row.genres).unwrap_or_default(),
+                },
+            })
+            .collect())
     }
 
     /// Find an already-downloaded track by the Telegram file id of the audio
@@ -526,6 +608,9 @@ impl Db {
         title: &str,
         performer: Option<&str>,
     ) -> AppResult<bool> {
+        // Both statements share one transaction: a concurrent toggle cannot
+        // observe the row between the insert and the delete.
+        let mut transaction = self.pool.begin().await.map_err(db_err)?;
         let inserted = sqlx::query!(
             "INSERT INTO favorites (user_id, track_key, title, performer, added_at)
              VALUES ($1, $2, $3, $4, $5)
@@ -536,12 +621,13 @@ impl Db {
             performer,
             unix_now()
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(db_err)?
         .rows_affected()
             > 0;
         if inserted {
+            transaction.commit().await.map_err(db_err)?;
             return Ok(true);
         }
         sqlx::query!(
@@ -549,9 +635,10 @@ impl Db {
             id,
             key
         )
-        .execute(&self.pool)
+        .execute(&mut *transaction)
         .await
         .map_err(db_err)?;
+        transaction.commit().await.map_err(db_err)?;
         Ok(false)
     }
 
@@ -1245,6 +1332,40 @@ impl Db {
         Ok(())
     }
 
+    /// Batch writer for callback selections. Rows are `(id, kind, user_id,
+    /// payload_json)`; every row gets the same TTL and conflict handling as
+    /// `put_selection`, in one round trip.
+    pub async fn put_selections(&self, rows: &[(String, String, i64, String)]) -> AppResult<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let ids: Vec<String> = rows.iter().map(|row| row.0.clone()).collect();
+        let kinds: Vec<String> = rows.iter().map(|row| row.1.clone()).collect();
+        let user_ids: Vec<i64> = rows.iter().map(|row| row.2).collect();
+        let payloads: Vec<String> = rows.iter().map(|row| row.3.clone()).collect();
+        let expires_at = unix_now() + SELECTION_TTL_SECS;
+        sqlx::query!(
+            "INSERT INTO selections (id, kind, user_id, payload, expires_at)
+             SELECT row.id, row.kind, row.user_id, row.payload::jsonb, $5
+             FROM unnest($1::text[], $2::text[], $3::bigint[], $4::text[])
+                  AS row(id, kind, user_id, payload)
+             ON CONFLICT(id) DO UPDATE SET
+                 kind = excluded.kind,
+                 user_id = excluded.user_id,
+                 payload = excluded.payload,
+                 expires_at = excluded.expires_at",
+            &ids,
+            &kinds,
+            &user_ids,
+            &payloads,
+            expires_at
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Fetch and deserialize a selection, checking its kind and expiry.
     pub async fn get_selection<T: DeserializeOwned>(
         &self,
@@ -1410,20 +1531,6 @@ impl Db {
         .await
         .map_err(db_err)?
         .unwrap_or(false))
-    }
-
-    /// Requeue jobs abandoned by a crashed replica on startup.
-    pub async fn requeue_stale_jobs(&self) -> AppResult<()> {
-        sqlx::query!(
-            "UPDATE download_jobs
-             SET status = 'queued', claimed_by = NULL, updated_at = $1
-             WHERE status IN ('downloading', 'uploading') AND cancel_requested = false",
-            unix_now()
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(db_err)?;
-        Ok(())
     }
 
     pub async fn list_jobs(
@@ -1969,6 +2076,184 @@ mod tests {
                 .as_deref(),
             Some("1.1.0")
         );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn put_selections_and_tracks_for_keys(pool: PgPool) {
+        let db = db(pool).await;
+        let rows = vec![
+            (
+                "sel-a".to_owned(),
+                "track".to_owned(),
+                7,
+                serde_json::json!({"v": 1}).to_string(),
+            ),
+            (
+                "sel-b".to_owned(),
+                "album".to_owned(),
+                8,
+                serde_json::json!({"v": 2}).to_string(),
+            ),
+        ];
+        db.put_selections(&rows).await.expect("put batch");
+        let a: serde_json::Value = db
+            .get_selection("sel-a", "track")
+            .await
+            .expect("get a")
+            .expect("some");
+        assert_eq!(a["v"], 1);
+        let b: serde_json::Value = db
+            .get_selection("sel-b", "album")
+            .await
+            .expect("get b")
+            .expect("some");
+        assert_eq!(b["v"], 2);
+        // Same conflict path as put_selection: id overwrites all other columns.
+        db.put_selections(&[(
+            "sel-a".to_owned(),
+            "album".to_owned(),
+            9,
+            serde_json::json!({"v": 3}).to_string(),
+        )])
+        .await
+        .expect("upsert");
+        assert!(
+            db.get_selection::<serde_json::Value>("sel-a", "track")
+                .await
+                .expect("old kind")
+                .is_none()
+        );
+        let updated: serde_json::Value = db
+            .get_selection("sel-a", "album")
+            .await
+            .expect("get updated")
+            .expect("some");
+        assert_eq!(updated["v"], 3);
+
+        let key = TrackKey::new("youtube:batch");
+        let track = CachedTrack {
+            key: key.clone(),
+            file_id: "FILE".into(),
+            file_unique_id: "UNIQUE".into(),
+            source_url: None,
+            provider: Provider::YouTube,
+            meta: TrackMeta {
+                title: "Batch".into(),
+                ..Default::default()
+            },
+        };
+        db.put_track(&track, 192, Some(1000)).await.expect("put");
+        let other = CachedTrack {
+            key: TrackKey::new("youtube:other"),
+            ..track.clone()
+        };
+        db.put_track(&other, 192, Some(1000))
+            .await
+            .expect("put other");
+        let found = db
+            .tracks_for_keys(&[key.clone(), TrackKey::new("youtube:missing")], 192)
+            .await
+            .expect("keys");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].key, key);
+        assert_eq!(found[0].meta.title, "Batch");
+        assert!(
+            db.tracks_for_keys(&[], 192)
+                .await
+                .expect("empty keys")
+                .is_empty()
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn periodic_cleanup_deletes_expired_rows_and_old_jobs(pool: PgPool) {
+        let db = db(pool).await;
+        db.put_selection(
+            "old-sel",
+            "track",
+            1,
+            serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("old selection");
+        db.put_selection(
+            "fresh-sel",
+            "track",
+            1,
+            serde_json::json!({}),
+            Duration::from_secs(60),
+        )
+        .await
+        .expect("fresh selection");
+        db.put_search_cache("yt", "old", "[]", Duration::from_secs(60))
+            .await
+            .expect("old cache");
+        db.put_search_cache("yt", "fresh", "[]", Duration::from_secs(60))
+            .await
+            .expect("fresh cache");
+        sqlx::query!("UPDATE selections SET expires_at = 0 WHERE id = 'old-sel'")
+            .execute(&db.pool)
+            .await
+            .expect("backdate selection");
+        sqlx::query!("UPDATE search_cache SET expires_at = 0 WHERE query = 'old'")
+            .execute(&db.pool)
+            .await
+            .expect("backdate cache");
+
+        db.enqueue_and_claim_job("old-done", 1, "track", serde_json::json!({}), "w")
+            .await
+            .expect("old job");
+        db.finish_job("old-done", "done", None)
+            .await
+            .expect("finish old");
+        db.enqueue_and_claim_job("fresh-done", 1, "track", serde_json::json!({}), "w")
+            .await
+            .expect("fresh job");
+        db.finish_job("fresh-done", "done", None)
+            .await
+            .expect("finish fresh");
+        sqlx::query!("UPDATE download_jobs SET updated_at = 0 WHERE id = 'old-done'")
+            .execute(&db.pool)
+            .await
+            .expect("backdate job");
+
+        db.delete_expired_selections()
+            .await
+            .expect("selection cleanup");
+        db.delete_expired_search_cache()
+            .await
+            .expect("cache cleanup");
+        db.delete_old_finished_jobs(60).await.expect("job cleanup");
+
+        let old_sel: i64 =
+            sqlx::query_scalar!("SELECT COUNT(*) FROM selections WHERE id = 'old-sel'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("count old selection")
+                .unwrap_or_default();
+        assert_eq!(old_sel, 0);
+        assert!(
+            db.get_selection::<serde_json::Value>("fresh-sel", "track")
+                .await
+                .expect("fresh selection")
+                .is_some()
+        );
+        assert!(
+            db.get_search_cache("yt", "old")
+                .await
+                .expect("old cache")
+                .is_none()
+        );
+        assert!(
+            db.get_search_cache("yt", "fresh")
+                .await
+                .expect("fresh cache")
+                .is_some()
+        );
+        let jobs = db.list_jobs(1, 10).await.expect("jobs");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].0, "fresh-done");
     }
 
     async fn last_seen(db: &Db, id: i64) -> i64 {

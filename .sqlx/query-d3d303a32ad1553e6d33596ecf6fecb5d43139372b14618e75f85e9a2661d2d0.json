@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE search_cache SET expires_at = 0 WHERE query = 'old'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d3d303a32ad1553e6d33596ecf6fecb5d43139372b14618e75f85e9a2661d2d0"
+}

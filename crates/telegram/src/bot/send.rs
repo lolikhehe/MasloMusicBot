@@ -2,17 +2,38 @@
 
 use common::domain::CachedTrack;
 use downloader::PreparedAudio;
+use std::future::IntoFuture;
 use teloxide::prelude::*;
 use teloxide::types::{FileId, InlineKeyboardMarkup, InputFile, Message, ParseMode};
+
+/// Retry a send once after Telegram's 429 `RetryAfter`; a second failure is
+/// returned to the caller. The closure rebuilds the request because awaiting
+/// consumes the teloxide request builder.
+pub(crate) async fn with_retry_after<T, F, Fut>(mut make: F) -> Result<T, teloxide::RequestError>
+where
+    F: FnMut() -> Fut,
+    Fut: IntoFuture<Output = Result<T, teloxide::RequestError>>,
+{
+    match make().await {
+        Err(teloxide::RequestError::RetryAfter(seconds)) => {
+            tokio::time::sleep(seconds.duration()).await;
+            make().await
+        }
+        other => other,
+    }
+}
 
 pub async fn send_html(
     bot: &Bot,
     chat: ChatId,
     text: impl Into<String>,
 ) -> Result<Message, teloxide::RequestError> {
-    bot.send_message(chat, text)
-        .parse_mode(ParseMode::Html)
-        .await
+    let text = text.into();
+    with_retry_after(|| {
+        bot.send_message(chat, text.clone())
+            .parse_mode(ParseMode::Html)
+    })
+    .await
 }
 
 pub async fn send_cached(
@@ -22,23 +43,28 @@ pub async fn send_cached(
     caption: Option<String>,
     markup: Option<InlineKeyboardMarkup>,
 ) -> Result<Message, teloxide::RequestError> {
-    let title = track.meta.stripped_title();
-    let mut request = bot
-        .send_audio(chat, InputFile::file_id(FileId(track.file_id.clone())))
-        .title(truncate(&title, 128));
-    if let Some(performer) = track.meta.performer.as_deref() {
-        request = request.performer(truncate(performer, 128));
-    }
-    if let Some(duration) = track.meta.duration_secs {
-        request = request.duration(duration);
-    }
-    if let Some(caption) = caption {
-        request = request.caption(caption);
-    }
-    if let Some(markup) = markup {
-        request = request.reply_markup(markup);
-    }
-    request.await
+    let title = truncate(&track.meta.stripped_title(), 128);
+    let performer = track.meta.performer.as_deref().map(|p| truncate(p, 128));
+    let duration = track.meta.duration_secs;
+    with_retry_after(|| {
+        let mut request = bot
+            .send_audio(chat, InputFile::file_id(FileId(track.file_id.clone())))
+            .title(title.clone());
+        if let Some(performer) = performer.as_deref() {
+            request = request.performer(performer.to_owned());
+        }
+        if let Some(duration) = duration {
+            request = request.duration(duration);
+        }
+        if let Some(caption) = caption.as_deref() {
+            request = request.caption(caption.to_owned());
+        }
+        if let Some(markup) = &markup {
+            request = request.reply_markup(markup.clone());
+        }
+        request
+    })
+    .await
 }
 
 pub async fn send_prepared(
@@ -48,31 +74,33 @@ pub async fn send_prepared(
     caption: Option<String>,
     markup: Option<InlineKeyboardMarkup>,
 ) -> Result<Message, teloxide::RequestError> {
-    let input = InputFile::file(prepared.audio_path.clone()).file_name(prepared.file_name());
-    let title = prepared.meta.stripped_title();
-    let mut request = bot.send_audio(chat, input).title(truncate(&title, 128));
-    if let Some(performer) = prepared.meta.performer.as_deref() {
-        request = request.performer(truncate(performer, 128));
-    }
-    if let Some(duration) = prepared.meta.duration_secs {
-        request = request.duration(duration);
-    }
-    // Telegram caps audio thumbnails at 200 KB. The HQ cover is embedded in
-    // the tags for full-size display; only the small variant goes here.
-    if let Some(cover) = prepared
-        .thumb_path
-        .as_ref()
-        .or(prepared.cover_path.as_ref())
-    {
-        request = request.thumbnail(InputFile::file(cover.clone()));
-    }
-    if let Some(caption) = caption {
-        request = request.caption(caption);
-    }
-    if let Some(markup) = markup {
-        request = request.reply_markup(markup);
-    }
-    request.await
+    let title = truncate(&prepared.meta.stripped_title(), 128);
+    let performer = prepared.meta.performer.as_deref().map(|p| truncate(p, 128));
+    let duration = prepared.meta.duration_secs;
+    // Telegram caps audio thumbnails at 200 KB; only the small variant is
+    // safe to send. The full-size cover stays embedded in the file's tags.
+    let thumb = prepared.thumb_path.clone();
+    with_retry_after(|| {
+        let input = InputFile::file(prepared.audio_path.clone()).file_name(prepared.file_name());
+        let mut request = bot.send_audio(chat, input).title(title.clone());
+        if let Some(performer) = performer.as_deref() {
+            request = request.performer(performer.to_owned());
+        }
+        if let Some(duration) = duration {
+            request = request.duration(duration);
+        }
+        if let Some(cover) = &thumb {
+            request = request.thumbnail(InputFile::file(cover.clone()));
+        }
+        if let Some(caption) = caption.as_deref() {
+            request = request.caption(caption.to_owned());
+        }
+        if let Some(markup) = &markup {
+            request = request.reply_markup(markup.clone());
+        }
+        request
+    })
+    .await
 }
 
 pub fn extract_file_id(message: &Message) -> Option<(String, String)> {

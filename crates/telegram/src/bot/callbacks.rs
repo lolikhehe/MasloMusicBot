@@ -71,7 +71,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         .await?;
     } else if let Some(payload) = data.strip_prefix("pg:")
         && let Some((id, offset)) = payload.rsplit_once(':')
-        && let Ok(offset) = offset.parse::<u32>()
+        && let Ok(offset) = offset.parse::<u32>().map(|offset| offset.min(10_000))
     {
         crate::bot::handlers::handle_search_page(
             &state,
@@ -84,7 +84,7 @@ pub async fn handle_callback(state: AppState, bot: Bot, query: CallbackQuery) ->
         )
         .await?;
     } else if let Some(key) = data.strip_prefix("fav:") {
-        handle_fav_toggle(&state, &bot, &query, key, user.lang, user_id).await?;
+        handle_fav_toggle(&state, &bot, &query, key, user.lang, user_id, user.quality).await?;
     } else if let Some(payload) = data.strip_prefix("s:") {
         let Some(message) = query.regular_message() else {
             let _ = bot.answer_callback_query(query.id.clone()).await;
@@ -433,12 +433,12 @@ async fn handle_album_confirm(
     .await;
     if job.cancelled().await {
         job.finish("cancelled", None).await;
-    } else if result.is_ok() {
+    } else if matches!(&result, Ok(delivered) if *delivered > 0) {
         job.finish("done", None).await;
     } else {
         job.finish("failed", None).await;
     }
-    result
+    result.map(|_| ())
 }
 
 /// User declined a collection: discard the pending expansion.
@@ -473,6 +473,7 @@ async fn handle_fav_toggle(
     key: &str,
     lang: common::domain::Lang,
     user_id: i64,
+    quality: u32,
 ) -> HandlerResult {
     // Title/performer from the message audio keep /fav readable without a
     // catalog lookup; the key stays authoritative.
@@ -481,7 +482,27 @@ async fn handle_fav_toggle(
             audio.title.clone().unwrap_or_else(|| key.to_owned()),
             audio.performer.clone(),
         ),
-        None => (key.to_owned(), None),
+        None => {
+            // Inline messages have no audio to read; use cached metadata so
+            // /fav shows a name instead of the raw track key.
+            let cached = state
+                .manager
+                .get_cached(&common::domain::TrackKey(key.to_owned()), quality)
+                .await
+                .ok()
+                .flatten();
+            cached.map_or((key.to_owned(), None), |cached| {
+                let title = cached.meta.stripped_title();
+                (
+                    if title.is_empty() {
+                        key.to_owned()
+                    } else {
+                        title.into_owned()
+                    },
+                    cached.meta.performer.clone(),
+                )
+            })
+        }
     };
     let added = state
         .db
@@ -491,17 +512,20 @@ async fn handle_fav_toggle(
         .answer_callback_query(query.id.clone())
         .text(i18n::fav_toggled(lang, added))
         .await;
-    let markup = crate::bot::handlers::fav_markup_for(state, user_id, key).await;
-    if let Some(inline_message_id) = query.inline_message_id.clone() {
-        let _ = bot
-            .edit_message_reply_markup_inline(inline_message_id)
-            .reply_markup(markup)
-            .await;
-    } else if let Some(message) = query.regular_message() {
-        let _ = bot
-            .edit_message_reply_markup(message.chat.id, message.id)
-            .reply_markup(markup)
-            .await;
+    // None means the button cannot be built (overlong key or DB error); keep
+    // the existing markup rather than showing a wrong/toggle-destroying star.
+    if let Some(markup) = crate::bot::handlers::fav_markup_for(state, user_id, key).await {
+        if let Some(inline_message_id) = query.inline_message_id.clone() {
+            let _ = bot
+                .edit_message_reply_markup_inline(inline_message_id)
+                .reply_markup(markup)
+                .await;
+        } else if let Some(message) = query.regular_message() {
+            let _ = bot
+                .edit_message_reply_markup(message.chat.id, message.id)
+                .reply_markup(markup)
+                .await;
+        }
     }
     Ok(())
 }

@@ -653,16 +653,16 @@ pub async fn handle_collage_callback(
         return Ok(());
     };
     let user = state.db.ensure_user(user_id, Lang::En).await?;
-    let Some(nick) = user.lastfm_user.filter(|value| !value.is_empty()) else {
+    // Group opt-in gate, same as the /profile and /collage command path.
+    if !message.chat.is_private() && !state.chat_allowed(message.chat.id.0).await? {
+        bot.send_message(message.chat.id, i18n::private_only(user.lang))
+            .await?;
         return Ok(());
-    };
-    let Some(client) = state.lastfm.clone() else {
+    }
+    // context() re-checks the lastfm_stats toggle, the nick and the API key
+    // exactly as the command path does before rendering any collage.
+    let Some(context) = context(state, bot, message, user.lang).await? else {
         return Ok(());
-    };
-    let context = Context {
-        client,
-        nick,
-        lang: user.lang,
     };
     send_collage(state, bot, message.chat.id, &context, kind, grid, period).await
 }

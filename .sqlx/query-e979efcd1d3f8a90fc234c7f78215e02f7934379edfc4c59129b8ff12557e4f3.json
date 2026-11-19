@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE selections SET expires_at = 0 WHERE id = 'old-sel'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e979efcd1d3f8a90fc234c7f78215e02f7934379edfc4c59129b8ff12557e4f3"
+}

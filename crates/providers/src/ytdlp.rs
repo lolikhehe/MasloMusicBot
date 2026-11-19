@@ -11,8 +11,10 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 use tracing::{debug, warn};
 
 #[derive(Clone)]
@@ -21,6 +23,10 @@ pub struct YtDlp {
     ffmpeg: String,
     metadata_timeout: Duration,
     download_timeout: Duration,
+    /// Metadata/search calls spawn a PyInstaller process per cache miss; a
+    /// small dedicated semaphore keeps an inline-cache stampede bounded
+    /// without throttling full downloads (those use the downloader semaphore).
+    metadata_semaphore: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone)]
@@ -42,6 +48,7 @@ impl YtDlp {
             ffmpeg: config.ffmpeg_path.clone(),
             metadata_timeout: config.metadata_timeout,
             download_timeout: config.download_timeout,
+            metadata_semaphore: Arc::new(Semaphore::new(4)),
         }
     }
 
@@ -81,7 +88,7 @@ impl YtDlp {
         let target = format!("{prefix}{limit}:{query}");
         let limit_arg = limit.to_string();
         let output = self
-            .run(
+            .run_metadata(
                 &[
                     "--ignore-config",
                     "--dump-single-json",
@@ -123,7 +130,7 @@ impl YtDlp {
 
     pub async fn metadata(&self, url: &str) -> Result<MediaInfo, DownloadError> {
         let output = self
-            .run(
+            .run_metadata(
                 &[
                     "--ignore-config",
                     "--dump-single-json",
@@ -163,7 +170,7 @@ impl YtDlp {
             .ok_or_else(|| DownloadError::Unsupported("album has no URL".to_owned()))?;
         let limit = limit.clamp(1, 50);
         let output = self
-            .run(
+            .run_metadata(
                 &[
                     "--ignore-config",
                     "--dump-single-json",
@@ -332,6 +339,22 @@ impl YtDlp {
         Ok(DownloadedAudio { audio_path, meta })
     }
 
+    /// Metadata/search path: bound the number of concurrent yt-dlp probe
+    /// processes. Full downloads deliberately bypass this semaphore (they are
+    /// already bounded by the downloader's semaphore).
+    async fn run_metadata(
+        &self,
+        args: &[&str],
+        timeout: Duration,
+    ) -> Result<std::process::Output, DownloadError> {
+        let _permit = self
+            .metadata_semaphore
+            .acquire()
+            .await
+            .map_err(|_| DownloadError::Internal("metadata semaphore closed".to_owned()))?;
+        self.run(args, timeout).await
+    }
+
     async fn run(
         &self,
         args: &[&str],
@@ -349,7 +372,7 @@ impl YtDlp {
             .await
             .map_err(|_| {
                 DownloadError::SourceUnavailable(format!(
-                    "yt-dlp did not finish within {}s",
+                    "yt-dlp timed out after {}s",
                     timeout.as_secs()
                 ))
             })?

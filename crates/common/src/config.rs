@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
+use tracing::warn;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -127,6 +128,9 @@ impl Config {
             })
             .transpose()?
             .unwrap_or_default();
+        if admins.is_empty() {
+            warn!("ADMINS is empty or unset; every admin command will be denied (fail-closed)");
+        }
 
         let storage_chat_id = env_optional("STORAGE_CHAT_ID")
             .map(|value| {

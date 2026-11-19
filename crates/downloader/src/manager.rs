@@ -30,6 +30,9 @@ pub struct PreparedAudio {
     pub thumb_path: Option<PathBuf>,
     /// Holds the temporary directory alive until the audio file is consumed.
     _dir: Arc<TempDir>,
+    /// Keeps the singleflight entry alive until this audio (and every waiter's
+    /// clone) is dropped, i.e. after the file id has been recorded.
+    _inflight_guard: Option<Arc<InflightGuard>>,
 }
 
 impl PreparedAudio {
@@ -104,35 +107,74 @@ pub async fn postprocess_audio(
         }
         _ => {}
     }
-    command.arg(&target);
+    command.kill_on_drop(true).arg(&target);
 
-    match command.output().await {
-        Ok(output) if output.status.success() && target.exists() => {
+    match tokio::time::timeout(Duration::from_secs(30), command.output()).await {
+        Ok(Ok(output))
+            if output.status.success()
+                && tokio::fs::metadata(&target)
+                    .await
+                    .is_ok_and(|metadata| metadata.len() > 0) =>
+        {
             prepared.audio_path = target;
             metrics::counter!("music_bot_audio_postprocessed_total").increment(1);
         }
-        Ok(output) => {
+        Ok(Ok(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             warn!(error = %stderr.trim(), "ffmpeg post-processing failed; keeping original audio");
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             warn!(%error, "could not spawn ffmpeg; keeping original audio");
+        }
+        Err(_) => {
+            warn!("ffmpeg post-processing timed out; keeping original audio");
         }
     }
 }
 
-type InflightResult = Result<PreparedAudio, Arc<DownloadError>>;
+/// Aborts a detached cover task on every exit path. Dropping a bare
+/// `JoinHandle` only detaches it, which would leave an ffmpeg child writing
+/// into a `TempDir` that is deleted as soon as the download fails.
+struct AbortOnDrop<T>(Option<tokio::task::JoinHandle<T>>);
 
-/// Removes this `(track, quality)` entry from the in-flight map on **every**
-/// exit path, including a panic in the leader. Without the guard a panicked
-/// leader would leave waiters blocked forever on a broadcast nobody sends to.
-struct InflightGuard<'a> {
-    inflight: &'a Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>>,
-    key: (TrackKey, u32),
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.as_ref() {
+            handle.abort();
+        }
+    }
 }
 
-impl Drop for InflightGuard<'_> {
+impl<T> AbortOnDrop<T> {
+    /// Await in place so the handle stays owned by the guard (and is aborted
+    /// by its Drop if this wait is cancelled by a timeout).
+    async fn wait(&mut self) -> Result<T, tokio::task::JoinError> {
+        let handle = self.0.as_mut().expect("cover join handle");
+        std::future::poll_fn(|cx| std::pin::Pin::new(&mut *handle).poll(cx)).await
+    }
+}
+
+type InflightResult = Result<PreparedAudio, Arc<DownloadError>>;
+/// (track, quality, hq_cover) — cover quality is per-request, so a piggybacker
+/// must not inherit the leader's cover choice.
+type InflightKey = (TrackKey, u32, bool);
+
+/// Removes this in-flight entry on **every** exit path, including a panic in
+/// the leader. The leader holds one armed guard while downloading; on success
+/// it disarms that guard and an identical guard travels inside the returned
+/// `PreparedAudio`, keeping the entry alive until every consumer (which shares
+/// it via `Arc`) has dropped its copy — i.e. after the file id is recorded.
+struct InflightGuard {
+    inflight: Arc<Mutex<HashMap<InflightKey, broadcast::Sender<InflightResult>>>>,
+    key: InflightKey,
+    armed: bool,
+}
+
+impl Drop for InflightGuard {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
         let mut map = self
             .inflight
             .lock()
@@ -149,7 +191,7 @@ pub struct DownloadManager {
     external: ExternalResolver,
     cover_client: reqwest::Client,
     semaphore: Arc<Semaphore>,
-    inflight: Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>>,
+    inflight: Arc<Mutex<HashMap<InflightKey, broadcast::Sender<InflightResult>>>>,
     user_semaphores: Cache<i64, Arc<Semaphore>>,
     search_cache: Cache<String, Vec<SearchResult>>,
     album_search_cache: Cache<String, Vec<AlbumSearchResult>>,
@@ -174,7 +216,7 @@ impl DownloadManager {
             ytdlp,
             external,
             cover_client,
-            inflight: Mutex::new(HashMap::new()),
+            inflight: Arc::new(Mutex::new(HashMap::new())),
             user_semaphores,
             search_cache,
             album_search_cache,
@@ -317,10 +359,13 @@ impl DownloadManager {
         if normalized.is_empty() {
             return Ok(Vec::new());
         }
-        if let Some(cached) = self.album_search_cache.get(&normalized).await {
+        let limit = limit.clamp(1, 20);
+        // The limit is part of the key: page turning re-asks with a bigger
+        // limit and must not get the shorter first page back.
+        let cache_key = format!("{limit}:{normalized}");
+        if let Some(cached) = self.album_search_cache.get(&cache_key).await {
             return Ok(cached);
         }
-        let limit = limit.clamp(1, 20);
         let (deezer, apple) = tokio::join!(
             self.external.deezer_album_search(query, limit),
             self.external.apple_album_search(query, limit),
@@ -349,9 +394,7 @@ impl DownloadManager {
             return Err(error);
         }
         out.truncate(limit);
-        self.album_search_cache
-            .insert(normalized, out.clone())
-            .await;
+        self.album_search_cache.insert(cache_key, out.clone()).await;
         Ok(out)
     }
 
@@ -496,7 +539,7 @@ impl DownloadManager {
             .await
             .map_err(|_| DownloadError::Internal("user download semaphore closed".to_owned()))?;
 
-        let cache_key = (request.key.clone(), quality);
+        let cache_key = (request.key.clone(), quality, hq_cover);
         let mut receiver = None;
         let mut sender = None;
 
@@ -539,14 +582,28 @@ impl DownloadManager {
         }
 
         let sender = sender.expect("leader sender must exist");
-        // Guard must outlive the send so waiters receive the result before the
-        // entry is removed; dropping at function end does exactly that.
-        let _guard = InflightGuard {
-            inflight: &self.inflight,
+        // Armed until the download resolves: on failure (or a leader panic)
+        // this removes the entry so waiters can retry. On success it is
+        // disarmed and an identical guard rides along in `PreparedAudio`,
+        // keeping the entry alive through the handler's file-id recording.
+        let mut guard = InflightGuard {
+            inflight: Arc::clone(&self.inflight),
             key: cache_key.clone(),
+            armed: true,
         };
-        let result = self.prepare_leader(request, quality, hq_cover).await;
-        let broadcast_result = result.clone().map_err(|error| Arc::new(error.clone()));
+        let result = match self.prepare_leader(request, quality, hq_cover).await {
+            Ok(mut prepared) => {
+                guard.armed = false;
+                prepared._inflight_guard = Some(Arc::new(InflightGuard {
+                    inflight: Arc::clone(&self.inflight),
+                    key: cache_key,
+                    armed: true,
+                }));
+                Ok(prepared)
+            }
+            Err(error) => Err(error),
+        };
+        let broadcast_result = result.clone().map_err(Arc::new);
         let _ = sender.send(broadcast_result);
         result
     }
@@ -600,7 +657,7 @@ impl DownloadManager {
 
         // Overlap the cover download+resize with the audio download when the
         // thumbnail URL is already known (search picks always carry one).
-        let cover_task = request
+        let mut cover_task = request
             .meta
             .as_ref()
             .and_then(|meta| meta.thumbnail_url.clone())
@@ -608,9 +665,9 @@ impl DownloadManager {
                 let client = self.cover_client.clone();
                 let ffmpeg = self.config.ffmpeg_path.clone();
                 let dir_path = dir.path().to_owned();
-                tokio::spawn(async move {
+                AbortOnDrop(Some(tokio::spawn(async move {
                     audio::prepare_cover(&client, &ffmpeg, Some(&url), &dir_path, hq_cover).await
-                })
+                })))
             });
 
         info!(key = %request.key, target = ?request.target, "starting download");
@@ -664,10 +721,10 @@ impl DownloadManager {
                 actual: u64::from(duration),
             });
         }
-        let covers = match cover_task {
+        let covers = match cover_task.as_mut() {
             // HQ may fetch a second image URL and re-encode twice, so allow a
             // little more time than the old single-thumbnail path did.
-            Some(task) => tokio::time::timeout(std::time::Duration::from_secs(16), task)
+            Some(guard) => tokio::time::timeout(Duration::from_secs(16), guard.wait())
                 .await
                 .ok()
                 .and_then(|join| join.ok())
@@ -699,6 +756,7 @@ impl DownloadManager {
             cover_path: covers.embedded,
             thumb_path: covers.thumbnail,
             _dir: Arc::new(dir),
+            _inflight_guard: None,
         })
     }
 }
@@ -707,14 +765,31 @@ impl DownloadManager {
 /// YouTube's intermittent HTTP 403 (rate limiting as often as real refusals;
 /// the fallback catalogs still run after a failed retry).
 fn is_transient(error: &DownloadError) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
-    message.contains("timed out")
-        || message.contains("timeout")
-        || message.contains("connection")
-        || message.contains("reset")
-        || message.contains("too many requests")
-        || message.contains("429")
-        || message.contains("403")
+    match error {
+        // Only the classified source-failure text carries HTTP status codes.
+        // Match them word-ish so a digit run in a byte count (e.g. "14035456
+        // bytes") can't be mistaken for a 403/429.
+        DownloadError::SourceUnavailable(message) => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("timed out")
+                || lower.contains("timeout")
+                || lower.contains("connection")
+                || lower.contains("reset")
+                || lower.contains("too many requests")
+                || has_http_status(&lower, 403)
+                || has_http_status(&lower, 429)
+        }
+        // Size/duration/policy failures are final. Their Display text also
+        // contains digit runs (sizes, seconds), so never substring-match it.
+        _ => false,
+    }
+}
+
+fn has_http_status(message: &str, code: u16) -> bool {
+    message.contains(&format!("http {code}"))
+        || message.contains(&format!(" {code} "))
+        || message.starts_with(&format!("{code} "))
+        || message.ends_with(&format!(" {code}"))
 }
 
 fn is_empty_search_query(target: &DownloadTarget) -> bool {
@@ -853,16 +928,19 @@ mod tests {
 
     #[test]
     fn inflight_guard_removes_entry_on_drop_and_panic() {
-        let map: Mutex<HashMap<(TrackKey, u32), broadcast::Sender<InflightResult>>> =
-            Mutex::new(HashMap::new());
-        let key = (TrackKey::new("youtube:guard"), 192u32);
+        let map = Arc::new(Mutex::new(HashMap::<
+            InflightKey,
+            broadcast::Sender<InflightResult>,
+        >::new()));
+        let key = (TrackKey::new("youtube:guard"), 192u32, false);
         let (tx, _rx) = broadcast::channel::<InflightResult>(1);
         map.lock().expect("lock").insert(key.clone(), tx);
 
         {
             let _guard = InflightGuard {
-                inflight: &map,
+                inflight: Arc::clone(&map),
                 key: key.clone(),
+                armed: true,
             };
             assert_eq!(map.lock().expect("lock").len(), 1);
         }
@@ -874,10 +952,13 @@ mod tests {
         // Panic path: the guard still runs Drop while the stack unwinds.
         let (tx, _rx) = broadcast::channel::<InflightResult>(1);
         map.lock().expect("lock").insert(key.clone(), tx);
+        let map_for_panic = Arc::clone(&map);
+        let key_for_panic = key.clone();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = InflightGuard {
-                inflight: &map,
-                key: key.clone(),
+                inflight: map_for_panic,
+                key: key_for_panic,
+                armed: true,
             };
             panic!("simulated leader panic");
         }));
@@ -885,6 +966,97 @@ mod tests {
         assert!(
             map.lock().expect("lock").is_empty(),
             "guard must clean up on panic too"
+        );
+    }
+
+    #[test]
+    fn inflight_key_includes_hq_cover() {
+        let key = TrackKey::new("youtube:key");
+        assert_ne!((key.clone(), 320u32, false), (key, 320u32, true));
+    }
+
+    #[test]
+    fn disarmed_inflight_guard_keeps_entry_for_consumers() {
+        let map = Arc::new(Mutex::new(HashMap::<
+            InflightKey,
+            broadcast::Sender<InflightResult>,
+        >::new()));
+        let key = (TrackKey::new("youtube:handoff"), 320u32, true);
+        let (tx, _rx) = broadcast::channel::<InflightResult>(1);
+        map.lock().expect("lock").insert(key.clone(), tx);
+
+        {
+            // The leader's guard is disarmed on success: no eviction here.
+            let _guard = InflightGuard {
+                inflight: Arc::clone(&map),
+                key: key.clone(),
+                armed: false,
+            };
+        }
+        assert_eq!(map.lock().expect("lock").len(), 1);
+
+        // The shared guard in PreparedAudio outlives the leader and any single
+        // waiter; the entry is removed only after the last consumer drops it.
+        let shared = Arc::new(InflightGuard {
+            inflight: Arc::clone(&map),
+            key: key.clone(),
+            armed: true,
+        });
+        let waiter_copy = Arc::clone(&shared);
+        drop(shared);
+        assert_eq!(map.lock().expect("lock").len(), 1);
+        drop(waiter_copy);
+        assert!(map.lock().expect("lock").is_empty());
+    }
+
+    #[test]
+    fn is_transient_uses_typed_variants_not_substrings() {
+        // A byte count / duration containing "403" must never be transient.
+        assert!(!is_transient(&DownloadError::TooLarge {
+            limit: 403,
+            actual: 14_035_456,
+        }));
+        assert!(!is_transient(&DownloadError::TooLong {
+            limit: 10_000,
+            actual: 10_403,
+        }));
+        // Classified source text with a real status code / timeout is transient.
+        assert!(is_transient(&DownloadError::SourceUnavailable(
+            "HTTP 429 Too Many Requests".to_owned()
+        )));
+        assert!(is_transient(&DownloadError::SourceUnavailable(
+            "yt-dlp timed out after 30s".to_owned()
+        )));
+        assert!(is_transient(&DownloadError::SourceUnavailable(
+            "ERROR: HTTP 403 Forbidden".to_owned()
+        )));
+        // Digit runs inside a source message are not status codes.
+        assert!(!is_transient(&DownloadError::SourceUnavailable(
+            "server returned 14035456 bytes".to_owned()
+        )));
+    }
+
+    #[tokio::test]
+    async fn abort_on_drop_aborts_cover_task() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        struct Flag(Arc<AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let observed = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&observed);
+        let guard = AbortOnDrop(Some(tokio::spawn(async move {
+            let _flag = Flag(flag);
+            std::future::pending::<()>().await;
+        })));
+        tokio::task::yield_now().await;
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(
+            observed.load(Ordering::SeqCst),
+            "dropping the guard must abort the task"
         );
     }
 

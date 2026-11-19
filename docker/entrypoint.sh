@@ -27,9 +27,10 @@ if [ "$AUTO_UPDATE" != "true" ]; then
     exec "$@"
 fi
 
-tag_json=$(curl --fail --silent --show-error --retry 2 --max-time 30 \
-    https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest 2>&1)
-tag=$(printf '%s' "$tag_json" | grep -o '"tag_name": *"[^"]*"' | head -n 1 | cut -d'"' -f 4)
+# Follow the /releases/latest redirect instead of the rate-limited GitHub API
+# (60 req/h/IP); the final URL ends in /tag/<version>.
+tag=$(curl -sIL --max-time 15 -o /dev/null -w '%{url_effective}' \
+    https://github.com/yt-dlp/yt-dlp/releases/latest 2>/dev/null | sed 's|.*/||')
 
 if [ -z "$tag" ]; then
     log "latest-release lookup failed; using pinned yt-dlp $PINNED_VERSION"
@@ -46,7 +47,7 @@ else
     log "updating yt-dlp $PINNED_VERSION -> $tag"
     mkdir -p "$UPDATE_DIR" || log "cannot create $UPDATE_DIR; keeping pinned binary"
     release_url="https://github.com/yt-dlp/yt-dlp/releases/download/${tag}"
-    if curl --fail --silent --show-error --retry 2 --max-time 300 -L \
+    if curl --fail --silent --show-error --retry 2 --max-time 60 -L \
         "${release_url}/yt-dlp_linux" -o "$UPDATE_BIN.new" \
         && curl --fail --silent --show-error --retry 2 --max-time 30 -L \
         "${release_url}/SHA2-256SUMS" -o "$SUMS_FILE.new"; then

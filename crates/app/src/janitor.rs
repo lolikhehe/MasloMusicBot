@@ -7,13 +7,18 @@
 //! unpacks itself into `TMP_DIR/_MEIxxxx` on every run; killed or timed-out
 //! runs leave those behind too, so they are swept by the same rule.
 //! User files elsewhere in the directory are never touched.
+//! The same tick also prunes expired coordination rows and the old job ledger
+//! from Postgres; a failure there is logged and never stops the loop.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
+use storage::Db;
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 /// Any download older than this is certainly not in progress.
 const MAX_AGE: Duration = Duration::from_secs(30 * 60);
+/// Finished jobs older than this are dropped from the ledger.
+const JOB_RETENTION: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// yt-dlp unpacks here; a live download keeps its dir younger than MAX_AGE.
 const DIR_PREFIXES: &[&str] = &["track-", "_MEI"];
 
@@ -26,13 +31,32 @@ fn is_orphan_prefix(name: &std::ffi::OsStr) -> bool {
 }
 
 /// Spawn the janitor as a detached task; the process can stop at any time.
-pub fn spawn(tmp_dir: PathBuf) {
+/// Takes the app's own `Db` so no second `Db::connect` (and therefore no
+/// second `migrate()`) runs mid-boot.
+pub fn spawn(db: Db, tmp_dir: PathBuf) {
     tokio::spawn(async move {
+        let db = db;
         loop {
             sweep(&tmp_dir).await;
+            cleanup_db(&db).await;
             tokio::time::sleep(SWEEP_INTERVAL).await;
         }
     });
+}
+
+async fn cleanup_db(db: &Db) {
+    if let Err(error) = db.delete_expired_selections().await {
+        tracing::warn!(%error, "janitor: failed to delete expired selections");
+    }
+    if let Err(error) = db.delete_expired_search_cache().await {
+        tracing::warn!(%error, "janitor: failed to delete expired search cache");
+    }
+    if let Err(error) = db
+        .delete_old_finished_jobs(JOB_RETENTION.as_secs() as i64)
+        .await
+    {
+        tracing::warn!(%error, "janitor: failed to delete old finished jobs");
+    }
 }
 
 async fn sweep(tmp_dir: &Path) {

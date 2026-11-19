@@ -8,9 +8,15 @@ use common::domain::{Lang, Provider};
 use common::error::HandlerResult;
 use common::i18n;
 use providers::key_from_input;
+use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode};
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tracing::warn;
+
+/// Simultaneous artwork resolutions for `/similar` (mirrors the collage path).
+const COVER_PARALLELISM: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -535,7 +541,7 @@ pub async fn handle_command(
                 text.push_str(i18n::queue_empty(lang));
             } else {
                 for (id, kind, status, cancelling) in jobs {
-                    text.push_str(&i18n::queue_item(&id, &kind, &status, cancelling));
+                    text.push_str(&i18n::queue_item(lang, &id, &kind, &status, cancelling));
                 }
             }
             text.push_str(&format!("\n— {}", common::version::DEV_CHANNEL_HANDLE));
@@ -604,7 +610,9 @@ pub async fn handle_command(
                 .await;
                 let text = match result {
                     Ok(_) => i18n::convert_reply_done(lang, &value),
-                    Err(error) => i18n::convert_reply_failed(lang, &error.to_string()),
+                    Err(error) => {
+                        i18n::convert_reply_failed(lang, &escape_html(&error.to_string()))
+                    }
                 };
                 let _ = crate::bot::handlers::edit_html(bot, msg.chat.id, progress.id, text).await;
                 return Ok(());
@@ -620,15 +628,26 @@ pub async fn handle_command(
         }
         Command::Favorites => {
             let rows = state.db.favorites(user_id, 30).await?;
-            let mut buttons: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+            // One batch fetch instead of up to 30 sequential get_cached SELECTs.
+            // Dedup per key; favorites() already returns newest-first order.
+            let mut seen = std::collections::HashSet::new();
+            let keys: Vec<common::domain::TrackKey> = rows
+                .iter()
+                .filter(|&(key, _, _)| seen.insert(key.as_str()))
+                .map(|(key, _, _)| common::domain::TrackKey(key.clone()))
+                .collect();
+            let cached = state.db.tracks_for_keys(&keys, user_record.quality).await?;
+            let by_key: std::collections::HashMap<&str, &common::domain::CachedTrack> = cached
+                .iter()
+                .map(|track| (track.key.as_str(), track))
+                .collect();
+            let mut buttons: Vec<Vec<InlineKeyboardButton>> = Vec::with_capacity(rows.len());
+            let mut selections: Vec<(String, common::domain::TrackRequest)> =
+                Vec::with_capacity(rows.len());
             for (key, _title, _performer) in rows {
                 // Only favorites with a live Telegram file_id can be replayed;
                 // the rest silently drop off the list until re-downloaded.
-                let Some(cached) = state
-                    .manager
-                    .get_cached(&common::domain::TrackKey(key.clone()), user_record.quality)
-                    .await?
-                else {
+                let Some(cached) = by_key.get(key.as_str()) else {
                     continue;
                 };
                 let request = common::domain::TrackRequest {
@@ -639,24 +658,24 @@ pub async fn handle_command(
                     target: common::domain::DownloadTarget::Search(cached.meta.search_query()),
                 };
                 let selection_id = state.new_selection_id();
-                state
-                    .put_selection(
-                        &selection_id,
-                        crate::state::selection::TRACK,
-                        user_id,
-                        &request,
-                    )
-                    .await?;
                 let label = truncate(&cached.meta.display_title(), 60);
                 buttons.push(vec![InlineKeyboardButton::callback(
                     format!("⭐ {label}"),
                     format!("q:{selection_id}"),
                 )]);
+                selections.push((selection_id, request));
             }
             if buttons.is_empty() {
                 send_plain(bot, msg.chat.id, i18n::favorites_empty(lang)).await?;
                 return Ok(());
             }
+            let selection_refs: Vec<(String, &common::domain::TrackRequest)> = selections
+                .iter()
+                .map(|(id, request)| (id.clone(), request))
+                .collect();
+            state
+                .put_selections(crate::state::selection::TRACK, user_id, &selection_refs)
+                .await?;
             bot.send_message(msg.chat.id, i18n::favorites_title(lang))
                 .reply_markup(InlineKeyboardMarkup::new(buttons))
                 .await?;
@@ -699,25 +718,61 @@ pub async fn handle_command(
             // Delivery only downloads a cover when the request carries
             // thumbnail_url (search picks always do); Last.fm gives us no
             // images, so resolve each similar track through the Deezer catalog.
-            let mut results: Vec<common::domain::SearchResult> = Vec::with_capacity(similar.len());
-            for (artist, title) in similar {
-                let query = format!("{artist} {title}");
-                let thumbnail_url = state
-                    .manager
-                    .artwork_url(providers::external::ArtworkKind::Track, &query)
-                    .await;
-                results.push(common::domain::SearchResult {
+            // Resolve them in parallel: sequential lookups cost 6 s each and
+            // used to stall /similar for up to a minute. Collect by index so
+            // the button order stays deterministic.
+            let queries: Vec<String> = similar
+                .iter()
+                .map(|(artist, title)| format!("{artist} {title}"))
+                .collect();
+            let mut results: Vec<common::domain::SearchResult> = similar
+                .iter()
+                .zip(&queries)
+                .map(|((artist, title), query)| common::domain::SearchResult {
                     key: common::domain::TrackKey::new(format!("similar:{artist} - {title}")),
                     provider: common::domain::Provider::YouTube,
                     source_url: String::new(),
                     meta: common::domain::TrackMeta {
-                        title,
-                        performer: Some(artist),
-                        thumbnail_url,
+                        title: title.clone(),
+                        performer: Some(artist.clone()),
+                        thumbnail_url: None,
                         ..Default::default()
                     },
-                    target: common::domain::DownloadTarget::Search(query),
+                    target: common::domain::DownloadTarget::Search(query.clone()),
+                })
+                .collect();
+            let mut resolves = JoinSet::new();
+            let resolve_semaphore = Arc::new(Semaphore::new(COVER_PARALLELISM));
+            for (index, query) in queries.iter().enumerate() {
+                let cache_key = format!(
+                    "{}:{}",
+                    providers::external::ArtworkKind::Track.as_str(),
+                    query.trim().to_lowercase()
+                );
+                if let Some(cached) = state.artwork_cache.get(&cache_key).await {
+                    results[index].meta.thumbnail_url = cached;
+                    continue;
+                }
+                let state = state.clone();
+                let semaphore = resolve_semaphore.clone();
+                let query = query.clone();
+                resolves.spawn(async move {
+                    let _permit = semaphore.acquire().await.ok()?;
+                    let resolved = state
+                        .manager
+                        .artwork_url(providers::external::ArtworkKind::Track, &query)
+                        .await;
+                    state
+                        .artwork_cache
+                        .insert(cache_key, resolved.clone())
+                        .await;
+                    Some((index, resolved))
                 });
+            }
+            while let Some(joined) = resolves.join_next().await {
+                if let Ok(Some((index, resolved))) = joined {
+                    results[index].meta.thumbnail_url = resolved;
+                }
             }
             let keys: Vec<String> = results
                 .iter()
@@ -733,6 +788,7 @@ pub async fn handle_command(
                     .await?;
             let subject = escape_html(&cached.meta.display_title());
             bot.send_message(msg.chat.id, i18n::similar_title(lang, &subject))
+                .parse_mode(ParseMode::Html)
                 .reply_markup(InlineKeyboardMarkup::new(rows))
                 .await?;
         }
@@ -764,11 +820,13 @@ pub async fn handle_command(
                     let markup = InlineKeyboardMarkup::new(rows);
                     let edited = bot
                         .edit_message_text(msg.chat.id, progress.id, header.clone())
+                        .parse_mode(ParseMode::Html)
                         .reply_markup(markup.clone())
                         .await;
                     if edited.is_err() {
                         let _ = bot.delete_message(msg.chat.id, progress.id).await;
                         bot.send_message(msg.chat.id, header)
+                            .parse_mode(ParseMode::Html)
                             .reply_markup(markup)
                             .await?;
                     }
@@ -1005,7 +1063,7 @@ pub async fn handle_command(
             let key = key_from_input(&input);
             let removed = state.manager.purge(&key).await?;
             let text = if removed {
-                i18n::purge_ok(lang, key.as_str())
+                i18n::purge_ok(lang, &escape_html(key.as_str()))
             } else {
                 i18n::purge_missing(lang).to_owned()
             };
@@ -1050,15 +1108,22 @@ async fn send_plain(
     // Some strings contain HTML markup; only parse those that need it.
     let text = text.into();
     let result = if text.contains('<') {
-        bot.send_message(chat, text.clone())
-            .parse_mode(ParseMode::Html)
-            .await
+        crate::bot::send::with_retry_after(|| {
+            bot.send_message(chat, text.clone())
+                .parse_mode(ParseMode::Html)
+        })
+        .await
+        .map(|_| ())
     } else {
-        bot.send_message(chat, text.clone()).await
+        crate::bot::send::with_retry_after(|| bot.send_message(chat, text.clone()))
+            .await
+            .map(|_| ())
     };
     if let Err(error) = result {
         warn!(%error, "could not send command text; retrying without entities");
-        bot.send_message(chat, text).await?;
+        crate::bot::send::with_retry_after(|| bot.send_message(chat, text.clone()))
+            .await
+            .map(|_| ())?;
     }
     Ok(())
 }

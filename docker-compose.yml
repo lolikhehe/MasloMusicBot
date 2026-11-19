@@ -5,7 +5,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: musicbot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: musicbot
     volumes:
       - pg-data:/var/lib/postgresql/data
@@ -24,9 +24,9 @@ services:
     image: maslomusicbot:latest
     env_file:
       - path: .env
-        required: false
+        required: true
     environment:
-      DATABASE_URL: postgresql://musicbot:${POSTGRES_PASSWORD:-devpass}@postgres:5432/musicbot
+      DATABASE_URL: postgresql://musicbot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/musicbot
       TMP_DIR: /data/tmp
       # yt-dlp (PyInstaller onefile) unpacks itself and its shared libraries
       # to a temp dir; the filesystem must allow mmap/exec. The /tmp tmpfs
@@ -72,6 +72,7 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
+    stop_grace_period: 45s
 
   # Rust-only webhook gateway. Needs a public DNS A record pointing at this
   # host and ports 80/443 open. Enable with --profile webhook.
@@ -97,6 +98,7 @@ services:
     depends_on:
       - bot
     restart: unless-stopped
+    stop_grace_period: 45s
 
   # Local Bot API server (files >50MB, --local shared volume). Requires
   # TELEGRAM_API_ID/TELEGRAM_API_HASH from https://my.telegram.org in .env.
@@ -116,6 +118,7 @@ services:
     volumes:
       - botapi:/var/lib/telegram-bot-api
     restart: unless-stopped
+    stop_grace_period: 45s
 
   # Production monitoring. /metrics already exists on the bot (port 9090);
   # these two services scrape it and page into the bot's own /alert log sink.

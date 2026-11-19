@@ -106,6 +106,7 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
         .unwrap_or_default();
     let page_full = !short && requests.len() >= 10;
     let mut results = Vec::with_capacity(requests.len());
+    let mut selections: Vec<(String, TrackRequest)> = Vec::with_capacity(requests.len());
     for request in requests {
         let selection_id = state.new_selection_id();
         let title = request
@@ -123,14 +124,7 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
                 FileId(cached.file_id.clone()),
             )
             .caption(compact_caption(&state, request.meta.as_ref()));
-            state
-                .put_selection(
-                    &selection_id,
-                    crate::state::selection::TRACK,
-                    user_id,
-                    &request,
-                )
-                .await?;
+            selections.push((selection_id, request));
             results.push(InlineQueryResult::CachedAudio(audio));
             continue;
         }
@@ -182,16 +176,17 @@ pub async fn handle_inline(state: AppState, bot: Bot, query: InlineQuery) -> Han
             article = article.url(source);
         }
         article = article.reply_markup(inline_keyboard(&state, lang));
-        state
-            .put_selection(
-                &selection_id,
-                crate::state::selection::TRACK,
-                user_id,
-                &request,
-            )
-            .await?;
+        selections.push((selection_id, request));
         results.push(InlineQueryResult::Article(article));
     }
+    // One batch write instead of one INSERT per result on every keystroke.
+    let selection_refs: Vec<(String, &TrackRequest)> = selections
+        .iter()
+        .map(|(id, request)| (id.clone(), request))
+        .collect();
+    state
+        .put_selections(crate::state::selection::TRACK, user_id, &selection_refs)
+        .await?;
 
     metrics::histogram!("music_bot_inline_seconds").record(started.elapsed().as_secs_f64());
     // Results are personalized by the user's /settings search source, so
@@ -283,11 +278,12 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         let caption = Some(compact_caption(&state, Some(&cached.meta)));
         let fav_markup =
             crate::bot::handlers::fav_markup_for(&state, user_id, &request.key.to_string()).await;
-        match bot
-            .edit_message_media_inline(inline_message_id, cached_media(&cached, caption))
-            .reply_markup(fav_markup)
-            .await
-        {
+        let mut edit =
+            bot.edit_message_media_inline(inline_message_id, cached_media(&cached, caption));
+        if let Some(markup) = fav_markup {
+            edit = edit.reply_markup(markup);
+        }
+        match edit.await {
             Ok(_) => {
                 // Analytics only uses genres already stored with the cache
                 // entry: an HTTP lookup here would delay the inline answer.
@@ -425,11 +421,11 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         let media = file_id_media(&prepared, &file_id, caption.clone());
         let fav_markup =
             crate::bot::handlers::fav_markup_for(&state, user_id, &request.key.to_string()).await;
-        match bot
-            .edit_message_media_inline(inline_message_id.clone(), media)
-            .reply_markup(fav_markup)
-            .await
-        {
+        let mut edit = bot.edit_message_media_inline(inline_message_id.clone(), media);
+        if let Some(markup) = fav_markup {
+            edit = edit.reply_markup(markup);
+        }
+        match edit.await {
             Ok(_) => return Ok(()),
             Err(error) => {
                 warn!(
