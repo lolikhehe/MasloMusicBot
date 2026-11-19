@@ -616,11 +616,12 @@ pub async fn handle_command(
             crate::bot::lyrics::handle_lyrics(state, bot, msg, query, lang).await?;
         }
         Command::Changelog => {
-            let mut text = i18n::changelog_title(lang).to_owned();
-            text.push_str(&crate::bot::handlers::escape_html(
-                common::version::PATCH_NOTES,
-            ));
-            send_plain(bot, msg.chat.id, text).await?;
+            send_plain(
+                bot,
+                msg.chat.id,
+                render_changelog(lang, common::version::PATCH_NOTES),
+            )
+            .await?;
         }
         Command::UserStats => {
             if !msg.chat.is_private() && !state.chat_allowed(msg.chat.id.0).await? {
@@ -1423,6 +1424,22 @@ fn is_valid_lastfm_username(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// `/changelog` shows only the newest release section: the accumulated
+/// PATCH_NOTES.md outgrew Telegram's 4096-char limit. The final cap is a guard
+/// against oversized future sections (and HTML escaping widening them).
+fn render_changelog(lang: Lang, notes: &str) -> String {
+    const MAX_CHARS: usize = 3900;
+    let notes = crate::bot::announce::first_release_block(notes);
+    let mut text = i18n::changelog_title(lang).to_owned();
+    text.push_str(&escape_html(&notes));
+    if text.chars().count() > MAX_CHARS {
+        let mut cut = truncate(&text, MAX_CHARS - 1);
+        cut.push('…');
+        return cut;
+    }
+    text
+}
+
 async fn send_plain(
     bot: &Bot,
     chat: ChatId,
@@ -1503,6 +1520,24 @@ mod tests {
         assert_eq!(eta_minutes(60.0, 1, 2), 3);
         assert_eq!(eta_minutes(0.0, 0, 1), 1);
         assert_eq!(eta_minutes(30.5, 2, 1), 2);
+    }
+
+    #[test]
+    fn changelog_shows_only_newest_section_within_telegram_limit() {
+        let notes = format!(
+            "3.0.2 (2026-11-20) — newest\n{}\n\n2.0.0 (older)\n{}\n\n1.0.0 (ancient)\n{}",
+            "• fresh line\n".repeat(400),
+            "• old line\n".repeat(400),
+            "• ancient line\n".repeat(400),
+        );
+        assert!(notes.chars().count() > 4096, "fixture must overflow");
+
+        let rendered = render_changelog(Lang::En, &notes);
+        assert!(rendered.chars().count() <= 3900, "rendered too long");
+        assert!(rendered.contains("3.0.2"), "newest section kept");
+        assert!(!rendered.contains("2.0.0"), "history dropped");
+        assert!(!rendered.contains("1.0.0"), "history dropped");
+        assert!(rendered.contains("What's new"), "title kept");
     }
 
     #[test]

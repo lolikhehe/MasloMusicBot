@@ -20,10 +20,10 @@ const ANNOUNCED_VERSION_KEY: &str = "announced_version";
 /// Stay below Telegram's group-wide message rate limits on large user bases.
 const SEND_DELAY: Duration = Duration::from_millis(80);
 
-/// Integer major component of a dotted version (`"2.5.1"` → `2`).
-/// The whole changelog outgrew Telegram's 4096-char limit (announce PMs failed
-/// with "message is too long"). Users get only the newest release block.
-fn first_release_block(notes: &str) -> String {
+/// Only the newest release block: the whole changelog outgrew Telegram's
+/// 4096-char limit (announce PMs failed with "message is too long").
+/// Shared with `/changelog`, which has the same size problem.
+pub(crate) fn first_release_block(notes: &str) -> String {
     let first = notes.split("\n\n").next().unwrap_or(notes).trim();
     if first.chars().count() <= 3900 {
         return first.to_owned();
