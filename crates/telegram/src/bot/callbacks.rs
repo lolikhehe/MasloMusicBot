@@ -5,14 +5,12 @@ use crate::bot::commands::{
     settings_keyboard,
 };
 use crate::bot::handlers::{
-    ask_album_confirmation, deliver_album, deliver_track, edit_html, error_text, escape_html,
-    hq_cover_url, spawn_download_countdown,
+    ask_album_confirmation, edit_html, escape_html, hq_cover_url, try_cache_send,
 };
 use crate::state::AppState;
 use common::domain::{AlbumRef, Provider, UserRecord};
-use common::error::{DownloadError, HandlerResult};
+use common::error::HandlerResult;
 use common::i18n;
-use std::time::Duration;
 use teloxide::prelude::*;
 use teloxide::types::{
     CallbackQuery, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, MessageId,
@@ -344,11 +342,11 @@ async fn handle_selection(
     lang: common::domain::Lang,
     quality: u32,
     tags_enabled: bool,
-    hq_cover: bool,
+    _hq_cover: bool,
     genre_analysis: bool,
 ) -> HandlerResult {
-    let _ = bot.answer_callback_query(query.id.clone()).await;
     let Some(message) = query.regular_message() else {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
         return Ok(());
     };
     let chat = message.chat.id;
@@ -363,6 +361,7 @@ async fn handle_selection(
             i18n::rate_limited(lang, state.config.rate_limit_per_min),
         )
         .await;
+        let _ = bot.answer_callback_query(query.id.clone()).await;
         return Ok(());
     }
 
@@ -371,72 +370,64 @@ async fn handle_selection(
         .await?
     else {
         let _ = edit_html(bot, chat, message_id, i18n::selection_expired(lang)).await;
+        let _ = bot.answer_callback_query(query.id.clone()).await;
         return Ok(());
     };
 
-    // Honest download-phase estimate from the live measured speed. An unknown
-    // duration means no ETA at all rather than a borrowed average.
-    let secs = request
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.duration_secs)
-        .and_then(|duration| state.manager.estimate_download_secs(duration, quality));
-    let base = i18n::downloading(lang).to_owned();
-    let countdown = if let Some(secs) = secs {
-        let eta = i18n::download_eta(lang, secs);
-        let _ = edit_html(bot, chat, message_id, format!("{base} {eta}")).await;
-        Some(spawn_download_countdown(
-            bot,
-            chat,
-            message_id,
-            base,
-            (secs.ceil() as u64).max(1),
-            lang,
-            true,
-        ))
-    } else {
-        let _ = edit_html(bot, chat, message_id, base).await;
-        None
-    };
-    info!(selection_id, "delivering selected search result");
-    let result = deliver_track(
+    // A cache hit is still served inline: no download, no worker job.
+    if try_cache_send(
         state,
         bot,
         chat,
-        request.clone(),
+        &request.key,
         quality,
         user_id,
         tags_enabled,
-        hq_cover,
         genre_analysis,
     )
-    .await;
-    if let Some(handle) = &countdown {
-        handle.abort();
-        // Let any in-flight ticker edit resolve so the final edit lands last.
-        tokio::time::sleep(Duration::from_millis(250)).await;
+    .await?
+    {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
+        return Ok(());
     }
-    match result {
-        Ok(_) => {
-            let title = request
-                .meta
-                .as_ref()
-                .map(|meta| meta.display_title())
-                .unwrap_or_else(|| "audio".to_owned());
-            let _ = edit_html(
-                bot,
-                chat,
-                message_id,
-                i18n::sent_track(lang, &escape_html(&title)),
-            )
+
+    // Cache miss: hand the download to the worker, deduped by the request key.
+    let key = request.key.as_str();
+    if state.db.find_active_job_for_user_key(user_id, key).await? {
+        let _ = bot
+            .answer_callback_query(query.id.clone())
+            .text(i18n::job_already_running(lang))
             .await;
-        }
-        Err(error) => {
-            warn!(%error, "selected result delivery failed");
-            let text = error_text(lang, &error);
-            let _ = edit_html(bot, chat, message_id, text).await;
-        }
+        return Ok(());
     }
+    match state
+        .db
+        .enqueue_job(
+            &state.new_selection_id(),
+            user_id,
+            "track",
+            serde_json::json!({
+                "key": key,
+                "chat_id": chat.0,
+                "request": &request,
+            }),
+        )
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = bot
+                .answer_callback_query(query.id.clone())
+                .text(i18n::job_already_running(lang))
+                .await;
+            return Ok(());
+        }
+        Err(error) => warn!(%error, selection_id, "could not enqueue track job"),
+    }
+    let _ = bot
+        .answer_callback_query(query.id.clone())
+        .text(i18n::downloading(lang))
+        .await;
     Ok(())
 }
 
@@ -491,71 +482,76 @@ async fn handle_album_confirm(
     query: &CallbackQuery,
     selection_id: &str,
     lang: common::domain::Lang,
-    quality: u32,
-    tags_enabled: bool,
-    hq_cover: bool,
-    genre_analysis: bool,
-    album_info: bool,
+    _quality: u32,
+    _tags_enabled: bool,
+    _hq_cover: bool,
+    _genre_analysis: bool,
+    _album_info: bool,
 ) -> HandlerResult {
-    let _ = bot.answer_callback_query(query.id.clone()).await;
     let Some(message) = query.regular_message() else {
+        let _ = bot.answer_callback_query(query.id.clone()).await;
         return Ok(());
     };
     let chat = message.chat.id;
-    let message_id = message.id;
     let user_id = query.from.id.0 as i64;
 
     let Some(album) = state
         .get_selection::<common::domain::Album>(selection_id, crate::state::selection::ALBUM)
         .await?
     else {
-        let _ = edit_html(bot, chat, message_id, i18n::selection_expired(lang)).await;
+        let _ = edit_html(bot, chat, message.id, i18n::selection_expired(lang)).await;
+        let _ = bot.answer_callback_query(query.id.clone()).await;
         return Ok(());
     };
     state.delete_selection(selection_id).await?;
-    info!(
-        selection_id,
-        tracks = album.tracks.len(),
-        "album confirmed; starting downloads"
-    );
-    let job = match crate::bot::jobs::JobGuard::start(
-        state,
-        user_id,
-        "album",
-        serde_json::json!({"title": album.title, "tracks": album.tracks.len()}),
-    )
-    .await?
+
+    // Stable per-album key: source id when known, otherwise the selection id.
+    let dedup_key = match crate::bot::handlers::album_identity(&album) {
+        Some((source, id)) => format!("album:{source}:{id}"),
+        None => format!("album:{selection_id}"),
+    };
+    if state
+        .db
+        .find_active_job_for_user_key(user_id, &dedup_key)
+        .await?
     {
-        Some(job) => job,
-        None => {
-            let _ = edit_html(bot, chat, message_id, i18n::job_already_running(lang)).await;
+        let _ = bot
+            .answer_callback_query(query.id.clone())
+            .text(i18n::job_already_running(lang))
+            .await;
+        return Ok(());
+    }
+    match state
+        .db
+        .enqueue_job(
+            &state.new_selection_id(),
+            user_id,
+            "album",
+            serde_json::json!({
+                "key": dedup_key,
+                "chat_id": chat.0,
+                "card_id": message.id.0,
+                "title": album.title,
+                "album": &album,
+            }),
+        )
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = bot
+                .answer_callback_query(query.id.clone())
+                .text(i18n::job_already_running(lang))
+                .await;
             return Ok(());
         }
-    };
-    let result = deliver_album(
-        state,
-        bot,
-        chat,
-        message_id,
-        lang,
-        quality,
-        user_id,
-        album,
-        tags_enabled,
-        hq_cover,
-        genre_analysis,
-        album_info,
-        Some(&job),
-    )
-    .await;
-    if job.cancelled().await {
-        job.finish("cancelled", None).await;
-    } else if matches!(&result, Ok(delivered) if *delivered > 0) {
-        job.finish("done", None).await;
-    } else {
-        job.finish("failed", None).await;
+        Err(error) => warn!(%error, selection_id, "could not enqueue album job"),
     }
-    result.map(|_| ())
+    let _ = bot
+        .answer_callback_query(query.id.clone())
+        .text(i18n::downloading(lang))
+        .await;
+    Ok(())
 }
 
 /// User declined a collection: discard the pending expansion.
@@ -815,40 +811,8 @@ async fn handle_album_remove(
     .await
 }
 
-/// Build a ZIP from the album's cached tracks. `prepare_zip_track` rebuilds
-/// every request from the DB cache, so uncached keys are skipped there; verify
-/// at least one key is reconstructable before packing.
-#[allow(clippy::too_many_arguments)]
-/// Panic-safe bookkeeping for a running ZIP task: if the task unwinds, the
-/// in-flight claim is still released and the status message deleted. Both
-/// operations are idempotent, so overlapping with the flow's own tail cleanup
-/// is harmless (one failed delete of an already-deleted message).
-struct ZipCleanupGuard {
-    state: AppState,
-    bot: Bot,
-    chat: ChatId,
-    status_id: MessageId,
-    user_id: i64,
-    source: String,
-    id: String,
-}
-
-impl Drop for ZipCleanupGuard {
-    fn drop(&mut self) {
-        let state = self.state.clone();
-        let bot = self.bot.clone();
-        let chat = self.chat;
-        let status_id = self.status_id;
-        let user_id = self.user_id;
-        let source = self.source.clone();
-        let id = self.id.clone();
-        tokio::spawn(async move {
-            state.inflight.release_zip(user_id, &source, &id);
-            let _ = bot.delete_message(chat, status_id).await;
-        });
-    }
-}
-
+/// Hand an album ZIP off to the worker, deduped by source id. The worker owns
+/// the tapped card and the status message; this handler only announces intent.
 async fn handle_album_zip(
     state: &AppState,
     bot: &Bot,
@@ -862,209 +826,49 @@ async fn handle_album_zip(
         let _ = bot.answer_callback_query(query.id.clone()).await;
         return Ok(());
     };
-    let state = state.clone();
-    let bot = bot.clone();
     let lang = user.lang;
-    let chat = message.chat.id;
-    let card_id = message.id;
-    let quality = user.quality;
-    let hq_cover = user.hq_cover;
-    let source = source.to_owned();
-    let id = id.to_owned();
-
-    // Answer immediately, then dedup: a second tap while this album is already
-    // packing must never spawn a second task.
-    if !state.inflight.claim_zip(user_id, &source, &id) {
+    let dedup_key = format!("zip:{source}:{id}");
+    if state
+        .db
+        .find_active_job_for_user_key(user_id, &dedup_key)
+        .await?
+    {
         let _ = bot
             .answer_callback_query(query.id.clone())
             .text(i18n::album_packing(lang))
             .await;
         return Ok(());
     }
-    let _ = bot.answer_callback_query(query.id.clone()).await;
-
-    // Strip the tapped card's buttons once so it stops being a tap target. The
-    // packing task never edits/deletes this card again — it owns a separate
-    // status message, so a later `alb:` back can freely re-render the card.
-    let _ = bot
-        .edit_message_reply_markup(chat, card_id)
-        .reply_markup(InlineKeyboardMarkup::new(
-            Vec::<Vec<InlineKeyboardButton>>::new(),
-        ))
-        .await;
-    let Some(status) = bot.send_message(chat, i18n::album_packing(lang)).await.ok() else {
-        state.inflight.release_zip(user_id, &source, &id);
-        return Ok(());
-    };
-    let status_id = status.id;
-
-    tokio::spawn(async move {
-        // Panic-safe: on unwind the claim and the status message are still
-        // cleaned up; the double release/delete on normal exit is idempotent.
-        let _zip_cleanup = ZipCleanupGuard {
-            state: state.clone(),
-            bot: bot.clone(),
-            chat,
-            status_id,
+    match state
+        .db
+        .enqueue_job(
+            &state.new_selection_id(),
             user_id,
-            source: source.clone(),
-            id: id.clone(),
-        };
-        // The inner work returns error text to report (None on success). All
-        // exit paths converge on the cleanup below.
-        let failure: Option<String> = async {
-            // Resolve first (bounded): the ETA below must count the album's real
-            // track count, not the 25-track worst case.
-            let resolved = tokio::time::timeout(Duration::from_secs(20), async {
-                let provider: Provider = source
-                    .parse()
-                    .map_err(|_| DownloadError::Unsupported("unknown album source".to_owned()))?;
-                let album = state
-                    .manager
-                    .resolve_album(&AlbumRef {
-                        provider,
-                        url: Some(id.clone()),
-                        title: None,
-                    })
-                    .await?;
-                let all_keys: Vec<_> = album.tracks.iter().map(|track| track.key.clone()).collect();
-                // zip_album rejects >MAX_ZIP_TRACKS keys outright; pack the first
-                // ones instead of failing the whole request.
-                let selected = all_keys.len().min(downloader::MAX_ZIP_TRACKS);
-                let keys: Vec<_> = all_keys[..selected].to_vec();
-                let durations: Vec<u32> = album.tracks[..selected]
-                    .iter()
-                    .filter_map(|track| track.meta.as_ref()?.duration_secs)
-                    .collect();
-                let mut cached = 0usize;
-                for key in &keys {
-                    if state.manager.get_cached(key, quality).await?.is_some() {
-                        cached += 1;
-                    }
-                }
-                Ok::<_, common::error::AppError>((album.title, keys, cached, durations))
-            })
-            .await;
-            let (title, keys, cached, durations) = match resolved {
-                Ok(Ok(resolved)) => resolved,
-                Ok(Err(error)) => {
-                    return Some(i18n::error(
-                        lang,
-                        &DownloadError::Internal(error.to_string()),
-                    ));
-                }
-                Err(_) => {
-                    return Some(i18n::error(
-                        lang,
-                        &DownloadError::Internal("album resolve timed out".to_owned()),
-                    ));
-                }
-            };
-            if cached == 0 {
-                return Some(i18n::album_pack_no_tracks(lang).to_owned());
-            }
-            let base = i18n::album_packing(lang).to_owned();
-            // Honest per-track download estimate from the live measured speed;
-            // ZIP downloads run two tracks at a time, so halve the summed work.
-            let estimate = if durations.is_empty() {
-                None
-            } else {
-                let total: f64 = durations
-                    .iter()
-                    .filter_map(|&duration| state.manager.estimate_download_secs(duration, quality))
-                    .sum();
-                (total > 0.0).then(|| (total / 2.0).max(1.0))
-            };
-            let countdown = match estimate {
-                Some(estimate) => {
-                    let eta = i18n::download_eta(lang, estimate);
-                    let _ = edit_html(&bot, chat, status_id, format!("{base} {eta}")).await;
-                    Some(spawn_download_countdown(
-                        &bot,
-                        chat,
-                        status_id,
-                        base,
-                        (estimate.ceil() as u64).max(1),
-                        lang,
-                        true,
-                    ))
-                }
-                None => {
-                    let _ = edit_html(&bot, chat, status_id, base).await;
-                    None
-                }
-            };
-            let result = tokio::time::timeout(
-                Duration::from_secs(10 * 60),
-                state.manager.zip_album(&keys, quality, hq_cover),
-            )
-            .await;
-            if let Some(handle) = &countdown {
-                handle.abort();
-                // Let any in-flight ticker edit resolve so the final edit lands last.
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-            match result {
-                Ok(Ok(outcome)) => {
-                    let safe: String = title
-                        .chars()
-                        .map(|c| {
-                            if c.is_ascii_alphanumeric() || "-_. ".contains(c) {
-                                c
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect();
-                    let filename = format!("{}.zip", crate::bot::send::truncate(&safe, 80));
-                    let caption =
-                        i18n::albums_item(lang, &escape_html(&title), outcome.tracks as u32);
-                    let input = InputFile::memory(outcome.bytes).file_name(filename);
-                    match bot
-                        .send_document(chat, input)
-                        .caption(caption)
-                        .parse_mode(ParseMode::Html)
-                        .await
-                    {
-                        Ok(message) => {
-                            state.maybe_track_deletion(user_id, chat, message.id);
-                        }
-                        Err(error) => {
-                            warn!(%error, "album ZIP upload failed");
-                            return Some(i18n::error(
-                                lang,
-                                &DownloadError::Internal(error.to_string()),
-                            ));
-                        }
-                    }
-                    None
-                }
-                Ok(Err(error)) => {
-                    let lower = error.to_string().to_ascii_lowercase();
-                    Some(if lower.contains("too large") {
-                        i18n::album_pack_too_large(lang, 900)
-                    } else if lower.contains("no track could be downloaded") {
-                        i18n::album_pack_no_tracks(lang).to_owned()
-                    } else {
-                        i18n::error(lang, &DownloadError::Internal(error.to_string()))
-                    })
-                }
-                Err(_) => Some(i18n::error(
-                    lang,
-                    &DownloadError::Internal("ZIP timed out".to_owned()),
-                )),
-            }
+            "zip",
+            serde_json::json!({
+                "key": dedup_key,
+                "chat_id": message.chat.id.0,
+                "card_id": message.id.0,
+                "source": source,
+                "id": id,
+            }),
+        )
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = bot
+                .answer_callback_query(query.id.clone())
+                .text(i18n::album_packing(lang))
+                .await;
+            return Ok(());
         }
+        Err(error) => warn!(%error, source, id, "could not enqueue zip job"),
+    }
+    let _ = bot
+        .answer_callback_query(query.id.clone())
+        .text(i18n::downloading(lang))
         .await;
-
-        // Cleanup on every exit path: free the dedup key and delete the
-        // temporary status message. The tapped card is never touched here.
-        state.inflight.release_zip(user_id, &source, &id);
-        let _ = bot.delete_message(chat, status_id).await;
-        if let Some(text) = failure {
-            let _ = crate::bot::send::send_html(&bot, chat, text).await;
-        }
-    });
     Ok(())
 }
 
@@ -1188,7 +992,7 @@ async fn handle_fav_toggle(
         .await?;
     // None means the button cannot be built (overlong key or DB error); keep
     // the existing markup rather than showing a wrong/toggle-destroying star.
-    if let Some(markup) = crate::bot::handlers::fav_markup_for(state, user_id, key).await {
+    if let Some(markup) = crate::bot::handlers::fav_markup_for(&state.db, user_id, key).await {
         if let Some(inline_message_id) = query.inline_message_id.clone() {
             let _ = bot
                 .edit_message_reply_markup_inline(inline_message_id)

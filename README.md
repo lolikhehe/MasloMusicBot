@@ -57,6 +57,8 @@ not be editable into messages.
 | `/convert auto\|m4a\|mp3\|flac\|opus` | everyone | Output container for future downloads |
 | `/normalize on\|off` | everyone | Opt-in ffmpeg loudnorm pass |
 | `/playlist <name>` | everyone | Search public Deezer playlists (Apple Music URLs already work) |
+| `/recs` | everyone | Personal recommendations based on your listening history, with a download button |
+| `/pod` | everyone | Podcast subscriptions — add a show and new episodes appear in the bot |
 | `/groupmode on\|off` | admins | Opt the current group into bot responses |
 | `/history [period]` | everyone | Recent listening history from Postgres (metadata only) |
 | `/dynamics [period]` | everyone | PNG line chart of genre dynamics over time |
@@ -65,7 +67,7 @@ not be editable into messages.
 
 Operator scripts: `scripts/backup-postgres.ps1` (nightly-style dump kept 7 days on D:), `scripts/measure-s1-s4.ps1` (raw metrics capture) and `scripts/run-load-test.ps1` (full k6 → mock API → 3 replicas stand with Prometheus percentiles and alerts). See `docs/backup-and-restore.md`, `docs/perf.md` and `load/README.md`.
 
-Production monitoring runs by default: Prometheus at `http://127.0.0.1:19090` and Alertmanager at `http://127.0.0.1:19094` (loopback only, no auth). Config and alert rules live in `monitoring/`. A real percentile query:
+Production monitoring runs by default: Prometheus at `http://127.0.0.1:19090` and Alertmanager at `http://127.0.0.1:19094` (loopback only, no auth). Config and alert rules live in `monitoring/`. The worker exposes its own `/metrics` and `/healthz` on `127.0.0.1:9091` and is scraped under the same `music-bot` Prometheus job. A real percentile query:
 
 ```promql
 histogram_quantile(0.95, sum by (le) (rate(music_bot_request_seconds_bucket[5m])))
@@ -185,6 +187,7 @@ update both args, then `docker compose build --no-cache bot`. Newer yt-dlp fixes
   Repeat requests take milliseconds, no network needed.
 - **Cold path**: `yt-dlp` metadata → in-flight dedup → bounded download to a temp directory →
   tags + cover via `ffmpeg`/`lofty` → uploaded → `file_id` stored → temp files deleted by the janitor.
+  Downloads run in a separate `worker` service, so the bot stays responsive even when many tracks queue up.
 - Audio is kept as m4a/AAC (no re-encode when possible) for speed.
 - Concurrent cold requests for the same track share one download (one semaphore global permit + broadcast).
 - Cold **inline** plays are not cached without `STORAGE_CHAT_ID` (Telegram's `editMessageMedia` does

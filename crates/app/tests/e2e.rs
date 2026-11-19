@@ -23,6 +23,8 @@ fn database_url() -> String {
 
 struct Bot {
     child: Child,
+    /// 3.0.0 splits downloads into a second process that polls the same DB.
+    worker: Child,
     api: MockServer,
     lyrics: MockServer,
     webhook_url: Option<String>,
@@ -30,6 +32,8 @@ struct Bot {
 
 impl Drop for Bot {
     fn drop(&mut self) {
+        let _ = self.worker.kill();
+        let _ = self.worker.wait();
         let _ = self.child.kill();
         let _ = self.child.wait();
         self.api.stop();
@@ -80,8 +84,24 @@ async fn spawn_webhook_bot(secret: &str, rate_limit: u32) -> Bot {
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn webhook music-bot");
+    // The worker polls the same DB. It gets no webhook address and no metrics
+    // port so it cannot collide with the bot's listener/health port.
+    let worker = Command::new(env!("CARGO_BIN_EXE_music-bot-worker"))
+        .env("TELOXIDE_TOKEN", "123:mock-token")
+        .env("TELEGRAM_API_URL", format!("http://{}", api.addr))
+        .env("DATABASE_URL", database_url())
+        .env("LRCLIB_BASE_URL", format!("http://{}", lyrics.addr))
+        .env("LYRICS_OVH_BASE_URL", format!("http://{}/v1", lyrics.addr))
+        .env("METRICS_ADDR", "off")
+        .env("LOG_LEVEL", "warn")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn music-bot-worker");
     let bot = Bot {
         child,
+        worker,
         api,
         lyrics,
         webhook_url: Some(url),
@@ -121,8 +141,24 @@ async fn spawn_bot_inner(api: MockServer, lyrics: MockServer, rate_limit: u32) -
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn music-bot");
+    // The worker polls the same DB. It gets no webhook address and no metrics
+    // port so it cannot collide with the bot's listener/health port.
+    let worker = Command::new(env!("CARGO_BIN_EXE_music-bot-worker"))
+        .env("TELOXIDE_TOKEN", "123:mock-token")
+        .env("TELEGRAM_API_URL", format!("http://{}", api.addr))
+        .env("DATABASE_URL", database_url())
+        .env("LRCLIB_BASE_URL", format!("http://{}", lyrics.addr))
+        .env("LYRICS_OVH_BASE_URL", format!("http://{}/v1", lyrics.addr))
+        .env("METRICS_ADDR", "off")
+        .env("LOG_LEVEL", "warn")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn music-bot-worker");
     let bot = Bot {
         child,
+        worker,
         api,
         lyrics,
         webhook_url: None,
@@ -597,6 +633,151 @@ async fn load_harness_help_burst() {
     std::fs::write(&path, serde_json::to_string_pretty(&summary).expect("json"))
         .expect("write load summary");
     println!("{}", serde_json::to_string_pretty(&summary).expect("json"));
+}
+
+/// 3.0.0 moves downloads into the `music-bot-worker` process. Drive the real
+/// callback -> selection -> job flow with both processes running and assert
+/// delivery on the mock Bot API side.
+///
+/// This is deliberately the weaker assertion: the harness has no env knob to
+/// attribute a `sendaudio` to the worker specifically and no direct DB client
+/// to check the `download_jobs` row, so it proves end-to-end delivery works
+/// with both processes alive rather than that the worker alone did it.
+#[tokio::test]
+async fn worker_consumes_enqueued_track_job() {
+    let bot = spawn_bot().await;
+    let db = Db::connect(&database_url()).await.expect("db");
+    let key = common_domain::TrackKey::new("youtube:e2e-worker-download");
+    let track = common_domain_track(&key);
+    db.put_track(&track, 192, Some(1_234_567))
+        .await
+        .expect("put cached track");
+
+    let request = common_domain::TrackRequest {
+        key: key.clone(),
+        provider: common_domain::Provider::YouTube,
+        source_url: None,
+        meta: Some(common_domain::TrackMeta {
+            title: "Worker Download".into(),
+            performer: Some("Mock Artist".into()),
+            ..Default::default()
+        }),
+        target: common_domain::DownloadTarget::Search("Mock Worker Download".into()),
+    };
+    db.put_selection(
+        "worker-download",
+        "track",
+        7_700,
+        serde_json::to_value(&request).expect("json"),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("selection");
+
+    let callback = serde_json::json!({
+        "update_id": 7_700,
+        "callback_query": {
+            "id": "cb-worker-download",
+            "from": {"id": 7_700, "is_bot": false, "first_name": "Tester", "language_code": "en"},
+            "chat_instance": "ci-worker-download",
+            "data": "q:worker-download",
+            "message": {
+                "message_id": 7_700,
+                "date": 1_700_000_000u64,
+                "chat": {"id": 7_700, "type": "private", "first_name": "Tester"},
+                "text": "choose"
+            }
+        }
+    });
+    bot.api
+        .shared
+        .updates
+        .lock()
+        .expect("updates")
+        .push_back(callback);
+
+    wait_until(60_000, || async {
+        !bot.api.shared.audios.lock().expect("audios").is_empty()
+    })
+    .await
+    .expect("no audio delivered after the queued flow with the worker running");
+    let calls = bot.api.shared.calls.lock().expect("calls").clone();
+    assert!(
+        calls.iter().any(|call| call == "sendaudio"),
+        "expected a sendaudio from the queued flow: {calls:?}"
+    );
+}
+
+/// With the worker killed, a cache-missing `q:` tap must NOT produce audio:
+/// the job stays queued with nobody to consume it.
+///
+/// The storage crate owns the SQL, so this asserts the observable mock Bot API
+/// side (no audio) rather than reaching into `download_jobs` directly.
+#[tokio::test]
+async fn worker_down_jobs_queue_up() {
+    let mut bot = spawn_bot().await;
+    // Simulate a dead worker: the bot still boots and enqueues, but nobody
+    // consumes the job.
+    let _ = bot.worker.kill();
+    let _ = bot.worker.wait();
+
+    let db = Db::connect(&database_url()).await.expect("db");
+    let key = common_domain::TrackKey::new("youtube:e2e-worker-down");
+    let request = common_domain::TrackRequest {
+        key: key.clone(),
+        provider: common_domain::Provider::YouTube,
+        source_url: None,
+        meta: Some(common_domain::TrackMeta {
+            title: "Worker Down".into(),
+            performer: Some("Mock Artist".into()),
+            ..Default::default()
+        }),
+        target: common_domain::DownloadTarget::Search("Mock Worker Down".into()),
+    };
+    db.put_selection(
+        "worker-down",
+        "track",
+        7_701,
+        serde_json::to_value(&request).expect("json"),
+        Duration::from_secs(60),
+    )
+    .await
+    .expect("selection");
+
+    let callback = serde_json::json!({
+        "update_id": 7_701,
+        "callback_query": {
+            "id": "cb-worker-down",
+            "from": {"id": 7_701, "is_bot": false, "first_name": "Tester", "language_code": "en"},
+            "chat_instance": "ci-worker-down",
+            "data": "q:worker-down",
+            "message": {
+                "message_id": 7_701,
+                "date": 1_700_000_000u64,
+                "chat": {"id": 7_701, "type": "private", "first_name": "Tester"},
+                "text": "choose"
+            }
+        }
+    });
+    bot.api
+        .shared
+        .updates
+        .lock()
+        .expect("updates")
+        .push_back(callback);
+
+    // Bounded absence check: give the bot time to enqueue, then assert no
+    // audio was delivered with no worker alive.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let calls = bot.api.shared.calls.lock().expect("calls").clone();
+    assert!(
+        bot.api.shared.audios.lock().expect("audios").is_empty(),
+        "no audio should be delivered while the worker is down: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|call| call == "sendaudio"),
+        "no sendaudio should happen while the worker is down: {calls:?}"
+    );
 }
 
 // Re-export so the helper above can use the public domain path explicitly.

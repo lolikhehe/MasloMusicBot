@@ -19,6 +19,10 @@ use tracing::warn;
 const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Auto-delete due-scan interval, attached to the same detached task.
 const DELETE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Podcast due-poll interval, attached to the same detached task.
+const FEED_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+/// Hourly refresh of the recommendation materialized views.
+const RECS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 const DAILY_SECS: i64 = 86_400;
 const WEEKLY_SECS: i64 = 7 * 86_400;
 const SEND_HOUR_UTC: i64 = 9;
@@ -154,6 +158,10 @@ pub fn spawn(bot: Bot, state: AppState) {
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         let mut delete_ticker = tokio::time::interval(DELETE_INTERVAL);
         delete_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut feed_ticker = tokio::time::interval(FEED_POLL_INTERVAL);
+        feed_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut recs_ticker = tokio::time::interval(RECS_INTERVAL);
+        recs_ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 _ = ticker.tick() => {
@@ -172,6 +180,29 @@ pub fn spawn(bot: Bot, state: AppState) {
                     let state = state.clone();
                     tokio::spawn(async move {
                         sweep_deletions(&bot, &state).await;
+                    });
+                }
+                _ = feed_ticker.tick() => {
+                    let bot = bot.clone();
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        crate::bot::podcast::poll_feeds(&state, &bot).await;
+                    });
+                }
+                _ = recs_ticker.tick() => {
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        let now = time::unix_now();
+                        let claimed = state
+                            .db
+                            .claim_rec_refresh(now, now - 3_600)
+                            .await
+                            .unwrap_or(false);
+                        if claimed
+                            && let Err(error) = state.db.refresh_rec_views().await
+                        {
+                            warn!(%error, "rec views refresh failed");
+                        }
                     });
                 }
             }

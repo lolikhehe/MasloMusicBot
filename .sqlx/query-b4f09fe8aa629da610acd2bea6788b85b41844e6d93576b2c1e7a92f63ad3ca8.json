@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO download_jobs\n                (id, user_id, kind, status, payload, created_at, updated_at)\n             VALUES ($1, $2, $3, 'queued', $4, $5, $5)\n             ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Jsonb",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b4f09fe8aa629da610acd2bea6788b85b41844e6d93576b2c1e7a92f63ad3ca8"
+}

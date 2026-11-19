@@ -57,6 +57,13 @@ async fn cleanup_db(db: &Db) {
     {
         tracing::warn!(%error, "janitor: failed to delete old finished jobs");
     }
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or(0);
+    if let Err(error) = db.finalize_cancelled_jobs(now).await {
+        tracing::warn!(%error, "janitor: failed to finalize stale cancelled jobs");
+    }
     if let Err(error) = db.delete_stale_sent_messages(7 * 24 * 60 * 60).await {
         tracing::warn!(%error, "janitor: failed to delete stale sent messages");
     }

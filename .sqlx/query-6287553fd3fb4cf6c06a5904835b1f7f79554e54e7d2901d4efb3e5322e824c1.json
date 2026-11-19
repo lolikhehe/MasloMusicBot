@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE feeds\n             SET next_poll_at = $3, fail_count = $4, last_error = $5,\n                 title = CASE WHEN $6 = '' THEN title ELSE $6 END,\n                 etag = $7, last_modified = $8\n             WHERE id = $1 AND next_poll_at = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6287553fd3fb4cf6c06a5904835b1f7f79554e54e7d2901d4efb3e5322e824c1"
+}

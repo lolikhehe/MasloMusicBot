@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM podcast_subs WHERE user_id = $1 AND chat_id = $2 AND feed_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1ebca40558b9cbc148fce3097a39376778a5c3ce6c255bd8b94f068417680969"
+}

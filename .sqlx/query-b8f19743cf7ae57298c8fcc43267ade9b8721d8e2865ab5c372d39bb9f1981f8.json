@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_jobs SET cancel_requested = true WHERE id = 'stale-cancel'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "b8f19743cf7ae57298c8fcc43267ade9b8721d8e2865ab5c372d39bb9f1981f8"
+}

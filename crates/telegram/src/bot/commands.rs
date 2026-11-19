@@ -203,6 +203,8 @@ pub enum Command {
     Favorites,
     /// `/albums` — paginated library of saved albums.
     Albums,
+    /// `/recs` — personalized picks from the user's listening history.
+    Recs,
     /// `/recognize` in reply to audio — identify by acoustic fingerprint.
     Recognize,
     /// `/similar` in reply to a bot track — similar tracks as buttons.
@@ -211,6 +213,8 @@ pub enum Command {
     Artist(Option<String>),
     /// `/cover` in reply to a bot track — the 1000px album art as a photo.
     Cover,
+    /// `/pod <RSS/Atom URL>` — subscribe; `/pod list` / `/pod del <n>`.
+    Podcast(Option<String>),
     /// `/groupmode on|off` — admin-only opt-in for this group.
     GroupMode(Option<String>),
     Unknown(String),
@@ -266,10 +270,14 @@ pub fn parse_command(text: &str, bot_username: &str) -> Option<Command> {
         "playlist" | "плейлист" => Command::Playlist((!args.is_empty()).then_some(args)),
         "fav" | "favorites" | "обране" | "улюблене" => Command::Favorites,
         "albums" | "альбоми" => Command::Albums,
+        "recs" | "рекомендації" | "поради" => Command::Recs,
         "recognize" | "recognise" | "розпізнати" => Command::Recognize,
         "similar" | "схожі" => Command::Similar,
         "artist" | "виконавець" => Command::Artist((!args.is_empty()).then_some(args)),
         "cover" | "обкладинка" => Command::Cover,
+        "pod" | "podcast" | "подкаст" | "подкасти" => {
+            Command::Podcast((!args.is_empty()).then_some(args))
+        }
         "groupmode" | "група" => Command::GroupMode((!args.is_empty()).then_some(args)),
         "ban" => Command::Ban(args.parse::<i64>().ok()),
         "unban" => Command::Unban(args.parse::<i64>().ok()),
@@ -686,7 +694,13 @@ pub async fn handle_command(
                 return Ok(());
             }
             let jobs = state.db.list_jobs(user_id, 10).await?;
-            let avg_secs = state.db.avg_recent_download_secs().await?;
+            // ETA from the speed published by the worker; a 3-minute, 192 kbps
+            // track stands in for the average queued job.
+            let avg_secs = state
+                .db
+                .read_download_speed()
+                .await?
+                .map(|bps| downloader::manager::estimate_secs_from_bps(180, 192, bps));
             let active = jobs
                 .iter()
                 .filter(|(_, _, status, _)| matches!(status.as_str(), "downloading" | "uploading"))
@@ -888,6 +902,52 @@ pub async fn handle_command(
             bot.send_message(msg.chat.id, text)
                 .parse_mode(ParseMode::Html)
                 .reply_markup(markup)
+                .await?;
+        }
+        Command::Recs => {
+            let recs = match state.db.recommendations(user_id, 8).await {
+                Ok(recs) => recs,
+                Err(error) => {
+                    warn!("recommendations failed for user {user_id}: {error}");
+                    Vec::new()
+                }
+            };
+            let listens = state.db.count_listens(user_id, 0).await.unwrap_or(0);
+            if recs.is_empty() {
+                crate::bot::send::send_html(bot, msg.chat.id, i18n::recs_empty(lang)).await?;
+                return Ok(());
+            }
+            let header = format!(
+                "{}\n{}",
+                i18n::recs_header(lang),
+                i18n::recs_basis(lang, listens as u32)
+            );
+            let results: Vec<common::domain::SearchResult> = recs
+                .iter()
+                .map(|r| {
+                    let query = format!("{} {}", r.performer, r.title);
+                    common::domain::SearchResult {
+                        key: common::domain::TrackKey::new(r.track_key.clone()),
+                        provider: user_record.search_source,
+                        source_url: String::new(),
+                        meta: common::domain::TrackMeta {
+                            title: r.title.clone(),
+                            performer: Some(r.performer.clone()),
+                            duration_secs: None,
+                            ..Default::default()
+                        },
+                        target: common::domain::DownloadTarget::Search(query),
+                    }
+                })
+                .collect();
+            // Recs are already heard-excluded in SQL, so the ↩ set stays empty.
+            let heard = std::collections::HashSet::new();
+            let rows =
+                crate::bot::handlers::search_result_rows(state, user_id, &results, &heard, 0)
+                    .await?;
+            bot.send_message(msg.chat.id, header)
+                .parse_mode(ParseMode::Html)
+                .reply_markup(InlineKeyboardMarkup::new(rows))
                 .await?;
         }
         Command::Recognize => {
@@ -1145,6 +1205,9 @@ pub async fn handle_command(
                 i18n::convert_saved(lang, &user_record.audio_format, enabled),
             )
             .await?;
+        }
+        Command::Podcast(args) => {
+            crate::bot::podcast::handle_podcast(state, bot, msg, lang, args).await?;
         }
         Command::GroupMode(value) => {
             // The static ADMIN_IDS list is not enough: a group owner/admin must
@@ -1430,6 +1493,9 @@ mod tests {
             parse_command("/розпізнати", "bot"),
             Some(Command::Recognize)
         );
+        assert_eq!(parse_command("/recs", "bot"), Some(Command::Recs));
+        assert_eq!(parse_command("/РЕКОМЕНДАЦІЇ", "bot"), Some(Command::Recs));
+        assert_eq!(parse_command("/поради", "bot"), Some(Command::Recs));
     }
 
     #[test]
@@ -1485,6 +1551,27 @@ mod tests {
         assert_eq!(
             parse_command("/digest quiet 23-7", "bot"),
             Some(Command::Digest(Some("quiet 23-7".into())))
+        );
+    }
+
+    #[test]
+    fn parses_podcast_aliases() {
+        assert_eq!(parse_command("/pod", "bot"), Some(Command::Podcast(None)));
+        assert_eq!(
+            parse_command("/podcast", "bot"),
+            Some(Command::Podcast(None))
+        );
+        assert_eq!(
+            parse_command("/подкаст", "bot"),
+            Some(Command::Podcast(None))
+        );
+        assert_eq!(
+            parse_command("/ПОДКАСТИ", "bot"),
+            Some(Command::Podcast(None))
+        );
+        assert_eq!(
+            parse_command("/pod https://x/feed.xml", "bot"),
+            Some(Command::Podcast(Some("https://x/feed.xml".into())))
         );
     }
 }

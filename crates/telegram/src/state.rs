@@ -8,7 +8,7 @@ use moka::future::Cache;
 use providers::acoustid::AcoustId;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use storage::Db;
@@ -19,27 +19,10 @@ type FavLocks = Mutex<HashMap<(i64, String), Arc<tokio::sync::Mutex<()>>>>;
 /// short-lived and bounded by the number of distinct (user, item) pairs.
 #[derive(Default)]
 pub(crate) struct Inflight {
-    zips: Mutex<HashSet<(i64, String, String)>>,
     favs: FavLocks,
 }
 
 impl Inflight {
-    /// Claim an album-ZIP key. Returns `false` (and leaves the set untouched)
-    /// when a packing task for this key is already running.
-    pub(crate) fn claim_zip(&self, user_id: i64, source: &str, id: &str) -> bool {
-        self.zips
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert((user_id, source.to_owned(), id.to_owned()))
-    }
-
-    pub(crate) fn release_zip(&self, user_id: i64, source: &str, id: &str) {
-        self.zips
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&(user_id, source.to_owned(), id.to_owned()));
-    }
-
     /// Per-(user, track) favorite toggle lock; holding it serializes taps.
     pub(crate) fn fav_lock(&self, user_id: i64, key: &str) -> Arc<tokio::sync::Mutex<()>> {
         let mut map = self
@@ -106,6 +89,9 @@ pub struct AppState {
     /// Last.fm client (public "now playing" feed + genre tags); `None` when the
     /// operator did not set LASTFM_API_KEY.
     pub lastfm: Option<providers::lastfm::LastFmClient>,
+    /// RSS/Atom podcast feed client; `None` when the pooled HTTP client cannot
+    /// be built, in which case podcast commands report an invalid feed.
+    pub feed: Option<providers::feed::FeedClient>,
     /// Genre lookups are repeated on cache hits and album replays; keep them in
     /// memory for a day so we don't hammer Last.fm/iTunes per send.
     pub genre_cache: Cache<String, Vec<String>>,
@@ -170,6 +156,13 @@ impl AppState {
                     }
                 },
             );
+        let feed = match providers::feed::FeedClient::new() {
+            Ok(client) => Some(client),
+            Err(error) => {
+                tracing::warn!(%error, "could not build feed client; podcasts disabled");
+                None
+            }
+        };
         let genre_cache = Cache::builder()
             .max_capacity(5_000)
             .time_to_live(Duration::from_secs(24 * 60 * 60))
@@ -221,6 +214,7 @@ impl AppState {
             inline_generations,
             inline_generation_tx,
             lastfm,
+            feed,
             genre_cache,
             artwork_cache,
             http,

@@ -1,15 +1,15 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE download_jobs\n             SET status = 'downloading', claimed_by = $2, updated_at = $3\n             WHERE id = $1 AND status = 'queued'\n             RETURNING id",
+  "query": "INSERT INTO feeds (url, title, next_poll_at, added_at)\n             VALUES ($1, $2, $3, $3)\n             ON CONFLICT (url) DO NOTHING\n             RETURNING id",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
         "name": "id",
-        "type_info": "Text",
+        "type_info": "Int8",
         "origin": {
           "Table": {
-            "table": "download_jobs",
+            "table": "feeds",
             "name": "id"
           }
         }
@@ -26,5 +26,5 @@
       false
     ]
   },
-  "hash": "8ed9e34c388730da7743d9d60d30fbbacacc6137c5f4766a2b567bea0ad0b6e5"
+  "hash": "6b9e5f8e2459e8c385ce6a5745e8bf15a5a0260b6a2170c7caa8085aa2a34a57"
 }

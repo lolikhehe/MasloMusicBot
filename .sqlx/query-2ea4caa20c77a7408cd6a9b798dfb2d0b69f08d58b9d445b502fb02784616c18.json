@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH heard AS (\n                SELECT DISTINCT lower(btrim(title)) AS title_key,\n                       lower(btrim(coalesce(performer, ''))) AS performer_key\n                FROM listens WHERE user_id = $1\n            ),\n            seed AS (\n                SELECT DISTINCT lower(btrim(title)) AS title_key,\n                       lower(btrim(coalesce(performer, ''))) AS performer_key\n                FROM listens\n                WHERE user_id = $1 AND created_at >= $2::bigint - 90 * 86400::bigint\n            ),\n            candidates AS (\n                SELECT c.b_t AS title_key, c.b_p AS performer_key,\n                       coalesce(sum(c.score), 0.0)::float8 AS score, 1 AS priority\n                FROM mv_rec_cooccurrence c\n                JOIN seed s ON s.title_key = c.a_t AND s.performer_key = c.a_p\n                WHERE NOT EXISTS (\n                    SELECT 1 FROM heard h\n                    WHERE h.title_key = c.b_t AND h.performer_key = c.b_p\n                )\n                AND NOT EXISTS (\n                    SELECT 1 FROM seed s2\n                    WHERE s2.title_key = c.b_t AND s2.performer_key = c.b_p\n                )\n                GROUP BY c.b_t, c.b_p\n                UNION ALL\n                SELECT st.title_key AS title_key, st.performer_key AS performer_key,\n                       st.listeners::float8 AS score, 2 AS priority\n                FROM mv_rec_item_stats st\n                WHERE NOT EXISTS (\n                    SELECT 1 FROM heard h\n                    WHERE h.title_key = st.title_key AND h.performer_key = st.performer_key\n                )\n                AND NOT EXISTS (\n                    SELECT 1 FROM seed s2\n                    WHERE s2.title_key = st.title_key AND s2.performer_key = st.performer_key\n                )\n            ),\n            ranked AS (\n                SELECT c.*, row_number() OVER (\n                    PARTITION BY priority\n                    ORDER BY score DESC, title_key, performer_key\n                ) AS rn\n                FROM candidates c\n            )\n            SELECT coalesce(st.title, '') AS title,\n                   coalesce(st.performer, '') AS performer,\n                   coalesce(st.canonical_key, '') AS track_key,\n                   coalesce(r.score, 0.0)::float8 AS score\n            FROM ranked r\n            JOIN mv_rec_item_stats st\n              ON st.title_key = r.title_key AND st.performer_key = r.performer_key\n            WHERE r.rn <= $3\n              AND EXISTS (SELECT 1 FROM listens l WHERE l.user_id = $1)\n            ORDER BY r.priority, r.score DESC\n            LIMIT $3\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "title",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "performer",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "track_key",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "score",
+        "type_info": "Float8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "2ea4caa20c77a7408cd6a9b798dfb2d0b69f08d58b9d445b502fb02784616c18"
+}

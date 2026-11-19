@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM feeds WHERE id = $1\n             AND NOT EXISTS (SELECT 1 FROM podcast_subs WHERE feed_id = $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c2fcfb4f1e2f2d4f2760a81de565f39fc38b9f32afa8d8b639d3e08479e78aac"
+}

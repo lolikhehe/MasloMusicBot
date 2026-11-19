@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_jobs\n             SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,\n                 error = $3, updated_at = $4, cancel_requested = false\n             WHERE id = $1 AND claimed_by = $5 AND status IN ('queued', 'downloading', 'uploading')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7f054c53466d9b2a73252ce812e48f1a5eec56bf0373fabd6ea74ad3590ff666"
+}

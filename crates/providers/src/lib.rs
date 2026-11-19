@@ -1,5 +1,6 @@
 pub mod acoustid;
 pub mod external;
+pub mod feed;
 pub mod http;
 pub mod lastfm;
 pub mod lyrics;

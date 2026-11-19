@@ -116,10 +116,12 @@ pub enum Provider {
     Spotify,
     AppleMusic,
     Deezer,
+    /// Podcast episodes delivered from a user-supplied RSS/Atom feed.
+    Podcast,
 }
 
 impl Provider {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::YouTube,
         Self::YouTubeMusic,
         Self::SoundCloud,
@@ -127,6 +129,7 @@ impl Provider {
         Self::Spotify,
         Self::AppleMusic,
         Self::Deezer,
+        Self::Podcast,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -138,6 +141,7 @@ impl Provider {
             Self::Spotify => "spotify",
             Self::AppleMusic => "apple_music",
             Self::Deezer => "deezer",
+            Self::Podcast => "podcast",
         }
     }
 
@@ -160,6 +164,7 @@ impl Provider {
             Self::Spotify => "Spotify",
             Self::AppleMusic => "Apple Music",
             Self::Deezer => "Deezer",
+            Self::Podcast => "Podcast",
         }
     }
 }
@@ -182,6 +187,7 @@ impl FromStr for Provider {
             "spotify" | "sp" => Ok(Self::Spotify),
             "apple_music" | "apple-music" | "applemusic" | "apple" => Ok(Self::AppleMusic),
             "deezer" | "dz" => Ok(Self::Deezer),
+            "podcast" | "pod" => Ok(Self::Podcast),
             _ => Err(()),
         }
     }
@@ -596,6 +602,53 @@ pub struct SearchResult {
     pub source_url: String,
     pub meta: TrackMeta,
     pub target: DownloadTarget,
+}
+
+/// One collaborative-filtering recommendation. `score` is a time-decayed
+/// co-listen weight for priority-1 rows and a plain listener count for the
+/// global priority-2 fallback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecItem {
+    pub title: String,
+    pub performer: String,
+    pub track_key: String,
+    pub score: f64,
+}
+
+/// A podcast feed that is due for a poll.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedDue {
+    pub id: i64,
+    pub url: String,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub interval_secs: i64,
+    pub fail_count: i32,
+    pub next_poll_at: i64,
+}
+
+/// One feed a user is subscribed to (scoped to a chat).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubRow {
+    pub feed_id: i64,
+    pub title: String,
+}
+
+/// A subscriber to deliver a new episode to, with their UI language.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subscriber {
+    pub user_id: i64,
+    pub chat_id: i64,
+    pub language: Lang,
+}
+
+/// One episode discovered in a feed poll.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedEpisode {
+    pub guid: String,
+    pub title: String,
+    pub url: String,
+    pub published_at: Option<i64>,
 }
 
 impl SearchResult {

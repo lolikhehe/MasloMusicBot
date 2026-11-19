@@ -26,6 +26,15 @@ pub fn install() -> Result<PrometheusHandle> {
         "Failed cold-path downloads"
     );
     metrics::describe_counter!("music_bot_uploads_total", "Audio uploads attempted");
+    metrics::describe_counter!("music_bot_feeds_polled_total", "Podcast feeds polled");
+    metrics::describe_counter!(
+        "music_bot_feed_episodes_total",
+        "Episodes discovered while polling podcast feeds"
+    );
+    metrics::describe_counter!(
+        "music_bot_feed_polls_failed_total",
+        "Failed podcast feed polls"
+    );
     metrics::describe_histogram!(
         "music_bot_request_seconds",
         "End-to-end handler latency in seconds"

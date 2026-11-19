@@ -48,8 +48,10 @@ docker compose build bot
 docker compose up -d
 ```
 
-The compose file starts Postgres, waits for `pg_isready`, and points the bot at
-`postgresql://musicbot:...` . For webhooks, set in `.env`:
+The compose file starts Postgres, waits for `pg_isready`, and points the bot and
+worker at `postgresql://musicbot:...` . Since v3.0.0 downloads (and their queue)
+run in a separate `worker` process that shares the same Postgres — scale bot and
+worker replicas independently. For webhooks, set in `.env`:
 
 ```sh
 WEBHOOK_URL=https://music.example.com/telegram/webhook
@@ -113,8 +115,8 @@ is used as the axum route. teloxide calls `set_webhook` on startup and
 - No sticky routing is needed for selections, but in-flight inline generation
   cancellation is per replica; that only affects which keystroke's answer is
   dropped, not correctness.
-- Postgres connection pools are per replica (`max_connections=16`). The
-  Postgres `max_connections` must be at least `16 × replicas + headroom`.
+- Postgres connection pools are per process (`max_connections=32`). The
+  Postgres `max_connections` must be at least `32 × (bot + worker instances) + headroom`.
 - Each connection sets `synchronous_commit=off`: the table is a cache of
   Telegram `file_id`s and counters, so a crash may lose the newest writes but
   never user-visible data that cannot be rebuilt by re-downloading. This was

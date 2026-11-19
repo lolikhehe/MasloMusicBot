@@ -447,6 +447,52 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "⚠ {n} lines could not be resolved and were skipped" => {
             Some("⚠ {n} 行を解決できず、スキップしました")
         }
+        // ---- 3.0.0: /recs and /pod ----
+        "/recs — personalized picks from your listening history" => {
+            Some("/recs — 再生履歴に基づくパーソナライズされたおすすめ")
+        }
+        "🎯 <b>Recommended for you</b>" => Some("🎯 <b>あなたへのおすすめ</b>"),
+        "Popular with listeners" => Some("リスナーに人気"),
+        "Based on {n} listens" => Some("{n} 回の再生に基づく"),
+        "🌱 Nothing to recommend yet — play a few tracks first." => {
+            Some("🌱 まだおすすめがありません — まずは何曲か再生してみてください。")
+        }
+        "Usage:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — subscribe in this chat\n<code>/pod list</code> — feeds in this chat\n<code>/pod del &lt;n&gt;</code> — unsubscribe by number" => {
+            Some(
+                "使い方：\n<code>/pod &lt;RSS/Atom URL&gt;</code> — このチャットで購読\n<code>/pod list</code> — このチャットのフィード\n<code>/pod del &lt;n&gt;</code> — 番号で購読解除",
+            )
+        }
+        "✅ Subscribed to <b>{title}</b>. New episodes will arrive here." => {
+            Some("✅ <b>{title}</b> を購読しました。新しいエピソードはここに届きます。")
+        }
+        "You are already subscribed to this feed in this chat." => {
+            Some("このチャットではこのフィードをすでに購読しています。")
+        }
+        "😕 Could not read that feed. Check the URL and try again." => {
+            Some("😕 このフィードを読み込めませんでした。URLを確認して再試行してください。")
+        }
+        "You can subscribe to at most 10 feeds." => Some("購読できるのは最大10件までです。"),
+        "The bot is at its feed limit right now. Try again later." => {
+            Some("ボットは現在フィード数の上限に達しています。しばらくしてから再試行してください。")
+        }
+        "No podcast subscriptions in this chat. Add one with <code>/pod &lt;URL&gt;</code>." => {
+            Some(
+                "このチャットにはポッドキャストの購読がありません。<code>/pod &lt;URL&gt;</code> で追加してください。",
+            )
+        }
+        "🎙 Podcasts in this chat:" => Some("🎙 このチャットのポッドキャスト："),
+        "🗑 Unsubscribed from <b>{title}</b>." => Some("🗑 <b>{title}</b> の購読を解除しました。"),
+        "Use a number from <code>/pod list</code>." => {
+            Some("<code>/pod list</code> の番号を指定してください。")
+        }
+        "🎙 <b>{feed_title}</b> · {n} new episode(s)" => {
+            Some("🎙 <b>{feed_title}</b> · 新しいエピソード {n} 件")
+        }
+        "🛑 Feed <b>{title}</b> stopped responding and was disabled. Remove it with /pod del." => {
+            Some(
+                "🛑 フィード <b>{title}</b> が応答しなくなったため無効化されました。/pod del で削除してください。",
+            )
+        }
         _ => None,
     }
 }

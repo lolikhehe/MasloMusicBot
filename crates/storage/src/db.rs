@@ -11,8 +11,9 @@
 //! the once-per-version announcement marker work with webhooks and polling.
 
 use common::domain::{
-    CachedTrack, DigestDue, DigestSchedule, DigestSummary, DynamicsCell, Lang, ListenEntry,
-    Provider, Stats, TrackKey, TrackMeta, UserRecord, UserStats,
+    CachedTrack, DigestDue, DigestSchedule, DigestSummary, DynamicsCell, FeedDue, FeedEpisode,
+    Lang, ListenEntry, Provider, RecItem, Stats, SubRow, Subscriber, TrackKey, TrackMeta,
+    UserRecord, UserStats,
 };
 use common::error::{AppError, AppResult};
 use serde::de::DeserializeOwned;
@@ -47,6 +48,10 @@ const SELECTION_TTL_SECS: i64 = 30 * 60;
 /// a live worker and must be left alone.
 const JOB_LEASE_SECS: i64 = 15 * 60;
 
+/// A cancel request older than this may be finalized: its worker died mid-cancel
+/// and can no longer write the terminal status itself.
+const CANCEL_GRACE_SECS: i64 = 15 * 60;
+
 /// One saved-album bookmark. `added_at` is a unix timestamp, like every other
 /// row-struct time field in this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +69,15 @@ pub struct SavedAlbum {
 pub struct SentMessageRef {
     pub chat_id: i64,
     pub message_id: i32,
+}
+
+/// A job atomically claimed by a worker via `FOR UPDATE SKIP LOCKED`.
+#[derive(Debug, Clone)]
+pub struct ClaimedJob {
+    pub id: String,
+    pub user_id: i64,
+    pub kind: String,
+    pub payload: serde_json::Value,
 }
 
 impl Db {
@@ -97,6 +111,11 @@ impl Db {
         // reclaim stale leases so a booting replica cannot reset a job that
         // another replica is still actively working on.
         let now = unix_now();
+        // A worker that died after a cancel request cannot settle its own row;
+        // do it here so the key is not locked by an active cancelled job.
+        let _ = Self::from_pool(pool.clone())
+            .finalize_cancelled_jobs(now)
+            .await;
         let _ = sqlx::query!(
             "UPDATE download_jobs
              SET status = 'queued', claimed_by = NULL, updated_at = $1
@@ -114,6 +133,23 @@ impl Db {
             .execute(pool)
             .await;
         Ok(())
+    }
+
+    /// Settle jobs whose worker died after a cancel request. The grace window
+    /// gives a live worker mid-cancel time to write the terminal status itself.
+    pub async fn finalize_cancelled_jobs(&self, now: i64) -> AppResult<u64> {
+        let result = sqlx::query!(
+            "UPDATE download_jobs
+             SET status = 'cancelled', cancel_requested = false, updated_at = $1
+             WHERE status IN ('queued','downloading','uploading')
+               AND cancel_requested AND updated_at < $2",
+            now,
+            now - CANCEL_GRACE_SECS
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected())
     }
 
     /// Periodic counterparts of the one-shot cleanup in `migrate()`.
@@ -521,7 +557,7 @@ impl Db {
             .ok_or_else(|| AppError::Message("user row disappeared after insert".to_owned()))
     }
 
-    async fn user_by_id(&self, id: i64) -> AppResult<Option<UserRecord>> {
+    pub async fn user_by_id(&self, id: i64) -> AppResult<Option<UserRecord>> {
         let row = sqlx::query!(
             "SELECT language, quality, banned, search_source, tags_enabled, lastfm_user,
                     hq_cover, lastfm_stats, genre_analysis, album_info, audio_format,
@@ -1665,65 +1701,97 @@ impl Db {
 
     // ---- Persistent download jobs ----------------------------------------
 
-    /// Insert a job and atomically claim it for this replica. Returns `false`
-    /// when another worker already owns the id (or enqueued the same request).
-    pub async fn enqueue_and_claim_job(
+    /// Enqueue one job. Returns `false` when the id or an active job for the
+    /// same user/key already exists; a fresh insert wakes an idle worker via
+    /// `NOTIFY new_job`. No conflict target: both the id PK and the partial
+    /// active-key index must suppress the insert atomically.
+    pub async fn enqueue_job(
         &self,
         id: &str,
         user_id: i64,
         kind: &str,
         payload: serde_json::Value,
-        worker: &str,
     ) -> AppResult<bool> {
         let now = unix_now();
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
         let inserted = sqlx::query!(
             "INSERT INTO download_jobs
                 (id, user_id, kind, status, payload, created_at, updated_at)
              VALUES ($1, $2, $3, 'queued', $4, $5, $5)
-             ON CONFLICT(id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
             id,
             user_id,
             kind,
             payload,
             now
         )
-        .execute(&mut *tx)
+        .execute(&self.pool)
         .await
         .map_err(db_err)?;
         if inserted.rows_affected() == 0 {
-            tx.commit().await.map_err(db_err)?;
             return Ok(false);
         }
-        let claimed = sqlx::query!(
-            "UPDATE download_jobs
-             SET status = 'downloading', claimed_by = $2, updated_at = $3
-             WHERE id = $1 AND status = 'queued'
-             RETURNING id",
-            id,
-            worker,
-            now
-        )
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?;
-        tx.commit().await.map_err(db_err)?;
-        Ok(claimed.is_some())
+        sqlx::query("SELECT pg_notify('new_job', $1)")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(true)
     }
 
-    /// Move an active job to its terminal status. The guard makes late writers
-    /// harmless (a terminal job is never overwritten), and a pending cancel
-    /// always wins over the worker's own result. The cancel flag is cleared so
-    /// a reused id cannot inherit a stale cancellation.
-    pub async fn finish_job(&self, id: &str, status: &str, error: Option<&str>) -> AppResult<()> {
-        sqlx::query!(
+    /// Claim the oldest queued job. The subquery locks the row with
+    /// `SKIP LOCKED`, so several workers never claim the same job.
+    pub async fn claim_next_job(&self, worker: &str) -> AppResult<Option<ClaimedJob>> {
+        let row = sqlx::query!(
             "UPDATE download_jobs
-             SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,
-                 error = $3, updated_at = $4, cancel_requested = false
-             WHERE id = $1 AND status IN ('queued', 'downloading', 'uploading')",
+             SET status = 'downloading', claimed_by = $1, updated_at = $2
+             WHERE id = (
+                 SELECT id FROM download_jobs
+                 WHERE status = 'queued'
+                 ORDER BY created_at
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT 1
+             )
+             RETURNING id, user_id, kind, payload",
+            worker,
+            unix_now()
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(row.map(|row| ClaimedJob {
+            id: row.id,
+            user_id: row.user_id,
+            kind: row.kind,
+            payload: row.payload,
+        }))
+    }
+
+    /// True while the user has a `key` request queued, downloading or uploading.
+    pub async fn find_active_job_for_user_key(&self, user_id: i64, key: &str) -> AppResult<bool> {
+        Ok(sqlx::query_scalar!(
+            "SELECT EXISTS(
+                 SELECT 1 FROM download_jobs
+                 WHERE user_id = $1 AND payload->>'key' = $2
+                   AND status IN ('queued','downloading','uploading')
+             )",
+            user_id,
+            key
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?
+        .unwrap_or(false))
+    }
+
+    /// Keep an active job's lease alive and move it between download/upload.
+    /// Only the worker that claimed the row may extend its lease.
+    pub async fn touch_job(&self, id: &str, status: &str, claimed_by: &str) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE download_jobs SET status = $2, updated_at = $4
+             WHERE id = $1 AND claimed_by = $3 AND status IN ('downloading','uploading')",
             id,
             status,
-            error,
+            claimed_by,
             unix_now()
         )
         .execute(&self.pool)
@@ -1732,23 +1800,46 @@ impl Db {
         Ok(())
     }
 
-    /// Mean wall-time of terminal `done` jobs finished in the last 24h, in
-    /// seconds. Each sample is clamped to 1..=1800s so one stalled download
-    /// cannot skew the estimate; `None` until at least one sample exists.
-    pub async fn avg_recent_download_secs(&self) -> AppResult<Option<f64>> {
-        Ok(sqlx::query_scalar!(
-            "SELECT AVG(duration) FROM (
-                 SELECT LEAST(1800, GREATEST(1, updated_at - created_at))::double precision AS duration
-                 FROM download_jobs
-                 WHERE status = 'done' AND updated_at >= $1
-             ) d
-             HAVING COUNT(*) >= 1",
-            unix_now() - 86_400
+    /// Publish the measured mean download speed for ETA estimates on other
+    /// replicas. Stored in `meta` as a decimal string.
+    pub async fn publish_download_speed(&self, mean_bps: f64) -> AppResult<()> {
+        self.set_meta("download_speed_bps", &mean_bps.to_string())
+            .await
+    }
+
+    pub async fn read_download_speed(&self) -> AppResult<Option<f64>> {
+        Ok(self
+            .get_meta("download_speed_bps")
+            .await?
+            .and_then(|value| value.parse().ok()))
+    }
+
+    /// Move an active job to its terminal status. Only the claiming worker may
+    /// write it: a requeued and re-claimed row must not be settled by the old
+    /// owner's late write. A pending cancel still wins over the worker's own
+    /// result, and the flag is cleared so a reused id inherits no stale cancel.
+    pub async fn finish_job(
+        &self,
+        id: &str,
+        status: &str,
+        error: Option<&str>,
+        claimed_by: &str,
+    ) -> AppResult<()> {
+        sqlx::query!(
+            "UPDATE download_jobs
+             SET status = CASE WHEN cancel_requested THEN 'cancelled' ELSE $2 END,
+                 error = $3, updated_at = $4, cancel_requested = false
+             WHERE id = $1 AND claimed_by = $5 AND status IN ('queued', 'downloading', 'uploading')",
+            id,
+            status,
+            error,
+            unix_now(),
+            claimed_by
         )
-        .fetch_optional(&self.pool)
+        .execute(&self.pool)
         .await
-        .map_err(db_err)?
-        .flatten())
+        .map_err(db_err)?;
+        Ok(())
     }
 
     pub async fn request_cancel(&self, id: &str, user_id: i64) -> AppResult<bool> {
@@ -1856,6 +1947,358 @@ impl Db {
         .await
         .map_err(db_err)?;
         Ok(row.hits <= limit)
+    }
+
+    // ---- Recommendations ---------------------------------------------------
+
+    /// One ranked query: priority 1 from time-decayed co-listens, priority 2
+    /// from globally popular items for cold users. Already-heard items are
+    /// filtered in both branches.
+    pub async fn recommendations(&self, user_id: i64, limit: i64) -> AppResult<Vec<RecItem>> {
+        let rows = sqlx::query!(
+            r#"
+            WITH heard AS (
+                SELECT DISTINCT lower(btrim(title)) AS title_key,
+                       lower(btrim(coalesce(performer, ''))) AS performer_key
+                FROM listens WHERE user_id = $1
+            ),
+            seed AS (
+                SELECT DISTINCT lower(btrim(title)) AS title_key,
+                       lower(btrim(coalesce(performer, ''))) AS performer_key
+                FROM listens
+                WHERE user_id = $1 AND created_at >= $2::bigint - 90 * 86400::bigint
+            ),
+            candidates AS (
+                SELECT c.b_t AS title_key, c.b_p AS performer_key,
+                       coalesce(sum(c.score), 0.0)::float8 AS score, 1 AS priority
+                FROM mv_rec_cooccurrence c
+                JOIN seed s ON s.title_key = c.a_t AND s.performer_key = c.a_p
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM heard h
+                    WHERE h.title_key = c.b_t AND h.performer_key = c.b_p
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM seed s2
+                    WHERE s2.title_key = c.b_t AND s2.performer_key = c.b_p
+                )
+                GROUP BY c.b_t, c.b_p
+                UNION ALL
+                SELECT st.title_key AS title_key, st.performer_key AS performer_key,
+                       st.listeners::float8 AS score, 2 AS priority
+                FROM mv_rec_item_stats st
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM heard h
+                    WHERE h.title_key = st.title_key AND h.performer_key = st.performer_key
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM seed s2
+                    WHERE s2.title_key = st.title_key AND s2.performer_key = st.performer_key
+                )
+            ),
+            ranked AS (
+                SELECT c.*, row_number() OVER (
+                    PARTITION BY priority
+                    ORDER BY score DESC, title_key, performer_key
+                ) AS rn
+                FROM candidates c
+            )
+            SELECT coalesce(st.title, '') AS title,
+                   coalesce(st.performer, '') AS performer,
+                   coalesce(st.canonical_key, '') AS track_key,
+                   coalesce(r.score, 0.0)::float8 AS score
+            FROM ranked r
+            JOIN mv_rec_item_stats st
+              ON st.title_key = r.title_key AND st.performer_key = r.performer_key
+            WHERE r.rn <= $3
+              AND EXISTS (SELECT 1 FROM listens l WHERE l.user_id = $1)
+            ORDER BY r.priority, r.score DESC
+            LIMIT $3
+            "#,
+            user_id,
+            unix_now(),
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| RecItem {
+                title: row.title.unwrap_or_default(),
+                performer: row.performer.unwrap_or_default(),
+                track_key: row.track_key.unwrap_or_default(),
+                score: row.score.unwrap_or_default(),
+            })
+            .collect())
+    }
+
+    /// Claim a refresh slot: the marker is written only when the last refresh
+    /// is at most `stale_after` seconds old (or has never run).
+    pub async fn claim_rec_refresh(&self, now: i64, stale_after: i64) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "UPDATE meta SET meta_value = $1
+             WHERE meta_key = 'rec_refreshed_at'
+               AND coalesce(meta_value::bigint, 0) <= $2",
+            now.to_string(),
+            stale_after
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Rebuild the recommendation views outside a transaction. `CONCURRENTLY`
+    /// keeps reads alive; both views have a UNIQUE index for it.
+    pub async fn refresh_rec_views(&self) -> AppResult<()> {
+        sqlx::query("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_rec_item_stats")
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        sqlx::query("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_rec_cooccurrence")
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    // ---- Podcast feeds -----------------------------------------------------
+
+    pub async fn due_feeds(&self, now: i64, limit: i64) -> AppResult<Vec<FeedDue>> {
+        let rows = sqlx::query!(
+            "SELECT id, url, etag, last_modified, interval_secs, fail_count, next_poll_at
+             FROM feeds
+             WHERE enabled AND next_poll_at <= $1
+             ORDER BY next_poll_at LIMIT $2",
+            now,
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| FeedDue {
+                id: row.id,
+                url: row.url,
+                etag: row.etag,
+                last_modified: row.last_modified,
+                interval_secs: row.interval_secs,
+                fail_count: row.fail_count,
+                next_poll_at: row.next_poll_at,
+            })
+            .collect())
+    }
+
+    /// Extend a feed's lease only if its poll slot still matches `expected_next`.
+    pub async fn claim_feed(
+        &self,
+        id: i64,
+        expected_next: i64,
+        lease_until: i64,
+    ) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "UPDATE feeds SET next_poll_at = $3
+             WHERE id = $1 AND enabled AND next_poll_at = $2",
+            id,
+            expected_next,
+            lease_until
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Commit a finished poll. A stale lease means another worker took over,
+    /// so its result is discarded.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn finish_feed(
+        &self,
+        id: i64,
+        expected_lease: i64,
+        next_poll_at: i64,
+        fail_count: i32,
+        last_error: Option<&str>,
+        title: &str,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+    ) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "UPDATE feeds
+             SET next_poll_at = $3, fail_count = $4, last_error = $5,
+                 title = CASE WHEN $6 = '' THEN title ELSE $6 END,
+                 etag = $7, last_modified = $8
+             WHERE id = $1 AND next_poll_at = $2",
+            id,
+            expected_lease,
+            next_poll_at,
+            fail_count,
+            last_error,
+            title,
+            etag,
+            last_modified
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn disable_feed(&self, id: i64) -> AppResult<()> {
+        sqlx::query!("UPDATE feeds SET enabled = false WHERE id = $1", id)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Insert a feed, returning the existing id when the URL is already known.
+    pub async fn insert_feed(&self, url: &str, title: &str, now: i64) -> AppResult<i64> {
+        let inserted = sqlx::query_scalar!(
+            "INSERT INTO feeds (url, title, next_poll_at, added_at)
+             VALUES ($1, $2, $3, $3)
+             ON CONFLICT (url) DO NOTHING
+             RETURNING id",
+            url,
+            title,
+            now
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        if let Some(id) = inserted {
+            return Ok(id);
+        }
+        sqlx::query_scalar!("SELECT id FROM feeds WHERE url = $1", url)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_err)
+    }
+
+    pub async fn subscribe(&self, user_id: i64, chat_id: i64, feed_id: i64) -> AppResult<bool> {
+        let result = sqlx::query!(
+            "INSERT INTO podcast_subs (user_id, chat_id, feed_id) VALUES ($1, $2, $3)
+             ON CONFLICT DO NOTHING",
+            user_id,
+            chat_id,
+            feed_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn unsubscribe(&self, user_id: i64, chat_id: i64, feed_id: i64) -> AppResult<()> {
+        sqlx::query!(
+            "DELETE FROM podcast_subs WHERE user_id = $1 AND chat_id = $2 AND feed_id = $3",
+            user_id,
+            chat_id,
+            feed_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn delete_orphan_feed(&self, feed_id: i64) -> AppResult<()> {
+        sqlx::query!(
+            "DELETE FROM feeds WHERE id = $1
+             AND NOT EXISTS (SELECT 1 FROM podcast_subs WHERE feed_id = $1)",
+            feed_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub async fn list_subs(&self, user_id: i64, chat_id: i64) -> AppResult<Vec<SubRow>> {
+        let rows = sqlx::query!(
+            "SELECT f.id AS feed_id, f.title AS title
+             FROM podcast_subs s JOIN feeds f ON f.id = s.feed_id
+             WHERE s.user_id = $1 AND s.chat_id = $2
+             ORDER BY f.id",
+            user_id,
+            chat_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SubRow {
+                feed_id: row.feed_id,
+                title: row.title,
+            })
+            .collect())
+    }
+
+    pub async fn count_user_feeds(&self, user_id: i64) -> AppResult<i64> {
+        Ok(sqlx::query_scalar!(
+            "SELECT count(*) FROM podcast_subs WHERE user_id = $1",
+            user_id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(db_err)?
+        .unwrap_or_default())
+    }
+
+    pub async fn count_feeds(&self) -> AppResult<i64> {
+        Ok(sqlx::query_scalar!("SELECT count(*) FROM feeds")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_err)?
+            .unwrap_or_default())
+    }
+
+    pub async fn episode_guids(&self, feed_id: i64) -> AppResult<Vec<String>> {
+        sqlx::query_scalar!("SELECT guid FROM feed_episodes WHERE feed_id = $1", feed_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)
+    }
+
+    pub async fn insert_episodes(&self, feed_id: i64, eps: &[FeedEpisode]) -> AppResult<()> {
+        for ep in eps {
+            sqlx::query!(
+                "INSERT INTO feed_episodes (feed_id, guid, title, url, published_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (feed_id, guid) DO NOTHING",
+                feed_id,
+                ep.guid.as_str(),
+                ep.title.as_str(),
+                ep.url.as_str(),
+                ep.published_at
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    pub async fn subscribers_for_feed(&self, feed_id: i64) -> AppResult<Vec<Subscriber>> {
+        let rows = sqlx::query!(
+            "SELECT u.user_id AS user_id, s.chat_id AS chat_id, u.language AS language
+             FROM podcast_subs s JOIN users u ON u.user_id = s.user_id
+             WHERE s.feed_id = $1",
+            feed_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Subscriber {
+                user_id: row.user_id,
+                chat_id: row.chat_id,
+                language: Lang::from_code(&row.language).unwrap_or(Lang::En),
+            })
+            .collect())
     }
 }
 
@@ -2275,14 +2718,29 @@ mod tests {
         let db = db(pool).await;
         let payload = serde_json::json!({"key": "youtube:job"});
         assert!(
-            db.enqueue_and_claim_job("job-1", 42, "track", payload.clone(), "replica-a")
+            db.enqueue_job("job-1", 42, "track", payload.clone())
                 .await
-                .expect("claim")
+                .expect("enqueue")
         );
         assert!(
-            !db.enqueue_and_claim_job("job-1", 42, "track", payload, "replica-b")
+            !db.enqueue_job("job-1", 42, "track", payload.clone())
                 .await
-                .expect("second claim must fail")
+                .expect("duplicate enqueue must fail")
+        );
+        let claimed = db
+            .claim_next_job("replica-a")
+            .await
+            .expect("claim")
+            .expect("one queued job");
+        assert_eq!(claimed.id, "job-1");
+        assert_eq!(claimed.user_id, 42);
+        assert_eq!(claimed.kind, "track");
+        assert_eq!(claimed.payload, payload);
+        assert!(
+            db.claim_next_job("replica-b")
+                .await
+                .expect("empty claim")
+                .is_none()
         );
         assert!(!db.job_cancel_requested("job-1").await.expect("flag"));
         assert!(db.request_cancel("job-1", 42).await.expect("cancel"));
@@ -2295,7 +2753,7 @@ mod tests {
         assert_eq!(jobs[0].1, "track");
         assert!(jobs[0].3);
 
-        db.finish_job("job-1", "cancelled", None)
+        db.finish_job("job-1", "cancelled", None, "replica-a")
             .await
             .expect("finish");
         let jobs = db.list_jobs(42, 10).await.expect("list");
@@ -2305,12 +2763,13 @@ mod tests {
     #[sqlx::test(migrations = "../../migrations")]
     async fn finish_job_honours_cancel_and_ignores_terminal(pool: PgPool) {
         let db = db(pool).await;
-        db.enqueue_and_claim_job("j-cancel", 1, "track", serde_json::json!({}), "w")
+        db.enqueue_job("j-cancel", 1, "track", serde_json::json!({}))
             .await
-            .expect("claim");
+            .expect("enqueue");
+        db.claim_next_job("w").await.expect("claim").expect("job");
         assert!(db.request_cancel("j-cancel", 1).await.expect("cancel"));
         // Worker finishes after the cancel check: the pending cancel wins.
-        db.finish_job("j-cancel", "done", None)
+        db.finish_job("j-cancel", "done", None, "w")
             .await
             .expect("finish");
         let jobs = db.list_jobs(1, 10).await.expect("jobs");
@@ -2318,11 +2777,150 @@ mod tests {
         assert!(!jobs[0].3, "cancel_requested cleared on finish");
 
         // A late second writer must not overwrite an already-terminal job.
-        db.finish_job("j-cancel", "done", None)
+        db.finish_job("j-cancel", "done", None, "w")
             .await
             .expect("late finish");
         let jobs = db.list_jobs(1, 10).await.expect("jobs after late finish");
         assert_eq!(jobs[0].2, "cancelled");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn only_claiming_worker_can_write_a_job(pool: PgPool) {
+        let db = db(pool).await;
+        db.enqueue_job(
+            "owner-1",
+            3,
+            "track",
+            serde_json::json!({"key": "owner-key"}),
+        )
+        .await
+        .expect("enqueue");
+        let claimed = db
+            .claim_next_job("old-worker")
+            .await
+            .expect("claim")
+            .expect("job");
+        assert_eq!(claimed.id, "owner-1");
+        // Simulate a lease requeue and re-claim by a different worker.
+        sqlx::query!(
+            "UPDATE download_jobs SET status = 'queued', claimed_by = NULL, updated_at = 0
+             WHERE id = 'owner-1'"
+        )
+        .execute(&db.pool)
+        .await
+        .expect("requeue");
+        let reclaimed = db
+            .claim_next_job("new-worker")
+            .await
+            .expect("reclaim")
+            .expect("job");
+        assert_eq!(reclaimed.id, "owner-1");
+
+        db.finish_job("owner-1", "done", None, "old-worker")
+            .await
+            .expect("late old finish");
+        db.touch_job("owner-1", "uploading", "old-worker")
+            .await
+            .expect("late old touch");
+        let status: String =
+            sqlx::query_scalar!("SELECT status FROM download_jobs WHERE id = 'owner-1'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("status");
+        assert_eq!(
+            status, "downloading",
+            "old owner cannot settle or move the row"
+        );
+
+        db.finish_job("owner-1", "done", None, "new-worker")
+            .await
+            .expect("new owner finish");
+        let final_status: String =
+            sqlx::query_scalar!("SELECT status FROM download_jobs WHERE id = 'owner-1'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("final status");
+        assert_eq!(final_status, "done");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn finalize_cancelled_jobs_settles_only_stale_cancels(pool: PgPool) {
+        let db = db(pool).await;
+        let now = unix_now();
+        // Worker died mid-cancel: request and lease predate the grace window.
+        seed_job(
+            &db,
+            "stale-cancel",
+            "queued",
+            now - 1000,
+            now - 1000,
+            "dead",
+        )
+        .await;
+        sqlx::query!("UPDATE download_jobs SET cancel_requested = true WHERE id = 'stale-cancel'")
+            .execute(&db.pool)
+            .await
+            .expect("flag stale");
+        // Live worker is still inside the grace window: leave its cancel alone.
+        seed_job(&db, "fresh-cancel", "downloading", now, now, "live").await;
+        sqlx::query!("UPDATE download_jobs SET cancel_requested = true WHERE id = 'fresh-cancel'")
+            .execute(&db.pool)
+            .await
+            .expect("flag fresh");
+
+        assert_eq!(db.finalize_cancelled_jobs(now).await.expect("finalize"), 1);
+
+        let stale_status: String =
+            sqlx::query_scalar!("SELECT status FROM download_jobs WHERE id = 'stale-cancel'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("stale status");
+        let stale_flag: bool = sqlx::query_scalar!(
+            "SELECT cancel_requested FROM download_jobs WHERE id = 'stale-cancel'"
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("stale flag");
+        assert_eq!(stale_status, "cancelled");
+        assert!(!stale_flag, "cancel flag cleared so the key is free again");
+        let fresh_status: String =
+            sqlx::query_scalar!("SELECT status FROM download_jobs WHERE id = 'fresh-cancel'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("fresh status");
+        let fresh_flag: bool = sqlx::query_scalar!(
+            "SELECT cancel_requested FROM download_jobs WHERE id = 'fresh-cancel'"
+        )
+        .fetch_one(&db.pool)
+        .await
+        .expect("fresh flag");
+        assert_eq!(fresh_status, "downloading");
+        assert!(fresh_flag, "live worker's cancel must survive");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn enqueue_job_dedups_active_key(pool: PgPool) {
+        let db = db(pool).await;
+        assert!(
+            db.enqueue_job("dedup-1", 9, "track", serde_json::json!({"key": "k"}))
+                .await
+                .expect("first")
+        );
+        assert!(
+            !db.enqueue_job("dedup-2", 9, "track", serde_json::json!({"key": "k"}))
+                .await
+                .expect("second")
+        );
+        let claimed = db.claim_next_job("w").await.expect("claim").expect("job");
+        assert_eq!(claimed.id, "dedup-1");
+        db.finish_job("dedup-1", "done", None, "w")
+            .await
+            .expect("finish");
+        assert!(
+            db.enqueue_job("dedup-3", 9, "track", serde_json::json!({"key": "k"}))
+                .await
+                .expect("reenqueue after terminal")
+        );
     }
 
     #[sqlx::test(migrations = "../../migrations")]
@@ -2561,16 +3159,24 @@ mod tests {
             .await
             .expect("backdate cache");
 
-        db.enqueue_and_claim_job("old-done", 1, "track", serde_json::json!({}), "w")
+        db.enqueue_job("old-done", 1, "track", serde_json::json!({}))
             .await
             .expect("old job");
-        db.finish_job("old-done", "done", None)
+        db.claim_next_job("w")
+            .await
+            .expect("claim old")
+            .expect("job");
+        db.finish_job("old-done", "done", None, "w")
             .await
             .expect("finish old");
-        db.enqueue_and_claim_job("fresh-done", 1, "track", serde_json::json!({}), "w")
+        db.enqueue_job("fresh-done", 1, "track", serde_json::json!({}))
             .await
             .expect("fresh job");
-        db.finish_job("fresh-done", "done", None)
+        db.claim_next_job("w")
+            .await
+            .expect("claim fresh")
+            .expect("job");
+        db.finish_job("fresh-done", "done", None, "w")
             .await
             .expect("finish fresh");
         sqlx::query!("UPDATE download_jobs SET updated_at = 0 WHERE id = 'old-done'")
@@ -2829,14 +3435,23 @@ mod tests {
         assert_eq!(db.auto_delete_hours(42).await.expect("get cleared"), None);
     }
 
-    async fn seed_job(db: &Db, id: &str, status: &str, created_at: i64, updated_at: i64) {
+    async fn seed_job(
+        db: &Db,
+        id: &str,
+        status: &str,
+        created_at: i64,
+        updated_at: i64,
+        claimed_by: &str,
+    ) {
         sqlx::query!(
-            "INSERT INTO download_jobs (id, user_id, kind, status, payload, created_at, updated_at)
-             VALUES ($1, 1, 'track', $2, '{}'::jsonb, $3, $4)",
+            "INSERT INTO download_jobs
+                (id, user_id, kind, status, payload, created_at, updated_at, claimed_by)
+             VALUES ($1, 1, 'track', $2, '{}'::jsonb, $3, $4, $5)",
             id,
             status,
             created_at,
-            updated_at
+            updated_at,
+            claimed_by
         )
         .execute(&db.pool)
         .await
@@ -2844,38 +3459,421 @@ mod tests {
     }
 
     #[sqlx::test(migrations = "../../migrations")]
-    async fn avg_recent_download_secs_uses_recent_done_samples(pool: PgPool) {
+    async fn download_speed_roundtrip(pool: PgPool) {
         let db = db(pool).await;
-        let now = unix_now();
-        // Backdated but inside 24h; zero duration clamps to 1, the 48h-old and
-        // non-done jobs must not count.
-        seed_job(&db, "j1", "done", now - 7200, now - 7190).await;
-        seed_job(&db, "j2", "done", now - 3600, now - 3580).await;
-        seed_job(&db, "j3", "done", now - 60, now - 30).await;
-        seed_job(&db, "j-zero", "done", now - 5, now - 5).await;
-        seed_job(&db, "j-old", "done", now - 172_800, now - 172_700).await;
-        seed_job(&db, "j-queued", "queued", now - 100, now).await;
-        assert_eq!(
-            db.avg_recent_download_secs().await.expect("avg"),
-            Some(15.25)
+        assert_eq!(db.read_download_speed().await.expect("empty"), None);
+        db.publish_download_speed(1234.5).await.expect("publish");
+        assert_eq!(db.read_download_speed().await.expect("read"), Some(1234.5));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn queue_is_fifo_and_active_key_is_tracked(pool: PgPool) {
+        let db = db(pool).await;
+        assert!(
+            db.enqueue_job("j1", 7, "track", serde_json::json!({"key": "k1"}))
+                .await
+                .expect("j1")
+        );
+        assert!(
+            db.enqueue_job("j2", 7, "track", serde_json::json!({"key": "k2"}))
+                .await
+                .expect("j2")
+        );
+        // created_at is whole seconds; backdate one row to make FIFO explicit.
+        sqlx::query!("UPDATE download_jobs SET created_at = 0 WHERE id = 'j1'")
+            .execute(&db.pool)
+            .await
+            .expect("backdate");
+        assert!(
+            db.find_active_job_for_user_key(7, "k1")
+                .await
+                .expect("k1 queued")
+        );
+        let first = db.claim_next_job("w1").await.expect("claim").expect("j1");
+        assert_eq!(first.id, "j1");
+        let second = db.claim_next_job("w2").await.expect("claim").expect("j2");
+        assert_eq!(second.id, "j2");
+        assert_ne!(first.id, second.id, "two claims never return the same row");
+        assert!(
+            db.claim_next_job("w3")
+                .await
+                .expect("empty claim")
+                .is_none()
+        );
+        assert!(
+            db.find_active_job_for_user_key(7, "k1")
+                .await
+                .expect("k1 active")
+        );
+        assert!(
+            db.find_active_job_for_user_key(7, "k2")
+                .await
+                .expect("k2 active")
+        );
+        assert!(
+            !db.find_active_job_for_user_key(8, "k1")
+                .await
+                .expect("other user")
+        );
+        assert!(
+            !db.find_active_job_for_user_key(7, "nope")
+                .await
+                .expect("missing key")
+        );
+        db.finish_job("j1", "done", None, "w1")
+            .await
+            .expect("finish");
+        assert!(
+            !db.find_active_job_for_user_key(7, "k1")
+                .await
+                .expect("done")
+        );
+        assert!(
+            db.find_active_job_for_user_key(7, "k2")
+                .await
+                .expect("still active")
         );
     }
 
     #[sqlx::test(migrations = "../../migrations")]
-    async fn avg_recent_download_secs_needs_one_sample(pool: PgPool) {
+    async fn touch_job_advances_lease_only_for_active_jobs(pool: PgPool) {
         let db = db(pool).await;
-        assert_eq!(db.avg_recent_download_secs().await.expect("avg"), None);
+        seed_job(&db, "touch-1", "downloading", 100, 0, "w1").await;
+        seed_job(&db, "touch-2", "queued", 100, 0, "w2").await;
+        db.touch_job("touch-1", "uploading", "w1")
+            .await
+            .expect("touch");
+        let status: String =
+            sqlx::query_scalar!("SELECT status FROM download_jobs WHERE id = 'touch-1'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("status");
+        assert_eq!(status, "uploading");
+        let updated: i64 =
+            sqlx::query_scalar!("SELECT updated_at FROM download_jobs WHERE id = 'touch-1'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("updated_at");
+        assert!(updated > 0, "touch advances updated_at");
+        db.touch_job("touch-2", "downloading", "w2")
+            .await
+            .expect("no-op");
+        let queued: String =
+            sqlx::query_scalar!("SELECT status FROM download_jobs WHERE id = 'touch-2'")
+                .fetch_one(&db.pool)
+                .await
+                .expect("status");
+        assert_eq!(queued, "queued", "touch ignores non-active jobs");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn enqueue_notifies_new_job(pool: PgPool) {
+        let db = db(pool).await;
+        // A dedicated pool keeps LISTEN from holding the test pool's only
+        // connection while the enqueue needs one.
+        let options = db.pool.connect_options();
+        let listener_pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with((*options).clone())
+            .await
+            .expect("listener pool");
+        let mut listener = sqlx::postgres::PgListener::connect_with(&listener_pool)
+            .await
+            .expect("listener");
+        listener.listen("new_job").await.expect("listen");
+        assert!(
+            db.enqueue_job("n-1", 7, "track", serde_json::json!({}))
+                .await
+                .expect("enqueue")
+        );
+        let notification = tokio::time::timeout(Duration::from_secs(2), listener.recv())
+            .await
+            .expect("notify within 2s")
+            .expect("recv");
+        assert_eq!(notification.channel(), "new_job");
+        assert_eq!(notification.payload(), "n-1");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn recommendations_collapses_aliases(pool: PgPool) {
+        let db = db(pool).await;
+        let none = &[] as &[String];
+        // A is heard by 11 (youtube) and 12 (alias key, same title/performer).
+        db.record_listen(11, "youtube:a", "Alpha", Some("Artist A"), none)
+            .await
+            .expect("A/11");
+        db.record_listen(12, "deezer:track:x", " Alpha ", Some(" artist a "), none)
+            .await
+            .expect("A/12 alias");
+        // B is heard by 11, 12 and 13 -> pairs (A,B) and (B,C) reach 2 users.
+        db.record_listen(11, "youtube:b", "Beta", Some("Artist B"), none)
+            .await
+            .expect("B/11");
+        db.record_listen(12, "youtube:b", "Beta", Some("Artist B"), none)
+            .await
+            .expect("B/12");
+        db.record_listen(13, "youtube:b", "Beta", Some("Artist B"), none)
+            .await
+            .expect("B/13");
+        // C is unknown to 11, heard by 12 and 13; 12's "youtube:c1" is modal.
+        db.record_listen(12, "youtube:c1", "Gamma", Some("Artist C"), none)
+            .await
+            .expect("C/12 first");
+        db.record_listen(12, "youtube:c1", "Gamma", Some("Artist C"), none)
+            .await
+            .expect("C/12 second");
+        db.record_listen(13, "youtube:c2", "Gamma", Some("Artist C"), none)
+            .await
+            .expect("C/13");
+
+        db.refresh_rec_views().await.expect("refresh");
+
+        let recs = db.recommendations(11, 8).await.expect("recommendations");
+        let keys: Vec<&str> = recs.iter().map(|r| r.track_key.as_str()).collect();
+        assert!(keys.contains(&"youtube:c1"), "C recommended: {keys:?}");
+        assert!(!keys.contains(&"youtube:a"), "A already heard: {keys:?}");
+        assert!(!keys.contains(&"youtube:b"), "B already heard: {keys:?}");
+        let c = recs
+            .iter()
+            .find(|r| r.track_key == "youtube:c1")
+            .expect("C");
+        assert_eq!(c.title, "Gamma");
+        assert_eq!(c.performer, "Artist C");
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn cold_user_gets_global_fallback_and_empty_user_gets_nothing(pool: PgPool) {
+        let db = db(pool).await;
+        let none = &[] as &[String];
+        db.record_listen(21, "youtube:a", "Alpha", Some("Artist A"), none)
+            .await
+            .expect("cold user's one listen");
+        db.record_listen(31, "youtube:b", "Beta", Some("Artist B"), none)
+            .await
+            .expect("B");
+        db.record_listen(32, "youtube:c", "Gamma", Some("Artist C"), none)
+            .await
+            .expect("C");
+        db.refresh_rec_views().await.expect("refresh");
+
+        let recs = db.recommendations(21, 8).await.expect("recommendations");
+        let keys: Vec<&str> = recs.iter().map(|r| r.track_key.as_str()).collect();
+        assert!(keys.contains(&"youtube:b"), "priority-2 fallback: {keys:?}");
+        assert!(keys.contains(&"youtube:c"), "priority-2 fallback: {keys:?}");
+        assert!(
+            !keys.contains(&"youtube:a"),
+            "heard item filtered: {keys:?}"
+        );
+        assert!(
+            db.recommendations(99, 8).await.expect("empty").is_empty(),
+            "user without listens gets nothing"
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn claim_rec_refresh_is_a_cas(pool: PgPool) {
+        let db = db(pool).await;
         let now = unix_now();
-        seed_job(&db, "j1", "done", now - 100, now - 90).await;
+        assert!(db.claim_rec_refresh(now, 3600).await.expect("first claim"));
+        assert!(!db.claim_rec_refresh(now, 3600).await.expect("second claim"));
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn feeds_due_claim_and_finish(pool: PgPool) {
+        let db = db(pool).await;
+        let now = unix_now();
+        let due = db
+            .insert_feed("https://a/rss", "A", now - 100)
+            .await
+            .expect("due feed");
+        let future = db
+            .insert_feed("https://b/rss", "B", now + 1000)
+            .await
+            .expect("future feed");
+        let off = db
+            .insert_feed("https://c/rss", "C", now - 100)
+            .await
+            .expect("off feed");
         assert_eq!(
-            db.avg_recent_download_secs().await.expect("avg"),
-            Some(10.0)
+            db.insert_feed("https://a/rss", "A", now)
+                .await
+                .expect("dup feed"),
+            due
         );
-        seed_job(&db, "j2", "done", now - 200, now - 180).await;
+        db.disable_feed(off).await.expect("disable");
+
+        let rows = db.due_feeds(now, 10).await.expect("due feeds");
+        assert_eq!(rows.len(), 1, "only enabled and due feeds");
+        assert_eq!(rows[0].id, due);
+        assert_eq!(rows[0].url, "https://a/rss");
+        assert_eq!(rows[0].interval_secs, 3600);
+        assert_eq!(rows[0].fail_count, 0);
+
+        let lease = now + 600;
+        assert!(db.claim_feed(due, now - 100, lease).await.expect("claim"));
+        assert!(
+            !db.claim_feed(due, now - 100, lease)
+                .await
+                .expect("stale claim")
+        );
+        assert!(
+            db.due_feeds(now, 10)
+                .await
+                .expect("claimed not due")
+                .is_empty()
+        );
+
+        assert!(
+            !db.finish_feed(due, now - 100, lease + 100, 0, None, "A", Some("e1"), None)
+                .await
+                .expect("stale finish")
+        );
+        assert!(
+            db.finish_feed(
+                due,
+                lease,
+                lease + 100,
+                2,
+                Some("boom"),
+                "A2",
+                Some("e2"),
+                Some("Mon")
+            )
+            .await
+            .expect("finish")
+        );
+        let rows = db.due_feeds(lease + 100, 10).await.expect("after finish");
+        assert_eq!(rows.len(), 1);
+        let title: String = sqlx::query_scalar!("SELECT title FROM feeds WHERE id = $1", due)
+            .fetch_one(&db.pool)
+            .await
+            .expect("title");
+        assert_eq!(title, "A2");
+        assert_eq!(rows[0].etag.as_deref(), Some("e2"));
+        assert_eq!(rows[0].last_modified.as_deref(), Some("Mon"));
+        assert_eq!(rows[0].fail_count, 2);
+
+        // Empty title is a "keep the stored value" sentinel (304 / failed poll).
+        let lease2 = lease + 200;
+        assert!(
+            db.claim_feed(due, lease + 100, lease2)
+                .await
+                .expect("re-claim")
+        );
+        assert!(
+            db.finish_feed(due, lease2, lease2 + 100, 0, None, "", None, None)
+                .await
+                .expect("finish keep title")
+        );
+        let title2: String = sqlx::query_scalar!("SELECT title FROM feeds WHERE id = $1", due)
+            .fetch_one(&db.pool)
+            .await
+            .expect("title2");
         assert_eq!(
-            db.avg_recent_download_secs().await.expect("avg"),
-            Some(15.0)
+            title2, "A2",
+            "empty title sentinel must not blank the title"
         );
+        let _ = future;
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn episodes_and_subs_are_deduplicated(pool: PgPool) {
+        let db = db(pool).await;
+        db.ensure_user(41, Lang::En).await.expect("user 41");
+        db.ensure_user(42, Lang::Uk).await.expect("user 42");
+        let feed = db
+            .insert_feed("https://a/rss", "A", unix_now())
+            .await
+            .expect("feed");
+
+        let eps = vec![
+            common::domain::FeedEpisode {
+                guid: "g1".into(),
+                title: "One".into(),
+                url: "https://a/1".into(),
+                published_at: Some(10),
+            },
+            common::domain::FeedEpisode {
+                guid: "g2".into(),
+                title: "Two".into(),
+                url: "https://a/2".into(),
+                published_at: None,
+            },
+        ];
+        db.insert_episodes(feed, &eps)
+            .await
+            .expect("insert episodes");
+        db.insert_episodes(feed, &eps)
+            .await
+            .expect("duplicate episodes");
+        let guids = db.episode_guids(feed).await.expect("guids");
+        assert_eq!(guids.len(), 2, "episodes dedup on (feed_id, guid)");
+
+        assert!(db.subscribe(41, 100, feed).await.expect("sub 41/100"));
+        assert!(!db.subscribe(41, 100, feed).await.expect("dup sub"));
+        assert!(db.subscribe(41, 200, feed).await.expect("sub 41/200"));
+        assert!(db.subscribe(42, 100, feed).await.expect("sub 42/100"));
+        assert_eq!(db.count_user_feeds(41).await.expect("count 41"), 2);
+        assert_eq!(db.count_user_feeds(42).await.expect("count 42"), 1);
+        assert_eq!(db.count_feeds().await.expect("count feeds"), 1);
+        let subs = db.list_subs(41, 100).await.expect("list subs");
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].feed_id, feed);
+        assert_eq!(subs[0].title, "A");
+        let recipients = db.subscribers_for_feed(feed).await.expect("recipients");
+        assert_eq!(recipients.len(), 3);
+        assert!(
+            recipients
+                .iter()
+                .any(|r| r.user_id == 42 && r.language == Lang::Uk)
+        );
+        db.unsubscribe(42, 100, feed).await.expect("unsub");
+        assert_eq!(
+            db.subscribers_for_feed(feed)
+                .await
+                .expect("recipients")
+                .len(),
+            2
+        );
+    }
+
+    #[sqlx::test(migrations = "../../migrations")]
+    async fn delete_orphan_feed_and_cascade(pool: PgPool) {
+        let db = db(pool).await;
+        let now = unix_now();
+        let kept = db
+            .insert_feed("https://kept/rss", "Kept", now)
+            .await
+            .expect("kept");
+        let orphan = db
+            .insert_feed("https://orphan/rss", "Orphan", now)
+            .await
+            .expect("orphan");
+        db.subscribe(7, 1, kept).await.expect("sub kept");
+        db.insert_episodes(
+            kept,
+            &[common::domain::FeedEpisode {
+                guid: "g".into(),
+                title: "T".into(),
+                url: "https://kept/1".into(),
+                published_at: None,
+            }],
+        )
+        .await
+        .expect("episode");
+
+        db.delete_orphan_feed(kept)
+            .await
+            .expect("keep subscribed feed");
+        db.delete_orphan_feed(orphan).await.expect("delete orphan");
+        assert_eq!(db.count_feeds().await.expect("feeds"), 1);
+
+        sqlx::query!("DELETE FROM feeds WHERE id = $1", kept)
+            .execute(&db.pool)
+            .await
+            .expect("cascade feed delete");
+        assert!(db.episode_guids(kept).await.expect("episodes").is_empty());
+        assert_eq!(db.count_user_feeds(7).await.expect("subs"), 0);
     }
 
     async fn last_seen(db: &Db, id: i64) -> i64 {

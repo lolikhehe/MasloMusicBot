@@ -191,6 +191,12 @@ fn download_secs_for(duration_secs: u32, quality_kbps: u32, speed_bps: f64) -> f
     (bytes / speed_bps).max(1.0)
 }
 
+/// Same ETA formula as [`DownloadManager::estimate_download_secs`] but driven by
+/// a speed published by another replica, for queue-average estimates.
+pub fn estimate_secs_from_bps(duration_secs: u32, quality_kbps: u32, speed_bps: f64) -> f64 {
+    download_secs_for(duration_secs, quality_kbps, speed_bps)
+}
+
 /// Decrements the inflight gauge on **every** exit path, including cancellation
 /// of the leader future (a plain decrement after `.await` leaks on cancel).
 struct InflightMetricGuard;

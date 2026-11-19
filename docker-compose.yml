@@ -35,6 +35,9 @@ services:
       # deno (yt-dlp's JS runtime for YouTube EJS challenges) caches compiled
       # scripts; the root fs is read-only, so keep the cache on the volume.
       DENO_DIR: /data/tmp/deno
+      # Downloads moved to the worker; only it updates yt-dlp. Leaving this on
+      # here would make both containers race writes into /data/tmp/bin.
+      YTDLP_AUTO_UPDATE: "false"
       METRICS_ADDR: 0.0.0.0:9090
       # WEBHOOK_URL / WEBHOOK_SECRET / WEBHOOK_ADDR come from .env when set.
       # TELEGRAM_API_URL is read from .env. Unset => cloud API.
@@ -74,6 +77,51 @@ services:
     restart: unless-stopped
     # The app drains up to 30s (dispatcher shutdown timeout) + 20s tail;
     # SIGKILL at 45s would land mid-drain.
+    stop_grace_period: 60s
+
+  # Downloads run here, not in the bot, so webhook/polling replies stay fast
+  # even with a long queue. Overrides the image entrypoint: `command:` would
+  # append to the hard-coded "music-bot" arg instead of replacing it.
+  worker:
+    build: .
+    image: maslomusicbot:latest
+    entrypoint: ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint", "music-bot-worker"]
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_URL: postgresql://musicbot:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/musicbot
+      TELEGRAM_API_URL: http://bot-api:8081/
+      METRICS_ADDR: 0.0.0.0:9091
+      TMP_DIR: /data/tmp
+      TMPDIR: /data/tmp
+      DENO_DIR: /data/deno
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - worker-data:/data
+      - botapi:/var/lib/telegram-bot-api:ro
+    group_add:
+      - "101"
+    ports:
+      - "127.0.0.1:9091:9091"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=512m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 512
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9091/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     stop_grace_period: 60s
 
   # Rust-only webhook gateway. Needs a public DNS A record pointing at this
@@ -156,6 +204,7 @@ services:
 
 volumes:
   bot-data:
+  worker-data:
   botapi:
   pg-data:
   acme-cache:

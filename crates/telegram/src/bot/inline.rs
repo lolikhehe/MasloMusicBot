@@ -277,7 +277,8 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
         };
         let caption = Some(compact_caption(&state, Some(&cached.meta)));
         let fav_markup =
-            crate::bot::handlers::fav_markup_for(&state, user_id, &request.key.to_string()).await;
+            crate::bot::handlers::fav_markup_for(&state.db, user_id, &request.key.to_string())
+                .await;
         let mut edit =
             bot.edit_message_media_inline(inline_message_id, cached_media(&cached, caption));
         if let Some(markup) = fav_markup {
@@ -420,7 +421,8 @@ pub async fn handle_chosen(state: AppState, bot: Bot, result: ChosenInlineResult
     if let Some(inline_message_id) = result.inline_message_id.clone() {
         let media = file_id_media(&prepared, &file_id, caption.clone());
         let fav_markup =
-            crate::bot::handlers::fav_markup_for(&state, user_id, &request.key.to_string()).await;
+            crate::bot::handlers::fav_markup_for(&state.db, user_id, &request.key.to_string())
+                .await;
         let mut edit = bot.edit_message_media_inline(inline_message_id.clone(), media);
         if let Some(markup) = fav_markup {
             edit = edit.reply_markup(markup);

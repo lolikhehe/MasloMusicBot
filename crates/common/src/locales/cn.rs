@@ -409,6 +409,48 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Looks like: {artist} — {title}" => Some("听起来像：{artist} — {title}"),
         "💿 {album} · {year}" => Some("💿 {album} · {year}"),
         "⚠ {n} lines could not be resolved and were skipped" => Some("⚠ 无法解析 {n} 行，已跳过"),
+        // ---- 3.0.0: /recs and /pod ----
+        "/recs — personalized picks from your listening history" => {
+            Some("/recs — 根据你的收听记录为你个性化推荐")
+        }
+        "🎯 <b>Recommended for you</b>" => Some("🎯 <b>为你推荐</b>"),
+        "Popular with listeners" => Some("大家都在听"),
+        "Based on {n} listens" => Some("基于 {n} 次收听"),
+        "🌱 Nothing to recommend yet — play a few tracks first." => {
+            Some("🌱 暂时没有推荐 — 先听几首歌吧。")
+        }
+        "Usage:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — subscribe in this chat\n<code>/pod list</code> — feeds in this chat\n<code>/pod del &lt;n&gt;</code> — unsubscribe by number" => {
+            Some(
+                "用法：\n<code>/pod &lt;RSS/Atom URL&gt;</code> — 在本聊天订阅\n<code>/pod list</code> — 本聊天的订阅源\n<code>/pod del &lt;n&gt;</code> — 按编号取消订阅",
+            )
+        }
+        "✅ Subscribed to <b>{title}</b>. New episodes will arrive here." => {
+            Some("✅ 已订阅 <b>{title}</b>。新剧集将发送到这里。")
+        }
+        "You are already subscribed to this feed in this chat." => {
+            Some("你已经在这个聊天中订阅了该订阅源。")
+        }
+        "😕 Could not read that feed. Check the URL and try again." => {
+            Some("😕 无法读取该订阅源。请检查网址后重试。")
+        }
+        "You can subscribe to at most 10 feeds." => Some("最多只能订阅 10 个订阅源。"),
+        "The bot is at its feed limit right now. Try again later." => {
+            Some("机器人目前已达到订阅源上限。请稍后再试。")
+        }
+        "No podcast subscriptions in this chat. Add one with <code>/pod &lt;URL&gt;</code>." => {
+            Some("本聊天没有播客订阅。使用 <code>/pod &lt;URL&gt;</code> 添加。")
+        }
+        "🎙 Podcasts in this chat:" => Some("🎙 本聊天中的播客："),
+        "🗑 Unsubscribed from <b>{title}</b>." => Some("🗑 已取消订阅 <b>{title}</b>。"),
+        "Use a number from <code>/pod list</code>." => {
+            Some("请使用 <code>/pod list</code> 中的编号。")
+        }
+        "🎙 <b>{feed_title}</b> · {n} new episode(s)" => {
+            Some("🎙 <b>{feed_title}</b> · {n} 个新剧集")
+        }
+        "🛑 Feed <b>{title}</b> stopped responding and was disabled. Remove it with /pod del." => {
+            Some("🛑 订阅源 <b>{title}</b> 已停止响应并被禁用。请使用 /pod del 移除。")
+        }
         _ => None,
     }
 }

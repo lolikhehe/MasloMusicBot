@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_jobs SET created_at = 0 WHERE id = 'j1'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "6eef6d4b0ac53d48a5710a8de3092df2a36fd9ef753d5a1955177754d722dc45"
+}

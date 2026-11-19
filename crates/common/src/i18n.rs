@@ -67,6 +67,14 @@ pub fn help(lang: Lang, is_admin: bool) -> String {
         "<b>How to use</b>\n\n• Private chat: send a link or <code>Artist — Title</code>.\n• Inline: <code>@this_bot query</code> in any chat. Empty query with Last.fm connected proposes what you're playing now.\n• Albums and playlists are downloaded one track at a time with a progress message. Use <code>/alb &lt;name&gt;</code> to find an album by title.\n• Repeat requests are served from cache.\n\n<b>Commands</b>\n/start — about the bot\n/help — this help\n/settings — language, quality (kbps or FLAC lossless), source and tags\n/alb — find an album by name and download it\n/lastfm — connect Last.fm (empty inline query suggests the track you're playing)\n/import [list] — import a playlist; with no argument the next message (file or Artist – Title lines) is used\n/profile or /lastfmstats [period] — scrobble statistics (enable Last.fm stats in /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [period] — PNG chart of your most played items\n/genres [5..20] — genre chart from your downloads (enable the analyzer in /settings)\n/lyrics [Artist — Title] — song lyrics from public sources (no argument: last track; or reply to an audio)\n/changelog — show the release notes\n/me — your own counters and favourite genres\n/queue — recent download jobs\n/cancel &lt;id&gt; — cancel an active download\n/stop — cancel all your active actions at once\n/convert auto|m4a|mp3|flac|opus — output format; reply to a track to convert that one\n/normalize on|off — ffmpeg loudnorm pass\n/playlist &lt;name&gt; — search public playlists\n/fav — your saved ⭐ tracks (tap ☆ under a track to save it)\n/similar — reply to one of my tracks: up to 10 similar tracks\n/artist &lt;name&gt; — top tracks of an artist\n/cover — reply to one of my tracks: full-size album cover\n/albums — your saved albums\n/recognize — reply to an audio file: identify it by sound\n/groupmode on|off — admin: allow the bot in this group\n/history [period] — your recent listening history\n/dynamics [period] — genre dynamics over time chart\n/digest daily|weekly|off — personal digest to your private chat\n/digest quiet HH-HH|off — quiet hours in UTC\n/digest status — current digest schedule",
         "<b>Як користуватися</b>\n\n• Приватний чат: надішліть посилання або <code>Виконавець — Назва</code>.\n• Інлайн: <code>@this_bot запит</code> у будь-якому чаті. Порожній запит з підключеним Last.fm запропонує те, що грає зараз.\n• Альбоми та плейлисти завантажуються по одному треку з повідомленням про прогрес. Знайти альбом за назвою: <code>/alb &lt;назва&gt;</code>.\n• Повторні запити віддаються з кешу.\n\n<b>Команди</b>\n/start — про бота\n/help — ця довідка\n/settings — мова, якість (kbps або FLAC lossless), джерело і теги\n/alb — знайти альбом за назвою й завантажити\n/lastfm — підключити Last.fm (порожній inline-запит запропонує те, що грає зараз)\n/import [список] — імпорт плейлиста; без аргументу наступне повідомлення (файл або рядки «Виконавець – Назва») вважається списком\n/profile або /lastfmstats [період] — статистика скроблів (увімкни в /settings)\n/collage &lt;tracks|albums|artists&gt; [3x3..10x10] [період] — PNG-колаж найбільш прослуханих\n/genres [5..20] — графік жанрів із твоїх завантажень (увімкни аналізатор у /settings)\n/lyrics [Виконавець — Назва] — текст пісні з публічних джерел (без аргументу: останній трек; або відповідь на аудіо)\n/changelog — показати список змін\n/me — твоя статистика та улюблені жанри\n/queue — останні завантаження\n/cancel &lt;id&gt; — скасувати активне завантаження\n/stop — зупинити всі твої активні дії одразу\n/convert auto|m4a|mp3|flac|opus — формат; відповідь на трек конвертує саме його\n/normalize on|off — вирівнювання гучності ffmpeg\n/playlist &lt;назва&gt; — пошук публічних плейлистів\n/fav — твої збережені ⭐ треки (тапни ☆ під треком, щоб зберегти)\n/similar — відповідь на мій трек: до 10 схожих треків\n/artist &lt;ім'я&gt; — топ треків виконавця\n/cover — відповідь на мій трек: обкладинка альбома у повному розмірі\n/albums — твої збережені альбоми\n/recognize — відповідь на аудіофайл: розпізнати за звучанням\n/groupmode on|off — адмін: дозволити бота в цій групі\n/history [період] — остання історія прослуховувань\n/dynamics [період] — графік динаміки жанрів за часом\n/digest daily|weekly|off — персональний дайджест у приватні повідомлення\n/digest quiet HH-HH|off — тихі години за UTC\n/digest status — поточний розклад дайджесту",
     );
+    let base = format!(
+        "{base}{}",
+        pick(
+            lang,
+            "\n/recs — personalized picks\n/pod &lt;RSS URL&gt; | list | del &lt;n&gt; — podcast feeds in this chat",
+            "\n/recs — персональні рекомендації\n/pod &lt;RSS URL&gt; | list | del &lt;n&gt; — подкасти в цьому чаті",
+        )
+    );
     if is_admin {
         lformat!(
             lang,
@@ -2092,6 +2100,186 @@ pub fn recognize_album_line(lang: Lang, album: &str, year: &str) -> String {
     }
 }
 
+// ---- 3.0.0: /recs and /pod ----
+
+pub fn recs_help_line(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "/recs — personalized picks from your listening history",
+        "/recs — персональні рекомендації з твоєї історії прослуховування",
+    )
+}
+
+pub fn recs_header(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "🎯 <b>Recommended for you</b>",
+        "🎯 <b>Рекомендації для тебе</b>",
+    )
+}
+
+pub fn recs_basis(lang: Lang, listens: u32) -> String {
+    if listens == 0 {
+        pick(lang, "Popular with listeners", "Популярне серед слухачів").to_owned()
+    } else {
+        match lang {
+            Lang::En
+            | Lang::Pl
+            | Lang::De
+            | Lang::Cn
+            | Lang::Jp
+            | Lang::Fr
+            | Lang::Nl
+            | Lang::Cz
+            | Lang::Be => lformat!(lang, "Based on {n} listens", n = listens),
+            Lang::Uk => format!("На основі {listens} прослуховувань"),
+        }
+    }
+}
+
+pub fn recs_empty(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "🌱 Nothing to recommend yet — play a few tracks first.",
+        "🌱 Поки що немає рекомендацій — спочатку послухай кілька треків.",
+    )
+}
+
+pub fn podcast_usage(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Usage:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — subscribe in this chat\n<code>/pod list</code> — feeds in this chat\n<code>/pod del &lt;n&gt;</code> — unsubscribe by number",
+        "Використання:\n<code>/pod &lt;RSS/Atom-URL&gt;</code> — підписатися в цьому чаті\n<code>/pod list</code> — фіди цього чату\n<code>/pod del &lt;n&gt;</code> — відписатися за номером",
+    )
+}
+
+pub fn podcast_subscribed(lang: Lang, title: &str) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(
+            lang,
+            "✅ Subscribed to <b>{title}</b>. New episodes will arrive here.",
+            title = title
+        ),
+        Lang::Uk => format!("✅ Підписано на <b>{title}</b>. Нові випуски зʼявлятимуться тут."),
+    }
+}
+
+pub fn podcast_already(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "You are already subscribed to this feed in this chat.",
+        "Ти вже підписаний на цей фід у цьому чаті.",
+    )
+}
+
+pub fn podcast_invalid(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "😕 Could not read that feed. Check the URL and try again.",
+        "😕 Не вийшло прочитати фід. Перевір URL і спробуй ще раз.",
+    )
+}
+
+pub fn podcast_limit_user(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "You can subscribe to at most 10 feeds.",
+        "Можна підписатися максимум на 10 фідів.",
+    )
+}
+
+pub fn podcast_limit_global(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "The bot is at its feed limit right now. Try again later.",
+        "У бота зараз досягнуто ліміту фідів. Спробуй пізніше.",
+    )
+}
+
+pub fn podcast_empty(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "No podcast subscriptions in this chat. Add one with <code>/pod &lt;URL&gt;</code>.",
+        "У цьому чаті немає підписок на подкасти. Додай через <code>/pod &lt;URL&gt;</code>.",
+    )
+}
+
+pub fn podcast_list_title(lang: Lang) -> &'static str {
+    pick(lang, "🎙 Podcasts in this chat:", "🎙 Подкасти в цьому чаті:")
+}
+
+pub fn podcast_deleted(lang: Lang, title: &str) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(lang, "🗑 Unsubscribed from <b>{title}</b>.", title = title),
+        Lang::Uk => format!("🗑 Відписано від <b>{title}</b>."),
+    }
+}
+
+pub fn podcast_bad_index(lang: Lang) -> &'static str {
+    pick(
+        lang,
+        "Use a number from <code>/pod list</code>.",
+        "Використовуй номер зі списку <code>/pod list</code>.",
+    )
+}
+
+pub fn podcast_new_title(lang: Lang, feed_title: &str, n: u32) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(
+            lang,
+            "🎙 <b>{feed_title}</b> · {n} new episode(s)",
+            feed_title = feed_title,
+            n = n
+        ),
+        Lang::Uk => format!("🎙 <b>{feed_title}</b> · нових випусків: {n}"),
+    }
+}
+
+pub fn podcast_gone(lang: Lang, title: &str) -> String {
+    match lang {
+        Lang::En
+        | Lang::Pl
+        | Lang::De
+        | Lang::Cn
+        | Lang::Jp
+        | Lang::Fr
+        | Lang::Nl
+        | Lang::Cz
+        | Lang::Be => lformat!(
+            lang,
+            "🛑 Feed <b>{title}</b> stopped responding and was disabled. Remove it with /pod del.",
+            title = title
+        ),
+        Lang::Uk => format!(
+            "🛑 Фід <b>{title}</b> перестав відповідати й був вимкнений. Прибери його через /pod del."
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2199,6 +2387,18 @@ mod tests {
             assert!(help.contains("&lt;tracks|albums|artists&gt;"));
             assert!(!help.contains("<tracks"));
             assert!(!help.contains("<nick>"));
+        }
+    }
+
+    #[test]
+    fn new_3_0_strings_render_in_every_language() {
+        for lang in Lang::ALL {
+            let title = podcast_new_title(lang, "Feed & Name", 2);
+            assert!(title.contains("Feed & Name"), "{lang:?}: {title}");
+            assert!(title.contains('2'), "{lang:?}: {title}");
+            assert!(!recs_basis(lang, 0).is_empty(), "{lang:?}");
+            let seven = recs_basis(lang, 7);
+            assert!(seven.contains('7'), "{lang:?}: {seven}");
         }
     }
 }

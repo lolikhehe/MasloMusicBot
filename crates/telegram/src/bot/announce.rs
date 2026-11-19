@@ -43,6 +43,9 @@ pub async fn announce_update(bot: &Bot, state: &AppState) -> AppResult<()> {
         return Ok(());
     }
 
+    // The caller times this out: a truncated loop must not re-PM early users on restart.
+    state.db.set_meta(ANNOUNCED_VERSION_KEY, VERSION).await?;
+
     let users = state.db.active_user_ids().await?;
     let mut sent = 0usize;
     let mut failed = 0usize;
@@ -58,7 +61,6 @@ pub async fn announce_update(bot: &Bot, state: &AppState) -> AppResult<()> {
         tokio::time::sleep(SEND_DELAY).await;
     }
 
-    state.db.set_meta(ANNOUNCED_VERSION_KEY, VERSION).await?;
     info!(
         version = VERSION,
         sent, failed, "update notice broadcast complete"

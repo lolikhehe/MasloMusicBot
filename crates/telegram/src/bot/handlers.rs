@@ -13,6 +13,7 @@ use downloader::PreparedAudio;
 use providers::{ParsedInput, parse_input};
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
+use storage::Db;
 use teloxide::prelude::*;
 use teloxide::types::{
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message,
@@ -238,7 +239,7 @@ async fn handle_track(
     user_id: i64,
     request: TrackRequest,
     tags_enabled: bool,
-    hq_cover: bool,
+    _hq_cover: bool,
     genre_analysis: bool,
 ) -> HandlerResult {
     if try_cache_send(
@@ -256,55 +257,36 @@ async fn handle_track(
         return Ok(());
     }
 
-    let job = match crate::bot::jobs::JobGuard::start(
-        state,
-        user_id,
-        "track",
-        serde_json::json!({
-            "key": request.key.as_str(),
-            "title": request.meta.as_ref().map(|meta| meta.display_title()),
-        }),
-    )
-    .await?
+    // Downloads now live in the worker. Enqueue a deduped job and let the
+    // worker create the status message; the bot sends nothing to the chat here.
+    let key = request.key.as_str();
+    if state.db.find_active_job_for_user_key(user_id, key).await? {
+        send::send_html(bot, chat, i18n::job_already_running(lang)).await?;
+        return Ok(());
+    }
+    match state
+        .db
+        .enqueue_job(
+            &state.new_selection_id(),
+            user_id,
+            "track",
+            serde_json::json!({
+                "key": key,
+                "chat_id": chat.0,
+                "request": &request,
+            }),
+        )
+        .await
     {
-        Some(job) => job,
-        None => {
+        Ok(true) => {}
+        Ok(false) => {
             send::send_html(bot, chat, i18n::job_already_running(lang)).await?;
             return Ok(());
         }
-    };
-
-    let placeholder = send::send_html(bot, chat, i18n::downloading(lang)).await?;
-    let outcome = deliver_track_inner(
-        state,
-        bot,
-        chat,
-        request,
-        quality,
-        user_id,
-        tags_enabled,
-        hq_cover,
-        genre_analysis,
-        Some(&job),
-    )
-    .await;
-    match &outcome {
-        Ok(_) => {
-            job.finish("done", None).await;
-            if let Err(error) = bot.delete_message(chat, placeholder.id).await {
-                warn!(%error, "could not delete progress message");
-            }
-        }
         Err(error) => {
-            if job.cancelled().await {
-                job.finish("cancelled", None).await;
-                let _ = edit_html(bot, chat, placeholder.id, i18n::job_cancelled(lang)).await;
-            } else {
-                job.finish("failed", Some(&error.to_string())).await;
-                let text = error_text(lang, error);
-                let _ = edit_html(bot, chat, placeholder.id, text).await;
-                warn!(%error, "track delivery failed");
-            }
+            let boxed: BoxError = Box::new(error);
+            warn!(%boxed, "could not enqueue track job");
+            send::send_html(bot, chat, error_text(lang, &boxed)).await?;
         }
     }
     Ok(())
@@ -504,11 +486,7 @@ pub async fn handle_search_page(
 
 /// The ⭐/☆ toggle row under a delivered track. Symbol-only so the hot
 /// delivery path needs no language lookup; the toggle toast is localized.
-pub async fn fav_markup_for(
-    state: &AppState,
-    user_id: i64,
-    key: &str,
-) -> Option<InlineKeyboardMarkup> {
+pub async fn fav_markup_for(db: &Db, user_id: i64, key: &str) -> Option<InlineKeyboardMarkup> {
     // Telegram caps callback_data at 64 bytes; a longer `fav:` key makes the
     // ENTIRE audio send fail with BUTTON_DATA_INVALID.
     if format!("fav:{key}").len() > 64 {
@@ -516,7 +494,7 @@ pub async fn fav_markup_for(
     }
     // A transient DB error must not render ☆ for a favorited track: one tap
     // would then silently DELETE the favorite. Skip the button instead.
-    let Ok(added) = state.db.is_favorite(user_id, key).await else {
+    let Ok(added) = db.is_favorite(user_id, key).await else {
         return None;
     };
     Some(InlineKeyboardMarkup::new(vec![vec![
@@ -676,7 +654,7 @@ pub async fn deliver_album(
     hq_cover: bool,
     genre_analysis: bool,
     album_info: bool,
-    job: Option<&crate::bot::jobs::JobGuard>,
+    job: Option<(String, Db)>,
 ) -> Result<usize, BoxError> {
     let total = album.tracks.len();
     let title = escape_html(&album.title);
@@ -726,13 +704,12 @@ pub async fn deliver_album(
     let send_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(
         state.config.max_active_downloads_per_user,
     ));
-    // Owned clone so each spawned task can carry the guard into its delivery
-    // path; cancellation must reach in-flight tracks, not just the spawn loop.
-    let job = job.cloned();
+    // Cancellation is checked per track via (job id, Db), not just in the
+    // spawn loop; each spawned task owns its own clone.
     let mut set = tokio::task::JoinSet::new();
     for track in album.tracks {
-        if let Some(job) = &job
-            && job.cancelled().await
+        if let Some((id, db)) = &job
+            && db.job_cancel_requested(id).await.unwrap_or(false)
         {
             break;
         }
@@ -753,13 +730,10 @@ pub async fn deliver_album(
                 );
             };
             // Cancellation may have landed while this track waited for a slot.
-            if let Some(job) = &job_clone
-                && job.cancelled().await
+            if let Some((id, db)) = &job_clone
+                && db.job_cancel_requested(id).await.unwrap_or(false)
             {
-                return (
-                    track_title,
-                    Err(crate::bot::jobs::JobGuard::cancelled_error().into()),
-                );
+                return (track_title, Err(cancelled_error().into()));
             }
             let result = deliver_track_inner(
                 &state,
@@ -771,7 +745,7 @@ pub async fn deliver_album(
                 tags_enabled,
                 hq_cover,
                 genre_analysis,
-                job_clone.as_ref(),
+                job_clone,
             )
             .await;
             (track_title, result)
@@ -861,7 +835,7 @@ pub async fn deliver_album(
 /// Identity used by the save/ZIP buttons. `id` is the album's full source URL:
 /// Deezer/Apple/YouTube ids fit the 64-byte callback cap, SoundCloud/Bandcamp
 /// URLs do not and are skipped when building the button.
-fn album_identity(album: &common::domain::Album) -> Option<(String, String)> {
+pub fn album_identity(album: &common::domain::Album) -> Option<(String, String)> {
     let id = album.source_url.as_deref()?.trim();
     (!id.is_empty()).then(|| (album.provider.as_str().to_owned(), id.to_owned()))
 }
@@ -869,7 +843,7 @@ fn album_identity(album: &common::domain::Album) -> Option<(String, String)> {
 /// Remaining seconds from the pace of already-finished tracks: `(left) ×
 /// (elapsed / done)`. `None` before the first track lands (or once all did),
 /// so an album never shows an invented countdown.
-fn empirical_remaining_secs(total: usize, done: usize, elapsed_secs: f64) -> Option<f64> {
+pub fn empirical_remaining_secs(total: usize, done: usize, elapsed_secs: f64) -> Option<f64> {
     if done > 0 && done < total {
         Some((total - done) as f64 * elapsed_secs / done as f64)
     } else {
@@ -880,7 +854,7 @@ fn empirical_remaining_secs(total: usize, done: usize, elapsed_secs: f64) -> Opt
 /// Cover photo + caption sent before an album's tracks (the
 /// "ℹ️ Album & artist info" toggle in /settings). Best-effort: every source
 /// is optional, a failed fetch only drops its line or the photo.
-async fn send_album_info(
+pub async fn send_album_info(
     state: &AppState,
     bot: &Bot,
     chat: ChatId,
@@ -1204,7 +1178,7 @@ pub fn tags_caption(meta: &TrackMeta, tags_enabled: bool) -> Option<String> {
 /// Serve a cache entry if possible. A stale `file_id` is purged so the caller
 /// can fall back to a fresh download.
 #[allow(clippy::too_many_arguments)]
-async fn try_cache_send(
+pub async fn try_cache_send(
     state: &AppState,
     bot: &Bot,
     chat: ChatId,
@@ -1223,7 +1197,7 @@ async fn try_cache_send(
     // tags actually changed it. Analyzer-only enrichment stays in that task.
     let caption_meta = cached.meta.clone();
     let caption = tags_caption(&caption_meta, tags_enabled);
-    let fav_markup = fav_markup_for(state, user_id, key.as_str()).await;
+    let fav_markup = fav_markup_for(&state.db, user_id, key.as_str()).await;
     match send::send_cached(bot, chat, &cached, caption.clone(), fav_markup.clone()).await {
         Ok(message) => {
             state.maybe_track_deletion(user_id, chat, message.id);
@@ -1261,7 +1235,7 @@ async fn try_cache_send(
                         // since the send, and re-passing the send-time clone
                         // would revert their choice.
                         let fresh_markup =
-                            fav_markup_for(&record_state, user_id, &record_key).await;
+                            fav_markup_for(&record_state.db, user_id, &record_key).await;
                         // Editing without reply_markup wipes existing buttons,
                         // so skip the edit only when the fresh fetch failed but
                         // the send actually had buttons to lose.
@@ -1314,7 +1288,7 @@ async fn try_cache_send(
 
 /// Shared delivery path for direct requests, search callbacks and albums.
 #[allow(clippy::too_many_arguments)]
-async fn deliver_track_inner(
+pub async fn deliver_track_inner(
     state: &AppState,
     bot: &Bot,
     chat: ChatId,
@@ -1324,7 +1298,7 @@ async fn deliver_track_inner(
     tags_enabled: bool,
     hq_cover: bool,
     genre_analysis: bool,
-    job: Option<&crate::bot::jobs::JobGuard>,
+    job: Option<(String, Db)>,
 ) -> Result<Delivery, BoxError> {
     let enrich = tags_enabled || genre_analysis;
     if try_cache_send(
@@ -1342,10 +1316,10 @@ async fn deliver_track_inner(
         return Ok(Delivery::Cached);
     }
 
-    if let Some(job) = job
-        && job.cancelled().await
+    if let Some((id, db)) = &job
+        && db.job_cancel_requested(id).await.unwrap_or(false)
     {
-        return Err(crate::bot::jobs::JobGuard::cancelled_error().into());
+        return Err(cancelled_error().into());
     }
 
     metrics::counter!("music_bot_downloads_total").increment(1);
@@ -1403,10 +1377,10 @@ async fn deliver_track_inner(
         return Ok(Delivery::Cached);
     }
 
-    if let Some(job) = job
-        && job.cancelled().await
+    if let Some((id, db)) = &job
+        && db.job_cancel_requested(id).await.unwrap_or(false)
     {
-        return Err(crate::bot::jobs::JobGuard::cancelled_error().into());
+        return Err(cancelled_error().into());
     }
 
     if let Ok((format, normalize)) = state.db.audio_prefs(user_id).await {
@@ -1418,7 +1392,7 @@ async fn deliver_track_inner(
     let caption =
         caption_with_flac_fallback(tags_caption(&prepared.meta, tags_enabled), flac_fell_back);
     let upload_started = Instant::now();
-    let fav_markup = fav_markup_for(state, user_id, request.key.as_str()).await;
+    let fav_markup = fav_markup_for(&state.db, user_id, request.key.as_str()).await;
     let message = match send::send_prepared(bot, chat, &prepared, caption, fav_markup).await {
         Ok(message) => message,
         Err(error) => {
@@ -1530,14 +1504,14 @@ pub async fn edit_html(
 
 /// Adaptive tick gap: 15s while the estimate is far out, 5s near the end.
 /// Sub-5s ticks would hit Telegram's edit flood limit.
-fn countdown_interval(remaining_secs: u64) -> u64 {
+pub fn countdown_interval(remaining_secs: u64) -> u64 {
     if remaining_secs > 120 { 15 } else { 5 }
 }
 
 /// Re-edit a download placeholder with a shrinking ETA. The caller aborts the
 /// returned handle before rendering the final result.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn spawn_download_countdown(
+pub fn spawn_download_countdown(
     bot: &Bot,
     chat: ChatId,
     msg_id: MessageId,
@@ -1584,6 +1558,11 @@ pub fn error_text(lang: Lang, error: &BoxError) -> String {
     }
 }
 
+/// Shared cancellation error used by both the bot and the worker delivery path.
+pub fn cancelled_error() -> AppError {
+    AppError::Message("download cancelled by user".to_owned())
+}
+
 pub fn escape_html(value: &str) -> String {
     // Fast path: skip the escaping machinery entirely for clean titles.
     if !value
@@ -1628,7 +1607,7 @@ fn trim_partial_entity(s: &str) -> String {
 
 /// Truncate an already-escaped string to `max_units` UTF-16 units without
 /// ever splitting an HTML entity.
-fn truncate_escaped_utf16(s: &str, max_units: usize) -> String {
+pub fn truncate_escaped_utf16(s: &str, max_units: usize) -> String {
     trim_partial_entity(&truncate_utf16(s, max_units))
 }
 

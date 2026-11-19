@@ -445,6 +445,54 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "⚠ {n} lines could not be resolved and were skipped" => {
             Some("⚠ {n} радкоў не ўдалося распазнаць — прапушчана")
         }
+        // ---- 3.0.0: /recs and /pod ----
+        "/recs — personalized picks from your listening history" => {
+            Some("/recs — персаналізаваныя рэкамендацыі з тваёй гісторыі праслухоўвання")
+        }
+        "🎯 <b>Recommended for you</b>" => Some("🎯 <b>Рэкамендавана для цябе</b>"),
+        "Popular with listeners" => Some("Папулярна слухачамі"),
+        "Based on {n} listens" => Some("На аснове {n} праслухоўванняў"),
+        "🌱 Nothing to recommend yet — play a few tracks first." => {
+            Some("🌱 Пакуль няма рэкамендацый — спачатку паслухай некалькі трэкаў.")
+        }
+        "Usage:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — subscribe in this chat\n<code>/pod list</code> — feeds in this chat\n<code>/pod del &lt;n&gt;</code> — unsubscribe by number" => {
+            Some(
+                "Выкарыстанне:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — падпісацца ў гэтым чаце\n<code>/pod list</code> — фіды гэтага чату\n<code>/pod del &lt;n&gt;</code> — адпісацца па нумары",
+            )
+        }
+        "✅ Subscribed to <b>{title}</b>. New episodes will arrive here." => {
+            Some("✅ Падпісана на <b>{title}</b>. Новыя выпускі з'явяцца тут.")
+        }
+        "You are already subscribed to this feed in this chat." => {
+            Some("Ты ўжо падпісаны на гэты фід у гэтым чаце.")
+        }
+        "😕 Could not read that feed. Check the URL and try again." => {
+            Some("😕 Не ўдалося прачытаць гэты фід. Правер URL і паспрабуй зноў.")
+        }
+        "You can subscribe to at most 10 feeds." => {
+            Some("Можна падпісацца не больш чым на 10 фідаў.")
+        }
+        "The bot is at its feed limit right now. Try again later." => {
+            Some("Бот зараз дасягнуў ліміту фідаў. Паспрабуй пазней.")
+        }
+        "No podcast subscriptions in this chat. Add one with <code>/pod &lt;URL&gt;</code>." => {
+            Some(
+                "У гэтым чаце няма падпісак на падкасты. Дадай праз <code>/pod &lt;URL&gt;</code>.",
+            )
+        }
+        "🎙 Podcasts in this chat:" => Some("🎙 Падкасты ў гэтым чаце:"),
+        "🗑 Unsubscribed from <b>{title}</b>." => Some("🗑 Адпісана ад <b>{title}</b>."),
+        "Use a number from <code>/pod list</code>." => {
+            Some("Выкарыстоўвай нумар са спісу <code>/pod list</code>.")
+        }
+        "🎙 <b>{feed_title}</b> · {n} new episode(s)" => {
+            Some("🎙 <b>{feed_title}</b> · {n} новых выпускаў")
+        }
+        "🛑 Feed <b>{title}</b> stopped responding and was disabled. Remove it with /pod del." => {
+            Some(
+                "🛑 Фід <b>{title}</b> перастаў адказваць і быў адключаны. Прыбяры яго праз /pod del.",
+            )
+        }
         _ => None,
     }
 }

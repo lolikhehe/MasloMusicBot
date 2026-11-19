@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE download_jobs SET status = 'queued', claimed_by = NULL, updated_at = 0\n             WHERE id = 'owner-1'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "c2ffddbbf7367fb8fb1228098bbfdf2b2d177dc1e77077be7eb832e7cff0aeaa"
+}

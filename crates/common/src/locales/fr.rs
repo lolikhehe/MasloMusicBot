@@ -457,6 +457,52 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "⚠ {n} lines could not be resolved and were skipped" => {
             Some("⚠ {n} lignes n'ont pas pu être résolues et ont été ignorées")
         }
+        // ---- 3.0.0: /recs and /pod ----
+        "/recs — personalized picks from your listening history" => {
+            Some("/recs — recommandations personnalisées basées sur ton historique d'écoute")
+        }
+        "🎯 <b>Recommended for you</b>" => Some("🎯 <b>Recommandé pour toi</b>"),
+        "Popular with listeners" => Some("Populaire auprès des auditeurs"),
+        "Based on {n} listens" => Some("Basé sur {n} écoutes"),
+        "🌱 Nothing to recommend yet — play a few tracks first." => {
+            Some("🌱 Rien à recommander pour l'instant — écoute d'abord quelques pistes.")
+        }
+        "Usage:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — subscribe in this chat\n<code>/pod list</code> — feeds in this chat\n<code>/pod del &lt;n&gt;</code> — unsubscribe by number" => {
+            Some(
+                "Utilisation :\n<code>/pod &lt;RSS/Atom URL&gt;</code> — s'abonner dans ce chat\n<code>/pod list</code> — flux de ce chat\n<code>/pod del &lt;n&gt;</code> — se désabonner par numéro",
+            )
+        }
+        "✅ Subscribed to <b>{title}</b>. New episodes will arrive here." => {
+            Some("✅ Abonné à <b>{title}</b>. Les nouveaux épisodes arriveront ici.")
+        }
+        "You are already subscribed to this feed in this chat." => {
+            Some("Tu es déjà abonné à ce flux dans ce chat.")
+        }
+        "😕 Could not read that feed. Check the URL and try again." => {
+            Some("😕 Impossible de lire ce flux. Vérifie l'URL et réessaie.")
+        }
+        "You can subscribe to at most 10 feeds." => Some("Tu peux t'abonner à 10 flux au maximum."),
+        "The bot is at its feed limit right now. Try again later." => {
+            Some("Le bot a atteint sa limite de flux pour le moment. Réessaie plus tard.")
+        }
+        "No podcast subscriptions in this chat. Add one with <code>/pod &lt;URL&gt;</code>." => {
+            Some(
+                "Aucun abonnement podcast dans ce chat. Ajoute-en un avec <code>/pod &lt;URL&gt;</code>.",
+            )
+        }
+        "🎙 Podcasts in this chat:" => Some("🎙 Podcasts dans ce chat :"),
+        "🗑 Unsubscribed from <b>{title}</b>." => Some("🗑 Désabonné de <b>{title}</b>."),
+        "Use a number from <code>/pod list</code>." => {
+            Some("Utilise un numéro de <code>/pod list</code>.")
+        }
+        "🎙 <b>{feed_title}</b> · {n} new episode(s)" => {
+            Some("🎙 <b>{feed_title}</b> · {n} nouvel(aux) épisode(s)")
+        }
+        "🛑 Feed <b>{title}</b> stopped responding and was disabled. Remove it with /pod del." => {
+            Some(
+                "🛑 Le flux <b>{title}</b> ne répond plus et a été désactivé. Supprime-le avec /pod del.",
+            )
+        }
         _ => None,
     }
 }

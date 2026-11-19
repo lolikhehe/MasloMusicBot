@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE feeds SET next_poll_at = $3\n             WHERE id = $1 AND enabled AND next_poll_at = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f005b0b3a6bbeb77443d020acaaf6d1ba13203a14d2950cc23e9658dfb0d6be4"
+}

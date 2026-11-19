@@ -447,6 +447,52 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "⚠ {n} lines could not be resolved and were skipped" => {
             Some("⚠ {n} řádků se nepodařilo rozpoznat — přeskočeno")
         }
+        // ---- 3.0.0: /recs and /pod ----
+        "/recs — personalized picks from your listening history" => {
+            Some("/recs — personalizované tipy z vaší historie poslechů")
+        }
+        "🎯 <b>Recommended for you</b>" => Some("🎯 <b>Doporučeno pro vás</b>"),
+        "Popular with listeners" => Some("Oblíbené mezi posluchači"),
+        "Based on {n} listens" => Some("Na základě {n} přehrání"),
+        "🌱 Nothing to recommend yet — play a few tracks first." => {
+            Some("🌱 Zatím není co doporučit — nejdřív si poslechněte pár skladeb.")
+        }
+        "Usage:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — subscribe in this chat\n<code>/pod list</code> — feeds in this chat\n<code>/pod del &lt;n&gt;</code> — unsubscribe by number" => {
+            Some(
+                "Použití:\n<code>/pod &lt;RSS/Atom URL&gt;</code> — přihlásit se v tomto chatu\n<code>/pod list</code> — kanály v tomto chatu\n<code>/pod del &lt;n&gt;</code> — odhlásit se podle čísla",
+            )
+        }
+        "✅ Subscribed to <b>{title}</b>. New episodes will arrive here." => {
+            Some("✅ Odebíráte <b>{title}</b>. Nové díly se objeví zde.")
+        }
+        "You are already subscribed to this feed in this chat." => {
+            Some("Tento kanál už v tomto chatu odebíráte.")
+        }
+        "😕 Could not read that feed. Check the URL and try again." => {
+            Some("😕 Tento kanál se nepodařilo načíst. Zkontrolujte URL a zkuste to znovu.")
+        }
+        "You can subscribe to at most 10 feeds." => Some("Můžete odebírat nejvýše 10 kanálů."),
+        "The bot is at its feed limit right now. Try again later." => {
+            Some("Bot má právě dosaženo limitu kanálů. Zkuste to později.")
+        }
+        "No podcast subscriptions in this chat. Add one with <code>/pod &lt;URL&gt;</code>." => {
+            Some(
+                "V tomto chatu nejsou žádné podcastové odběry. Přidejte je pomocí <code>/pod &lt;URL&gt;</code>.",
+            )
+        }
+        "🎙 Podcasts in this chat:" => Some("🎙 Podcasty v tomto chatu:"),
+        "🗑 Unsubscribed from <b>{title}</b>." => Some("🗑 Odběr <b>{title}</b> zrušen."),
+        "Use a number from <code>/pod list</code>." => {
+            Some("Použijte číslo ze seznamu <code>/pod list</code>.")
+        }
+        "🎙 <b>{feed_title}</b> · {n} new episode(s)" => {
+            Some("🎙 <b>{feed_title}</b> · {n} nových dílů")
+        }
+        "🛑 Feed <b>{title}</b> stopped responding and was disabled. Remove it with /pod del." => {
+            Some(
+                "🛑 Kanál <b>{title}</b> přestal odpovídat a byl deaktivován. Odstraňte jej pomocí /pod del.",
+            )
+        }
         _ => None,
     }
 }

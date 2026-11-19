@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE meta SET meta_value = $1\n             WHERE meta_key = 'rec_refreshed_at'\n               AND coalesce(meta_value::bigint, 0) <= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f7b4bc24bc7547d5d31aae89ecd356bc33bca0ead7131134608ed715a4902846"
+}

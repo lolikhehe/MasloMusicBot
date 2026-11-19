@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT guid FROM feed_episodes WHERE feed_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "guid",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "feed_episodes",
+            "name": "guid"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fea73fdc0ad3b8f03d099c8e9f450a51b071a8e177b1fd205a0eeb35570a236a"
+}
